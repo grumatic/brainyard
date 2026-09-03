@@ -350,12 +350,23 @@
 (defn ensure-loaded!
   "Idempotent session-boot loader: load this project's persisted hooks the first
    time it is seen this process, and no-op thereafter. Safe to call on every
-   turn. Returns the ids loaded (or nil when already loaded)."
+   turn. Returns the ids loaded (or nil when already loaded).
+
+   `:extra-bindings` may be the palette map OR a 0-arg fn returning one — see
+   `user-tools/ensure-loaded!`, which this mirrors, including why the mark is
+   rolled back when the load throws."
   [& {:keys [dirs extra-bindings]}]
   (let [dir (hooks-dir dirs)]
     (when-not (contains? @!loaded dir)
       (swap! !loaded conj dir)
-      (load-user-hooks! :dirs dirs :extra-bindings extra-bindings))))
+      (try
+        (let [ids (load-user-hooks! :dirs dirs
+                                    :extra-bindings (if (fn? extra-bindings)
+                                                      (extra-bindings)
+                                                      extra-bindings))]
+          (mulog/info ::user-hooks-loaded :dir dir :ids ids)
+          ids)
+        (catch Throwable t (swap! !loaded disj dir) (throw t))))))
 
 ;; ============================================================================
 ;; Management (list / read / delete)

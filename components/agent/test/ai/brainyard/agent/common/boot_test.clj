@@ -190,3 +190,55 @@
     (is (= {:echo "y"} (tool/call-tool :user$tool$solo {:text "y"})))
     (is (nil? (ut/ensure-loaded! :dirs test-dirs :extra-bindings (palette)))
         "and is a no-op on every subsequent turn")))
+
+;; ============================================================================
+;; Phase 2 must not be skippable — the shape of the bug this split can produce
+;; ============================================================================
+
+(deftest phase-1-alone-is-a-tool-that-advertises-itself-and-cannot-run
+  (testing "boot without phase 2 leaves a listed, bound, UNCALLABLE tool"
+    ;; This is the exact state a resumed session used to sit in for the life of
+    ;; the process: coact-init gated phase 2 on `(nil? existing-sandbox)`, and
+    ;; the TUI's `--resume` path seeds that sandbox before the first turn. The
+    ;; assertion is on the ERROR TEXT because that string — `__ut_<name>` — is
+    ;; the only outward sign, and it names an internal the LLM cannot act on.
+    (write-tool! "solo" {:description "d" :input-schema [:map [:text :string]]}
+                 "(fn [args] {:echo (:text args)})")
+    (boot/boot-registries! :dirs test-dirs :skills :skip)
+    (is (contains? @tool/!tool-defs :user$tool$solo)
+        "registered, so it lists and binds as `user$tool$solo`")
+    (let [r (tool/call-tool :user$tool$solo {:text "hi"})]
+      (is (re-find #"__ut_solo" (pr-str r))
+          "and calling it fails on the body var phase 2 never installed"))
+    ;; …and phase 2 is all that stands between that and a working tool.
+    (ut/ensure-loaded! :dirs test-dirs :extra-bindings (palette))
+    (is (= {:echo "hi"} (tool/call-tool :user$tool$solo {:text "hi"})))))
+
+(deftest the-palette-is-built-only-when-there-is-something-to-load
+  (testing ":extra-bindings may be a thunk, called once and only when loading"
+    ;; coact-init calls this on EVERY turn now (the guard, not the call site,
+    ;; decides). Building the palette eagerly there would be per-turn work for
+    ;; a set lookup that almost always says "already loaded".
+    (write-tool! "solo" {:description "d" :input-schema [:map [:text :string]]}
+                 "(fn [args] {:echo (:text args)})")
+    (let [calls (atom 0)
+          thunk #(do (swap! calls inc) (palette))]
+      (is (= ["solo"] (ut/ensure-loaded! :dirs test-dirs :extra-bindings thunk)))
+      (is (= 1 @calls) "built once, for the load that needed it")
+      (is (nil? (ut/ensure-loaded! :dirs test-dirs :extra-bindings thunk)))
+      (is (= 1 @calls) "and never again while the guard holds"))
+    (is (= {:echo "z"} (tool/call-tool :user$tool$solo {:text "z"})))))
+
+(deftest a-load-that-throws-does-not-claim-the-dir
+  (testing "the guard means `these are loaded`, so a failed load must not set it"
+    (write-tool! "solo" {:description "d" :input-schema [:map [:text :string]]}
+                 "(fn [args] {:echo (:text args)})")
+    (is (thrown? Throwable
+                 (with-redefs [ut/install-bodies!
+                               (fn [& _] (throw (ex-info "sandbox unavailable" {})))]
+                   (ut/ensure-loaded! :dirs test-dirs :extra-bindings (palette)))))
+    ;; Without the rollback this returns nil and the tool stays uncallable for
+    ;; the rest of the process — a transient failure made permanent.
+    (is (= ["solo"] (ut/ensure-loaded! :dirs test-dirs :extra-bindings (palette)))
+        "the next turn retries")
+    (is (= {:echo "r"} (tool/call-tool :user$tool$solo {:text "r"})))))

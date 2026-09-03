@@ -375,6 +375,15 @@
   (register-persisted! :dirs dirs)
   (install-bodies! :dirs dirs :extra-bindings extra-bindings))
 
+;; Both guards below MARK BEFORE DOING and roll the mark back if the work
+;; throws — the same shape as `boot/register-skills-once!`, and for both of its
+;; reasons. Marking first is what makes the load single-flight: sub-agents take
+;; turns concurrently, and two threads racing into `install-bodies!` would eval
+;; every body twice into one shared sandbox. Rolling back on a throw is what
+;; keeps a transient failure transient: the mark means "these tools are loaded",
+;; and leaving it set after the load blew up says that of tools which are not,
+;; for the rest of the process.
+
 (defn ensure-registered!
   "Idempotent PHASE 1 for boot: register this project's persisted tool metadata
    the first time the dir is seen this process, and no-op thereafter. Returns
@@ -383,7 +392,8 @@
   (let [dir (tools-dir dirs)]
     (when-not (contains? @!registered dir)
       (swap! !registered conj dir)
-      (register-persisted! :dirs dirs))))
+      (try (register-persisted! :dirs dirs)
+           (catch Throwable t (swap! !registered disj dir) (throw t))))))
 
 (defn ensure-loaded!
   "Idempotent session-boot loader: make this user/project's persisted tools
@@ -393,13 +403,28 @@
    Runs `ensure-registered!` first, which no-ops when boot already registered
    the metadata and does the work when this process never booted through one of
    the `boot-registries!` entry points (a2a serve, ACP, tests). Returns the
-   names installed (or nil when already loaded)."
+   names installed (or nil when already loaded).
+
+   `:extra-bindings` may be the palette map OR a 0-arg fn returning one. Callers
+   that run this every turn should pass the fn: building the palette is real
+   work, and only the guard below knows whether there is anything to spend it
+   on."
   [& {:keys [dirs extra-bindings]}]
   (let [dir (tools-dir dirs)]
     (when-not (contains? @!loaded dir)
       (swap! !loaded conj dir)
-      (ensure-registered! :dirs dirs)
-      (install-bodies! :dirs dirs :extra-bindings extra-bindings))))
+      (try
+        (ensure-registered! :dirs dirs)
+        (let [names (install-bodies! :dirs dirs
+                                     :extra-bindings (if (fn? extra-bindings)
+                                                       (extra-bindings)
+                                                       extra-bindings))]
+          ;; Phase 2 had no success event, so "the tool is registered but its
+          ;; body was never installed" was invisible from the log — the one
+          ;; state where a tool advertises itself and cannot run.
+          (mulog/info ::user-tools-loaded :dir dir :names names)
+          names)
+        (catch Throwable t (swap! !loaded disj dir) (throw t))))))
 
 ;; ============================================================================
 ;; Management (list / read / delete) — mirrors the skills$* command family

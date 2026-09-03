@@ -1891,29 +1891,41 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
         _ (when seeded-restored
             (swap! (:!state agent) dissoc :sandbox-restored-vars))
 
-        ;; Session boot: load this project's persisted user-defined tools
-        ;; (idempotent per process) BEFORE make-tool-bindings, so they register
-        ;; in !tool-defs and auto-bind as `user$tool$<name>` symbols this turn.
-        _ (when (nil? existing-sandbox)
+        ;; Session boot: load this project's persisted user-defined tools, hooks
+        ;; and agents (idempotent per process) BEFORE make-tool-bindings, so they
+        ;; register in !tool-defs and auto-bind as `user$tool$<name>` symbols this
+        ;; turn. Tools additionally need their BODIES evaluated here (phase 2 —
+        ;; see agent.common.boot), which is what makes a registered tool callable.
+        ;;
+        ;; Deliberately NOT gated on `(nil? existing-sandbox)`. That gate read as
+        ;; "the first turn of this agent", and it is not: the TUI's `--resume`
+        ;; path seeds `!state[:sandbox]` eagerly so `/sandbox eval` works before
+        ;; the first ask, so on a resumed session the gate was ALREADY closed on
+        ;; turn 1 and phase 2 never ran for the life of the process. Boot had
+        ;; registered the metadata, so the tool listed and bound as
+        ;; `user$tool$<name>` — and calling it failed inside the tools sandbox
+        ;; with `Could not resolve symbol: __ut_<name>`. A tool that exists,
+        ;; advertises itself, and cannot run.
+        ;;
+        ;; Each `ensure-loaded!` already carries its own per-dir process guard,
+        ;; which is the real "do this once" mechanism and the only one that knows
+        ;; whether the work is actually done. The palette is passed as a THUNK so
+        ;; that guard — not this call site — decides whether to pay for building
+        ;; it on the turns where there is nothing to load.
+        _ (let [dirs    (sb-bind/get-dirs agent)
+                palette #(sb-bind/auto-tool-bindings agent)]
             (try
-              (ut/ensure-loaded! :dirs (sb-bind/get-dirs agent)
-                                 :extra-bindings (sb-bind/auto-tool-bindings agent))
+              (ut/ensure-loaded! :dirs dirs :extra-bindings palette)
               (catch Exception e
                 (mulog/warn ::load-user-tools-failed :error (ex-message e))))
-            ;; Session boot: rehydrate this project's persisted user hooks
-            ;; (idempotent per process) so they fire on the existing hook
-            ;; registry this turn. Mirrors the user-tools loader above.
             (try
-              (uh/ensure-loaded! :dirs (sb-bind/get-dirs agent)
-                                 :extra-bindings (sb-bind/auto-tool-bindings agent))
+              (uh/ensure-loaded! :dirs dirs :extra-bindings palette)
               (catch Exception e
                 (mulog/warn ::load-user-hooks-failed :error (ex-message e))))
-            ;; Session boot: register this project's persisted user-defined
-            ;; agents (idempotent per process) so they are routable / callable
-            ;; this turn. No sandbox to rehydrate — an agent has no eval-able
+            ;; No sandbox to rehydrate for agents — an agent has no eval-able
             ;; body, only prose — so this is just "read each dir, register".
             (try
-              (ua/ensure-loaded! :dirs (sb-bind/get-dirs agent))
+              (ua/ensure-loaded! :dirs dirs)
               (catch Exception e
                 (mulog/warn ::load-user-agents-failed :error (ex-message e)))))
 
