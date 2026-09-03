@@ -1543,25 +1543,57 @@
             ;; line all contribute to it, so holding Page Up presents one
             ;; repaint per keypress with a single cursor park at the input line
             ;; — instead of two or three, each toggling the cursor on its way.
-            :page-up  (do (dismiss-menu!)
-                          (layout/draw-frame!
-                           (fn []
-                             (layout/scroll-page-up!)
-                             ;; Entering/staying in scroll mode — auto-select first visible marker
-                             (when (and (scroll-mode?) (nil? @selected-mark))
-                               (when-let [first-mark (first (block-ui/find-markers-in-viewport))]
-                                 (vreset! selected-mark first-mark)
-                                 (refresh-highlight!)))
-                             (terminal/redraw-input-line! (.toString buf) @cursor-pos)))
-                          (recur))
+            ;;
+            ;; Ctrl+Up / Ctrl+Down are ALIASES of PgUp / PgDn, and Shift+Ctrl
+            ;; jumps to the ends. They share these bodies rather than getting
+            ;; their own: the marker auto-select on the way up and the
+            ;; deselect on the way down are the behaviour, not decoration, and
+            ;; two copies of it would drift.
+            (:page-up :ctrl-arrow-up)
+            (do (dismiss-menu!)
+                (layout/draw-frame!
+                 (fn []
+                   (layout/scroll-page-up!)
+                   ;; Entering/staying in scroll mode — auto-select first visible marker
+                   (when (and (scroll-mode?) (nil? @selected-mark))
+                     (when-let [first-mark (first (block-ui/find-markers-in-viewport))]
+                       (vreset! selected-mark first-mark)
+                       (refresh-highlight!)))
+                   (terminal/redraw-input-line! (.toString buf) @cursor-pos)))
+                (recur))
 
-            :page-down (do (dismiss-menu!)
-                           (layout/draw-frame!
-                            (fn []
-                              (layout/scroll-page-down!)
-                              (maybe-deselect!)
-                              (terminal/redraw-input-line! (.toString buf) @cursor-pos)))
-                           (recur))
+            (:page-down :ctrl-arrow-down)
+            (do (dismiss-menu!)
+                (layout/draw-frame!
+                 (fn []
+                   (layout/scroll-page-down!)
+                   (maybe-deselect!)
+                   (terminal/redraw-input-line! (.toString buf) @cursor-pos)))
+                (recur))
+
+            :ctrl-shift-arrow-up
+            (do (dismiss-menu!)
+                (layout/draw-frame!
+                 (fn []
+                   (layout/scroll-to-top!)
+                   ;; Same auto-select as a page up: landing at the head is
+                   ;; still arriving in scroll mode, and a marker up there
+                   ;; should be as reachable as one a page back.
+                   (when (and (scroll-mode?) (nil? @selected-mark))
+                     (when-let [first-mark (first (block-ui/find-markers-in-viewport))]
+                       (vreset! selected-mark first-mark)
+                       (refresh-highlight!)))
+                   (terminal/redraw-input-line! (.toString buf) @cursor-pos)))
+                (recur))
+
+            :ctrl-shift-arrow-down
+            (do (dismiss-menu!)
+                (layout/draw-frame!
+                 (fn []
+                   (layout/scroll-to-bottom!)
+                   (maybe-deselect!)
+                   (terminal/redraw-input-line! (.toString buf) @cursor-pos)))
+                (recur))
 
             :backspace (do (when (pos? @cursor-pos)
                              (.deleteCharAt buf (int (dec @cursor-pos)))

@@ -132,7 +132,10 @@
                  :ctrl-a, :ctrl-e, :ctrl-f, :ctrl-k, :ctrl-n, :ctrl-o, :ctrl-p,
                  :ctrl-t, :ctrl-w,
                  :ctrl-d, :arrow-left, :arrow-right,
-                 :shift-arrow-left, :shift-arrow-right, :sigint, :unknown
+                 :shift-arrow-left, :shift-arrow-right,
+                 :ctrl-arrow-up, :ctrl-arrow-down,
+                 :ctrl-shift-arrow-up, :ctrl-shift-arrow-down,
+                 :sigint, :unknown
    Mouse (only when `ansi/enable-mouse` is in effect — see `layout/mouse-seq`):
                  {:type :mouse :button :left|:middle|:right :row R :col C
                   :shift? :alt? :ctrl?}  (1-based row/col, button PRESS only)
@@ -225,17 +228,32 @@
 
                           :else (do (drain) :unknown)))))
 
-                  ;; ESC[1;2C = Shift+Right, ESC[1;2D = Shift+Left
+                  ;; Modified arrows: ESC [ 1 ; <mod> <A|B|C|D>.
+                  ;;
+                  ;; `mod` is the xterm convention — 1 plus a bitmask of
+                  ;; Shift=1, Alt=2, Ctrl=4 — so `2` is Shift, `5` is Ctrl and
+                  ;; `6` is Shift+Ctrl. Anything else drains rather than
+                  ;; guessing: an unhandled combination must not leave digits
+                  ;; to be typed into the input line.
                   (= b3 (long (int \1)))
                   (if (pos? (long (available)))
                     (let [b-semi (long (read-byte))]
                       (if (and (= b-semi (long (int \;))) (pos? (long (available))))
                         (let [b-mod (long (read-byte))]
                           (if (pos? (long (available)))
-                            (let [b-final (long (read-byte))]
+                            (let [b-final (long (read-byte))
+                                  mod2? (= b-mod (long (int \2)))
+                                  mod5? (= b-mod (long (int \5)))
+                                  mod6? (= b-mod (long (int \6)))
+                                  up?   (= b-final (long (int \A)))
+                                  down? (= b-final (long (int \B)))]
                               (cond
-                                (and (= b-mod (long (int \2))) (= b-final (long (int \C)))) :shift-arrow-right
-                                (and (= b-mod (long (int \2))) (= b-final (long (int \D)))) :shift-arrow-left
+                                (and mod2? (= b-final (long (int \C)))) :shift-arrow-right
+                                (and mod2? (= b-final (long (int \D)))) :shift-arrow-left
+                                (and mod5? up?)   :ctrl-arrow-up
+                                (and mod5? down?) :ctrl-arrow-down
+                                (and mod6? up?)   :ctrl-shift-arrow-up
+                                (and mod6? down?) :ctrl-shift-arrow-down
                                 :else (do (drain) :unknown)))
                             :unknown))
                         (do (drain) :unknown)))

@@ -1570,6 +1570,25 @@
        (render-viewport!)
        (draw-separator!)))))
 
+(defn scroll-to-top!
+  "Jump to the OLDEST scrollback row. No-op when already there, or when there is
+   nothing to scroll.
+
+   Unlike `scroll-to-bottom!` this does NOT clear the search: returning to live
+   is the user saying they are done with wherever they were, and going to the
+   top is the opposite — it is still deliberate navigation, so the highlights
+   they searched for stay marked.
+
+   The maximum offset is whatever `set-offset!` clamps to, so this cannot
+   scroll past the head no matter how the scrollback has grown."
+  []
+  (when (fullscreen?)
+    (let [before (long (or (:viewport-offset @!layout) 0))]
+      (with-frame
+        (when (not= before (set-offset! Long/MAX_VALUE))
+          (render-viewport!)
+          (draw-separator!))))))
+
 (defn scroll-to-bottom!
   "Reset viewport to live output (offset 0). No-op if already at bottom.
 
