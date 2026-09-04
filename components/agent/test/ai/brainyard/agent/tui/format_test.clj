@@ -440,6 +440,55 @@
       (is (= 1 (count (set (map count box))))
           (str "box rows must be equal width; got " (sort (set (map count box))))))))
 
+(def ^:private cat-n-body
+  ;; What `cat -n` actually emits: a 6-column right-aligned number, then a TAB.
+  (str "     1\t#!/usr/bin/env bash\n"
+       "     2\t# coact-agent harness — the base-agent substrate.\n"
+       "     3\t#\n"
+       "    10\t# Cases\n"))
+
+(deftest expand-tabs-lands-content-on-the-tab-stop
+  (testing "cat -n output aligns at column 8, whatever the number's width"
+    (let [out (fmt/expand-tabs cat-n-body)]
+      (is (not (str/includes? out "\t")))
+      (doseq [l (remove str/blank? (str/split-lines out))]
+        (is (= \# (.charAt ^String l 8))
+            (str "content must land on the tab stop: " (pr-str l))))))
+  (testing "no TAB is the identity fast path, and nil passes through"
+    (let [s "no tabs here"]
+      (is (identical? s (fmt/expand-tabs s)))
+      (is (nil? (fmt/expand-tabs nil)))))
+  (testing "expansion is what makes display-width agree with the terminal"
+    ;; The TAB is below U+0300 so display-width takes the per-codepoint fast
+    ;; path and counts it as ONE column, while the terminal advances two.
+    (is (= 26 (fmt/display-width "     1\t#!/usr/bin/env bash")))
+    (is (= 27 (fmt/display-width (fmt/expand-tabs "     1\t#!/usr/bin/env bash"))))))
+
+(deftest eval-sections-never-emit-a-raw-tab
+  ;; Regression: `cat -n` in a code block put a TAB into the Output box. In
+  ;; fullscreen these rows are painted at absolute positions and erased only
+  ;; from the cursor rightward, so the TAB skipped over cells it never wrote
+  ;; and the previous frame's text showed through between the line number and
+  ;; the content — and the painted-row diff, comparing strings, then saw no
+  ;; change and never repainted it away.
+  (testing "the eval Output box expands tabs before it measures anything"
+    (let [lines (fmt/format-eval-sections [{:output cat-n-body}])
+          clean (mapv fmt/strip-ansi lines)
+          body  (filterv #(str/includes? % "│ ") clean)]
+      (is (seq body))
+      (is (every? #(not (str/includes? % "\t")) lines)
+          "a TAB reached the row pipeline")
+      ;; `│ ` sits at columns 4-5, so the tab-stop-8 content lands at column 14.
+      (doseq [l body]
+        (is (= \# (.charAt ^String l 14))
+            (str "content must stay column-aligned: " (pr-str l))))))
+  (testing "the other arbitrary-text formatters expand too"
+    (doseq [[label s] [["observation" (fmt/format-observation cat-n-body)]
+                       ["thought"     (fmt/format-thought cat-n-body)]
+                       ["tool-result" (fmt/format-tool-results
+                                       [{:tool-name "bash" :tool-result cat-n-body}])]]]
+      (is (not (str/includes? s "\t")) (str label " leaked a TAB")))))
+
 ;; ============================================================================
 ;; Memory activity milestones
 ;; ============================================================================

@@ -9,7 +9,8 @@
    does nothing, while a WRONG target opens something the user did not point
    at. So the file tests care most about what must NOT resolve, and lean on
    `resolve-file`'s existence check rather than on regex tightness."
-  (:require [ai.brainyard.agent-tui.links :as links]
+  (:require [ai.brainyard.agent-tui.layout :as layout]
+            [ai.brainyard.agent-tui.links :as links]
             [ai.brainyard.agent.interface.tui.ansi :as ansi]
             [ai.brainyard.agent.interface.tui.format :as fmt]
             [clojure.java.io :as io]
@@ -427,3 +428,26 @@
     (is (nil? (fmt/column->index "abc" 4)))
     (is (nil? (fmt/column->index "" 1)))
     (is (nil? (fmt/column->index "abc" 0)))))
+
+;; ---------------------------------------------------------------------------
+;; finish-row's TAB net
+;; ---------------------------------------------------------------------------
+
+(deftest finish-row-substitutes-a-tab-that-slipped-through
+  ;; A TAB moves the cursor without WRITING the cells it skips, and `paint-row`
+  ;; erases only from the cursor rightward — so the skipped cells keep whatever
+  ;; the previous frame painted there. Worse, the painted-row diff compares the
+  ;; row STRING, so the row then counts as unchanged and the garbage is never
+  ;; repainted away. Formatters expand tabs at the source; this is the net for
+  ;; a row that reaches the grid without that having happened.
+  (testing "one TAB becomes exactly one space"
+    (is (= "a b" (#'layout/finish-row "a\tb" 0 nil)))
+    (is (= "  1  # x" (#'layout/finish-row "  1 \t# x" 0 nil))))
+  (testing "the substitution is width-preserving, so it cannot overflow the
+            clamp that already ran"
+    (let [row "     1\t#!/usr/bin/env bash"]
+      (is (= (fmt/display-width row)
+             (fmt/display-width (#'layout/finish-row row 0 nil))))))
+  (testing "a row with no TAB is returned untouched"
+    (let [row "     1  #!/usr/bin/env bash"]
+      (is (= row (#'layout/finish-row row 0 nil))))))

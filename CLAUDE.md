@@ -547,6 +547,36 @@ lines with a derived row-span index, and teaching viewport/scroll/live-block
 accounting to distinguish lines from rows. That is a layout-engine change, not
 a renderer change.
 
+#### A TAB is column positioning delegated to the terminal, so it is the same mistake
+
+Tabs are expanded to spaces (`fmt/expand-tabs`, tab stop 4) before any formatter
+measures the text. Leaving them for the terminal fails twice, and only the first
+failure is cosmetic:
+
+- **`display-width` counts a TAB as ONE column.** It is below U+0300, so it
+  takes the per-codepoint fast path. The terminal advances to the next tab
+  stop instead, and every measurement downstream — `ansi-aware-word-wrap`, the
+  render clamp, a box's right border — is short by up to seven columns.
+- **A TAB MOVES the cursor without WRITING the cells it skips.** `paint-row`
+  writes content first and erases only from the cursor rightward, so those
+  cells keep whatever the previous frame painted there: readable fragments of
+  unrelated scrollback showing through mid-row. And because the painted-row
+  diff compares the row STRING, the row then counts as unchanged and the
+  garbage is never repainted away. Measured with `cat -n`, which separates the
+  line number from the content with a TAB: text from an earlier frame appeared
+  between the number and the `#`, and stayed.
+
+Expansion happens at the arbitrary-text entry points — `format-eval-section`
+(the Code/Result/Output/Error boxes), `format-observation`, `format-thought`,
+`format-tool-results`, `format-answer*` — because that is the last moment the
+columns can still be made to line up. `layout/finish-row` carries a last-resort
+1:1 TAB→space net so a row that reaches the grid unexpanded renders wrong
+rather than corrupting its neighbours; the substitution is width-preserving
+(`display-width` already counted the TAB as one column), so it cannot overflow
+the clamp that just ran. Not covered: `agent_tui/render.clj`, the by-host tmux
+`:stream` surface — it is append-only into freshly-scrolled blank cells, so the
+stale-cell failure cannot occur there.
+
 #### Pre-wrapped is not the same as wrapped once
 
 Fullscreen must pre-wrap, but a row pre-wrapped at yesterday's width is wrong

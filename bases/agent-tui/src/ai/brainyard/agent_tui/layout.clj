@@ -140,9 +140,21 @@
 
    Decoration goes first so the link decorator's memo stays keyed on stable row
    strings. Highlighting first would make every matching row a fresh cache key
-   on every navigation step, since the current-hit mark differs from the rest."
+   on every navigation step, since the current-hit mark differs from the rest.
+
+   THE TAB REPLACEMENT IS A NET, NOT THE FIX. A TAB moves the cursor without
+   WRITING the cells it skips, and `paint-row` erases only from the cursor
+   rightward — so those cells keep whatever the previous frame painted there,
+   and the painted-row diff (which compares the row STRING) then sees no change
+   and never repaints the garbage away. Substituting one space keeps the row's
+   measured width exactly as it was — `display-width` already counted the TAB as
+   one column — so this cannot overflow the clamp that just ran. Formatters
+   expand tabs properly at the source (`fmt/expand-tabs`), where the columns can
+   still be made to line up; this only guarantees that a row which slipped
+   through renders wrong rather than corrupting the rows around it."
   [^String row idx search]
-  (let [row (decorate row)]
+  (let [row (if (neg? (.indexOf row (int \tab))) row (.replace row \tab \space))
+        row (decorate row)]
     (if-let [spans (and search (search-spans-at search idx))]
       (try (search/highlight-row row spans) (catch Throwable _ row))
       row)))

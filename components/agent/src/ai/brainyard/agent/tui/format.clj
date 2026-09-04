@@ -662,6 +662,46 @@
                               rest-part)]
           (recur rest-reopened (conj result first-closed)))))))
 
+(defn expand-tabs
+  "Expand TAB characters to spaces on a tab stop of 4, per line. Fast-paths to
+   the input when there is no TAB.
+
+   A TAB MUST NEVER REACH A CURSOR-ADDRESSED ROW. Two things go wrong at once,
+   and only one of them is cosmetic:
+
+   - `display-width` counts a TAB as ONE column (it is below U+0300, so it
+     takes the per-codepoint fast path), while the terminal advances to the
+     next tab stop. Every measurement downstream — `ansi-aware-word-wrap`, the
+     render clamp, a box's right border — is then short by up to seven columns.
+   - Worse, a TAB MOVES the cursor without WRITING the cells it skips. Fullscreen
+     rows are painted content-first and erased only from the cursor to the end
+     of line (`layout/paint-row`), so those skipped cells keep whatever the
+     previous frame left there — readable fragments of unrelated scrollback
+     showing through mid-row. And since the painted-row diff compares the row
+     STRING, the row then counts as unchanged and the garbage is never
+     repainted away.
+
+   The classic triggers are `cat -n` (which separates the line number from the
+   content with a TAB) and the tab-indented file list from long-form
+   `git status`. `layout/finish-row` carries a last-resort 1:1 TAB→space net for
+   rows that reach the grid unexpanded; expanding HERE, before anything measures
+   the text, is what actually keeps the columns aligned."
+  [^String s]
+  (if (or (nil? s) (neg? (.indexOf s (int \tab))))
+    s
+    (let [tab-stop 4]
+      (str/join "\n"
+                (for [line (str/split s #"\n" -1)]
+                  (let [sb (StringBuilder.)]
+                    (reduce (fn [col ch]
+                              (if (= ch \tab)
+                                (let [n (- tab-stop (mod col tab-stop))]
+                                  (dotimes [_ n] (.append sb \space))
+                                  (+ col n))
+                                (do (.append sb ch) (inc col))))
+                            0 line)
+                    (.toString sb)))))))
+
 ;; --- GFM table helpers ------------------------------------------------
 
 (def ^:private table-row-re
@@ -1140,7 +1180,7 @@
    Options: :max-len (default 2000), :label (default \"Thinking\")"
   [thought-str & {:keys [max-len label] :or {max-len 2000 label "Thinking"}}]
   (when (and thought-str (not (str/blank? thought-str)))
-    (let [text     (truncate (str/trim thought-str) max-len)
+    (let [text     (truncate (expand-tabs (str/trim thought-str)) max-len)
           cols     (- (terminal-columns) right-pad)
           left     "  "
           prefix   (str left (ansi/muted (str ansi/bullet " " label ":")))
@@ -1222,7 +1262,7 @@
       (->> tool-results
            (map (fn [{:keys [tool-name tool-result]}]
                   (let [name-str   (ansi/tool-name (str tool-name))
-                        result-str (truncate (str tool-result) max-len)
+                        result-str (truncate (expand-tabs (str tool-result)) max-len)
                         content    (str name-str ": " (ansi/muted result-str))]
                     (->> (ansi-aware-word-wrap content (- cols prefix-w))
                          (map-indexed (fn [i line]
@@ -1282,7 +1322,7 @@
    Options: :max-len (default 1000)"
   [observation-str & {:keys [max-len] :or {max-len 1000}}]
   (when (and observation-str (not (str/blank? observation-str)))
-    (let [text     (truncate (str/trim observation-str) max-len)
+    (let [text     (truncate (expand-tabs (str/trim observation-str)) max-len)
           cols     (- (terminal-columns) right-pad)
           left     "  "
           prefix   (str left (ansi/muted (str ansi/bullet " Observation:")))
@@ -1363,10 +1403,17 @@
           ;; Trim only surrounding BLANK LINES — never the first content
           ;; line's leading indentation. A whole-string `str/trim` strips the
           ;; leading whitespace of the FIRST line only (e.g. `cat -n`'s left
-          ;; padding), shifting that one row left relative to the rest. Tabs
-          ;; are deliberately preserved (tab-stops are valid for text
-          ;; rendering; the terminal expands them per visual row).
+          ;; padding), shifting that one row left relative to the rest.
+          ;;
+          ;; TABS ARE EXPANDED, not preserved. Letting the terminal expand them
+          ;; per visual row is only sound where the terminal owns the grid; in
+          ;; fullscreen these rows are painted at absolute positions and erased
+          ;; only from the cursor rightward, so a TAB skips over cells it never
+          ;; writes and the previous frame shows through — see `expand-tabs`.
+          ;; `cat -n` puts a TAB between the line number and the content, which
+          ;; is exactly how this surfaced.
           trimmed  (-> body-str
+                       expand-tabs
                        (str/replace #"\A(?:[ \t]*\r?\n)+" "")  ; leading blank lines
                        str/trimr)                              ; trailing whitespace / blank lines
           text     ((eval-block-fn class) trimmed
@@ -1598,29 +1645,6 @@
 ;; ============================================================================
 ;; Final Answer
 ;; ============================================================================
-
-(defn- expand-tabs
-  "Expand TAB characters to spaces on a tab stop of 4, per line. Applied to the
-   raw (pre-ANSI) answer text so the fixed-width box layout measures what the
-   terminal actually renders: a literal TAB advances to the next tab stop in the
-   terminal, but `display-width` counts it as a single column — which desyncs
-   right-bordered boxes. The classic trigger is the tab-indented file list from
-   long-form `git status`. Fast-paths to the input when there is no TAB."
-  [^String s]
-  (if (neg? (.indexOf s (int \tab)))
-    s
-    (let [tab-stop 4]
-      (str/join "\n"
-                (for [line (str/split s #"\n" -1)]
-                  (let [sb (StringBuilder.)]
-                    (reduce (fn [col ch]
-                              (if (= ch \tab)
-                                (let [n (- tab-stop (mod col tab-stop))]
-                                  (dotimes [_ n] (.append sb \space))
-                                  (+ col n))
-                                (do (.append sb ch) (inc col))))
-                            0 line)
-                    (.toString sb)))))))
 
 (defn format-answer
   "Format the final answer with a highlighted box.

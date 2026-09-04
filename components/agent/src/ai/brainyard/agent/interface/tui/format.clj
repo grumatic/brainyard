@@ -10,6 +10,7 @@
                 command-registry
                 refresh-terminal-size! terminal-columns terminal-rows
                 display-width next-unit truncate-to-width ansi-aware-word-wrap
+                expand-tabs
                 strip-ansi column->index ansi-seq-end
                 format-number format-help format-welcome-banner
                 format-iteration-header format-iteration-exhausted
