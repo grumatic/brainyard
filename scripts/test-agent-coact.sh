@@ -14,9 +14,20 @@
 #   [3] bash runtime     — a bash block echoes a synthetic token, captured back
 #   [4] SCI persistence  — (def harness-x 41) then (inc harness-x) → 42, in ONE turn
 #                          (two code blocks, two iterations, one shared sandbox)
-#   [5] multi-turn        — two TURNS in one `by ask` process (-q -q): the SCI
+#                          …then the structural `code` channel probe, which is
+#                          only deterministic once [3] and [4] have passed
+#   [5] multi-turn       — two TURNS in one `by ask` process (-q -q): the SCI
 #                          sandbox and the conversation timeline both cross the
 #                          turn boundary
+#
+# A note on WHERE the channel probe sits. It is tempting to assert it on [2],
+# the case that is nominally about the code channel — but a model may answer
+# fib(10) from its own knowledge, which is a correct answer and not a routing
+# failure, so the assertion is a coin flip there (observed failing on the native
+# binary in a run where [3] and [4] both passed). [3]'s token is not guessable
+# and [4]'s harness-x does not exist until it is defined, so after those two the
+# trajectory must carry a code channel. Deterministic assertion, model-dependent
+# observation, each reported as what it is.
 #
 # Usage:   scripts/test-agent-coact.sh [--keep]
 # Env:     BY_BIN, PROVIDER, MODEL
@@ -34,18 +45,23 @@ ans="$(by_ask 'What is 2+2? Reply with just the digit and nothing else.')"
 assert_contains "answer is 4" "4" "$ans"
 
 echo "[2] code-as-action (clojure) — Fibonacci(10) = 55"
-# NOTE: routing is verified by SIDE EFFECT, not the trajectory channel field —
-# one-shot `ask` doesn't persist trajectory.edn (that's a TUI-session artifact;
-# see lib-agent-harness.sh trajectory_available). Cases [3] (bash stdout) and [4]
-# (SCI def surviving a turn) are the deterministic proof that code actually ran;
-# the fib value alone could come from the model's own knowledge.
+# The fib VALUE is asserted; the CHANNEL is only noted. fib(10) is famous enough
+# that answering 55 straight from the model's own knowledge is a legitimate
+# response to this prompt, not a routing failure — observed live on the native
+# binary, where the trajectory recorded `answer answer` and nothing else, while
+# [3] and [4] in the same run proved code-as-action was working fine. An
+# assertion that a correct answer can fail is a coin flip, so this one informs.
+# The hard channel probe now runs after [4], where it cannot flake.
 ans="$(by_ask 'Define a Clojure function for Fibonacci and use a code block to compute the 10th Fibonacci number (0-indexed: 0,1,1,2,3,5,...). State the number.')"
 assert_contains "fib(10) = 55 in answer" "55" "$ans"
-if trajectory_available; then
-    assert_contains "a code channel was recorded" "code" "$(trajectory_channels)"
+if trajectory_available && grep -qiF -- "code" <<<"$(trajectory_channels)"; then
+    fib_used_code=true
 else
-    note_skip "code channel probe" "trajectory.edn not persisted on headless ask (see [3]/[4] for the code-ran proof)"
+    fib_used_code=false
 fi
+note_info "$fib_used_code" \
+    "fib turn chose the code channel" \
+    "fib turn answered from its own knowledge, no code channel"
 
 echo "[3] bash runtime — synthetic token round-trips through a bash block"
 ans="$(by_ask 'Run a bash code block that echoes exactly the token QUARK-88, then report what it printed.')"
@@ -60,6 +76,19 @@ echo "[4] SCI persistence within a turn — (def harness-x 41) then (inc harness
 # to survive between them in the shared sandbox.
 ans="$(by_ask 'Using clojure code blocks, first evaluate (def harness-x 41). Then, in a SEPARATE later code block, evaluate (inc harness-x) and report the resulting number.')"
 assert_contains "def survived across code blocks (42)" "42" "$ans"
+
+# The structural channel probe, HERE rather than after [2], because only here is
+# it deterministic. QUARK-88 is not guessable and harness-x does not exist until
+# it is defined, so [3] and [4] cannot have passed unless code actually ran — by
+# this line the trajectory MUST carry a code channel, whatever the model chose to
+# do with the famous Fibonacci number back in [2]. This is the structural
+# counterpart to those two side-effect assertions: they prove code RAN, this
+# proves the loop RECORDED it as the code channel.
+if trajectory_available; then
+    assert_contains "a code channel was recorded" "code" "$(trajectory_channels)"
+else
+    note_skip "code channel probe" "trajectory.edn not persisted (recording off in config?); [3]/[4] still prove code ran"
+fi
 
 echo "[5] multi-turn — two TURNS in one ask process (-q -q)"
 # What [4] cannot probe: a TURN boundary. `by_ask` twice would not do it either —
