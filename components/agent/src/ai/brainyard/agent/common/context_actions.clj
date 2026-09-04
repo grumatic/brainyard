@@ -405,7 +405,8 @@
                           (mulog/warn ::recall-failed
                                       :message (ex-message e))
                           nil)))
-        projected (mapv project-hit (or hits []))
+        raw       (vec (or hits []))
+        projected (mapv project-hit raw)
         snip-n    (or (config/get-config agent :memory-recall-snippet-chars)
                       *snip-chars*)
         render    (fn [hs] (binding [*snip-chars* snip-n]
@@ -416,12 +417,25 @@
         ;; would be a guess. Both renders are pure string work over <=
         ;; :recall-limit hits, i.e. cheap next to the LLM call they precede.
         conditional? (= "conditional" (str (config/get-config agent :recall-mode)))
-        kept      (if (and conditional? (seq projected))
-                    (gate-hits projected
+        ;; Gate the RAW hits and project after, rather than the reverse.
+        ;; `gate-hits` reads only :_layer and :content, both of which survive
+        ;; projection — so the output is identical either way — but projection
+        ;; drops :id, and the usage counter below needs identity. Same order,
+        ;; one more thing possible.
+        kept-raw  (if (and conditional? (seq raw))
+                    (gate-hits raw
                                (mem/extract-keywords (str question))
                                (or (config/get-config agent :recall-min-terms) 1))
-                    projected)
+                    raw)
+        kept      (mapv project-hit kept-raw)
         rendered  (render kept)]
+    ;; Usage feedback (A1 of docs/design/evoharness-rl-comparison.md). Counts
+    ;; the hits that were INJECTED, not the ones recall returned — the gate is
+    ;; what makes those different, and only the first is evidence the agent
+    ;; found something useful. Best-effort: `record-recall-access!` swallows its
+    ;; own failures, and this `when` never guards the injection itself.
+    (when (and mm (seq kept-raw))
+      (mem/record-recall-access! mm kept-raw))
     (when (and conditional? (seq projected))
       (let [full (render projected)
             saved (- (count full) (count rendered))]

@@ -694,6 +694,52 @@
   [manager layer entry-id]
   (policy/mark-archived! (:ds manager) layer entry-id (:user-id manager) false))
 
+(defn record-recall-access!
+  "Record that these recall hits were INJECTED into a prompt.
+
+  Takes the hits themselves rather than ids, because picking the right table
+  needs a field the caller should not have to know about.
+
+  TWO DIFFERENT `layer` KEYS RIDE ON A RECALL HIT, and using the wrong one
+  silently loses most of the signal:
+
+    :layer   where the entry LIVES — :l2 (episodes) or :l3 (semantic_facts).
+             Set by `entry/episode-row->entry` / `fact-row->entry`, so every
+             hit has it whatever found it.
+    :_layer  which retrieval arm FOUND it — :l2, :l3, :vec or :graph. Added by
+             the RRF join in `recall/…`, whose composite key is
+             `\"<layer>-<id>\"`, so ONE entry reached by two arms arrives as two
+             hits with the same `:id`.
+
+  Dispatch is therefore on `:layer` (storage), not `:_layer` (retrieval).
+  Keying on `:_layer` would drop every `:vec` and `:graph` hit — the semantic
+  and multi-hop ones, which are exactly what the keyword gate exempts and what
+  semantic recall exists to surface. Deduping on `[layer id]` then stops an
+  entry found by two arms from counting twice for one injection.
+
+  `:l1` is excluded: a session overlay was deliberately written, not retrieved,
+  so \"how often is it read\" is not a question about its usefulness.
+
+  Best-effort by construction: returns a per-layer count and never throws, so a
+  recall that cannot write its counter still injects its hits."
+  [manager hits]
+  (let [by-layer (->> (or hits [])
+                      (keep (fn [h]
+                              (when-let [id (:id h)]
+                                (let [layer (keyword (or (:layer h) (:_layer h)))]
+                                  (when (#{:l2 :l3} layer)
+                                    [layer id])))))
+                      distinct
+                      (group-by first))]
+    (reduce (fn [acc layer]
+              (let [ids (mapv second (get by-layer layer))]
+                (cond-> acc
+                  (seq ids)
+                  (assoc layer (policy/record-access! (:ds manager) layer ids
+                                                      (:user-id manager))))))
+            {}
+            [:l2 :l3])))
+
 (defn sweep-l2!
   "Run the L2 retention sweep against this manager's database.
 

@@ -1324,13 +1324,24 @@
                           (concat
                            [:agent-session {:user-id (helpers/resolve-user-id (:user-id opts))
                                             :session-id sess-id}
-                            :max-iterations max-iterations
-                            ;; The one-shot `ask-<millis>` session is ephemeral — don't
-                            ;; leave a `.brainyard/sessions/ask-*/trajectory.edn` behind.
-                            ;; A top-level schema key flows into the per-agent override
-                            ;; (st-memory-init :config), NOT .brainyard/config.edn, so it
-                            ;; scopes to this run only and never affects TUI sessions.
-                            :enable-trajectory-recording false]
+                            :max-iterations max-iterations]
+                           ;; The auto-generated `ask-<millis>` session is ephemeral —
+                           ;; don't leave a `.brainyard/sessions/ask-*/trajectory.edn`
+                           ;; behind. A top-level schema key flows into the per-agent
+                           ;; override (st-memory-init :config), NOT
+                           ;; .brainyard/config.edn, so it scopes to this run only and
+                           ;; never affects TUI sessions.
+                           ;;
+                           ;; GATED ON `explicit-session?`, exactly as the memory-capture
+                           ;; key below is, and for the same reason: naming a session IS
+                           ;; the durability signal. This used to be unconditional, which
+                           ;; meant `ask -s foo` — a session the caller explicitly said
+                           ;; matters — silently recorded nothing, and the per-agent test
+                           ;; harness had to document the structural probe as unavailable
+                           ;; on the headless surface (scripts/lib-agent-harness.sh,
+                           ;; `trajectory_available`). Two lines apart, one asymmetry.
+                           (when-not explicit-session?
+                             [:enable-trajectory-recording false])
                            ;; An UNNAMED ask is a throwaway: its Q&A ("what is 2+2?")
                            ;; is noise in a user-scoped, long-lived recall corpus. Turn
                            ;; capture off, which also prunes graph extraction and the

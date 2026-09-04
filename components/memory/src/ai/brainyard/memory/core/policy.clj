@@ -19,6 +19,7 @@
   auto-deleted — they are the long-term memory layer."
   (:require [next.jdbc :as jdbc]
             [clojure.core.async :as async]
+            [clojure.string :as str]
             [ai.brainyard.mulog.interface :as mulog]))
 
 ;; =====================================================
@@ -76,6 +77,47 @@
     (when ok?
       (mulog/debug ::tombstone :layer layer :entry-id entry-id))
     ok?))
+
+;; =====================================================
+;; Usage feedback — what the agent actually READ
+;; =====================================================
+
+(defn record-access!
+  "Increment `access_count` for L2/L3 entries that were INJECTED into a prompt.
+
+  THE DISTINCTION IS THE POINT. Recall retrieves more than it injects — the
+  inject-side gate (`:recall-mode \"conditional\"`) drops hits that share none
+  of the question's keywords — so \"retrieved\" and \"read\" are different
+  events, and only the second is evidence of usefulness. Counting retrievals
+  would measure the retriever; counting injections measures what the agent was
+  actually given. Callers must pass the KEPT hits, not the returned ones.
+
+  One statement per layer rather than one per entry: a turn injects up to
+  `:recall-limit` hits, and ten round trips on the prompt's critical path to
+  update ten counters is not a trade worth making.
+
+  Returns the number of rows updated. Never throws — this is a best-effort
+  signal, and a turn must not fail because a counter could not be written."
+  [ds layer entry-ids user-id]
+  (let [ids (vec (distinct (remove nil? entry-ids)))]
+    (if (empty? ids)
+      0
+      (try
+        (let [table (layer->table layer)
+              marks (str/join ", " (repeat (count ids) "?"))
+              sql   (format (str "UPDATE %s SET access_count = COALESCE(access_count, 0) + 1, "
+                                 "last_accessed = CURRENT_TIMESTAMP "
+                                 "WHERE user_id = ? AND entry_id IN (%s)")
+                            table marks)
+              r     (jdbc/execute-one! ds (into [sql user-id] ids))
+              n     (or (:next.jdbc/update-count r) 0)]
+          (when (pos? n)
+            (mulog/debug ::record-access :layer layer :entries n))
+          n)
+        (catch Exception e
+          (mulog/warn ::record-access-failed
+                      :layer layer :count (count ids) :error (ex-message e))
+          0)))))
 
 ;; =====================================================
 ;; Bulk keep by primary id (used by the consolidate auto-keep path)

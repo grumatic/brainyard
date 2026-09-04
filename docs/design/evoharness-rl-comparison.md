@@ -136,7 +136,37 @@ and the measurements behind them are in `5cd71f5` and
 Ordered by leverage-to-effort. **None is implemented; this section is a
 proposal list, not a status log.**
 
-### A1 — Usage feedback on recall hits (highest leverage, low effort)
+### A1 — Usage feedback on recall hits — **IMPLEMENTED**
+
+> **Landed 2026-09-04.** `policy/record-access!` + `memory/record-recall-access!`,
+> called from `prepare-recalled-memory-action` on the **kept** (injected) hits.
+> Three things the proposal below did not know:
+>
+> * **The counter was dead everywhere, not just on the recall path.** The text
+>   below says `access_count` "is only incremented in `semantic.clj`". In fact
+>   `semantic/record-access!` had **no production call site at all** — only a
+>   unit test. Nothing in the runtime had ever written the column.
+> * **L2 had no column to write.** `access_count`/`last_accessed` existed on
+>   `semantic_facts` and never on `episodes`, so half the gated surface could
+>   not record anything. Both columns are added, with an ALTER-when-missing
+>   migration matching the `community_id` precedent.
+> * **The FTS update triggers had to be scoped first.** `episodes_au` and
+>   `semantic_au` were `AFTER UPDATE` with no column list, so *any* write — a
+>   keep flag, an archive flag, now a counter — fired a full delete+insert
+>   against an external-content FTS index. On a database whose index had
+>   drifted that raises `SQLITE_CORRUPT_VTAB`, which would have made the new
+>   counter silently no-op (it catches its own errors). Both triggers are now
+>   `AFTER UPDATE OF <indexed columns>`, which also removes the re-index from
+>   every policy write. This was a pre-existing hazard on the shared write
+>   path, not one the counter introduced.
+>
+> Gating on *injected* rather than *retrieved* is preserved, and it is the
+> distinction §6 argues the paper cannot draw. A2 remains open and is now
+> measurable.
+
+The original proposal follows.
+
+
 
 Their LFU eviction is driven by counters incremented *at retrieval*, so
 frequently-recalled experience survives and dead weight ages out. We already

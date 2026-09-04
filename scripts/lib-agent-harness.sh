@@ -149,10 +149,16 @@ by_ask() { by_ask_in "$AGENT" "$1"; }
 proj_file() { printf '%s/%s' "$PROJ" "$1"; }
 
 # trajectory_available → 0 if this session persisted a trajectory.edn.
-# IMPORTANT: one-shot `ask` does NOT persist a session — trajectory.edn is only
-# written for durable (TUI) sessions. So the structural channel probe below is
-# unavailable on the headless surface; callers must `trajectory_available` and
-# skip (not fail) when it is absent. The probe remains for future tmux harnesses.
+#
+# This USED to be unavailable on the headless surface: `by ask` set
+# :enable-trajectory-recording false unconditionally, so nothing was ever
+# written here. It is now gated on whether the session was NAMED — and this
+# harness always passes `-s "$SESSION_ID"`, so the probe works. An unnamed
+# `by ask` still records nothing, which is the throwaway case the flag was for.
+#
+# Callers should still `trajectory_available` and skip (not fail) when absent:
+# a run with :enable-trajectory-recording turned off in config.edn is a
+# legitimate configuration, not a broken test.
 trajectory_file() { printf '%s/.brainyard/sessions/%s/trajectory.edn' "$PROJ" "$SESSION_ID"; }
 trajectory_available() { [[ -f "$(trajectory_file)" ]]; }
 

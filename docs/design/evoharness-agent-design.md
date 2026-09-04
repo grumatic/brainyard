@@ -208,10 +208,19 @@ should be revised from measurement, the way `rag-agent`'s diagnosis order was.
 Two states it should raise unprompted, because both silently invalidate work in
 progress:
 
-- **A prerequisite is missing.** Without PREREQ-1 (headless trajectory
-  persistence) an episode has no iteration detail, so rule 5.1's "read three
-  episodes" is inert and the agent has nothing but answer strings. It should
-  say that rather than diagnose from the little it has.
+- **A prerequisite is missing.** An episode with no iteration detail leaves
+  rule 5.1's "read three episodes" inert, and the agent has nothing but answer
+  strings. It should say that rather than diagnose from the little it has.
+
+  > **[as built]** PREREQ-1 landed 2026-09-04, so this is now the *narrow*
+  > case rather than the default. `by ask` gates
+  > `:enable-trajectory-recording` on whether the session was **named**, and a
+  > rollout always names one — so an episode normally has its full trajectory.
+  > What remains: an unnamed ask still records nothing (deliberately), and
+  > `edn.read_trajectory` falls back to a regex sweep when babashka is absent,
+  > which recovers the scoring fields but no iteration content. The agent
+  > should check `trajectory_source` on an episode before promising detail it
+  > may not have.
 - **The train/serve profiles disagree.** Whenever it reports a checkpoint, if
   the profile it was trained under is not the profile the eval ran under, that
   fact leads the answer.

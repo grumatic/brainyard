@@ -224,7 +224,14 @@
     entry_id         — stable cross-layer id; nullable; unique per (user_id, entry_id)
     keep_flag        — pinned, retained beyond TTL sweep
     archived_flag    — excluded from default recall
-    tombstoned_flag  — soft-deleted; excluded from default recall, retained for audit"
+    tombstoned_flag  — soft-deleted; excluded from default recall, retained for audit
+    access_count     — times this episode was INJECTED into a prompt
+    last_accessed    — when that last happened
+
+  The two access columns mirror semantic_facts, which has carried them since
+  the first schema. They count what the agent actually READ, not what recall
+  merely returned — see `policy/record-access!` for why that distinction is the
+  whole point of the signal."
   ["CREATE TABLE IF NOT EXISTS episodes (
      id INTEGER PRIMARY KEY AUTOINCREMENT,
      session_id TEXT NOT NULL,
@@ -239,7 +246,9 @@
      entry_id TEXT,
      keep_flag INTEGER NOT NULL DEFAULT 0,
      archived_flag INTEGER NOT NULL DEFAULT 0,
-     tombstoned_flag INTEGER NOT NULL DEFAULT 0
+     tombstoned_flag INTEGER NOT NULL DEFAULT 0,
+     access_count INTEGER DEFAULT 0,
+     last_accessed DATETIME
    )"
 
    "CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(
@@ -261,7 +270,16 @@
      VALUES ('delete', old.id, old.content, old.episode_type, old.role);
    END"
 
-   "CREATE TRIGGER IF NOT EXISTS episodes_au AFTER UPDATE ON episodes BEGIN
+   ;; SCOPED TO THE INDEXED COLUMNS. An unqualified `AFTER UPDATE` fires on
+   ;; every column — keep_flag, archived_flag, tombstoned_flag, access_count —
+   ;; and each fire does a delete+insert against an external-content FTS index
+   ;; that mirrors only these three. That is waste on every policy write, and
+   ;; worse than waste on a database whose FTS index has drifted: the delete
+   ;; half raises SQLITE_CORRUPT_VTAB, so an unrelated counter update fails.
+   ;; `record-access!` runs on the prompt's critical path, so it must not
+   ;; depend on the state of a virtual table it does not touch.
+   "CREATE TRIGGER IF NOT EXISTS episodes_au
+      AFTER UPDATE OF content, episode_type, role ON episodes BEGIN
      INSERT INTO episodes_fts(episodes_fts, rowid, content, episode_type, role)
      VALUES ('delete', old.id, old.content, old.episode_type, old.role);
      INSERT INTO episodes_fts(rowid, content, episode_type, role)
@@ -316,7 +334,9 @@
      VALUES ('delete', old.id, old.content, old.fact_type);
    END"
 
-   "CREATE TRIGGER IF NOT EXISTS semantic_au AFTER UPDATE ON semantic_facts BEGIN
+   ;; Scoped for the same reason as episodes_au above.
+   "CREATE TRIGGER IF NOT EXISTS semantic_au
+      AFTER UPDATE OF content, fact_type ON semantic_facts BEGIN
      INSERT INTO semantic_fts(semantic_fts, rowid, content, fact_type)
      VALUES ('delete', old.id, old.content, old.fact_type);
      INSERT INTO semantic_fts(rowid, content, fact_type)
@@ -629,6 +649,15 @@
                   bundled Model2Vec model) so the table matches the vectors."
   [ds & {:keys [embed-dims]}]
   (mulog/info ::schema-initializing)
+  ;; Replace the two unscoped FTS update triggers BEFORE the schema doseq —
+  ;; `CREATE TRIGGER IF NOT EXISTS` will not replace an existing definition, so
+  ;; without this drop an existing database keeps firing a full FTS re-index on
+  ;; every flag and counter write (see the trigger bodies for why that is worse
+  ;; than slow). Dropping is safe at any point: the trigger is recreated a few
+  ;; lines below, in the same open, before anything can write.
+  (doseq [t ["episodes_au" "semantic_au"]]
+    (execute-ddl! ds (str "DROP TRIGGER IF EXISTS " t)))
+
   (let [all-schemas (concat metadata-schema
                             episodic-schema
                             semantic-schema
@@ -648,6 +677,20 @@
     ;; so column-exists? is true and this is skipped).
     (when-not (column-exists? ds "graph_nodes" "community_id")
       (execute-ddl! ds "ALTER TABLE graph_nodes ADD COLUMN community_id INTEGER"))
+
+    ;; Usage feedback on recall (A1 of docs/design/evoharness-rl-comparison.md).
+    ;; semantic_facts has carried these two since the first schema; episodes
+    ;; never did, so an L2 hit had nowhere to record that it was read. Same
+    ;; ALTER-when-missing shape as community_id above: a fresh database gets
+    ;; them from the CREATE and skips this.
+    ;;
+    ;; DEFAULT 0 rather than NULL so an existing row reads as "never injected"
+    ;; instead of "unknown", which is what it actually is — nothing was
+    ;; counting before this.
+    (when-not (column-exists? ds "episodes" "access_count")
+      (execute-ddl! ds "ALTER TABLE episodes ADD COLUMN access_count INTEGER DEFAULT 0"))
+    (when-not (column-exists? ds "episodes" "last_accessed")
+      (execute-ddl! ds "ALTER TABLE episodes ADD COLUMN last_accessed DATETIME"))
 
     ;; 2.3.0: exactly one LIVE edge per (user, src, dst, relation).
     ;; ORDER MATTERS, all three steps:
