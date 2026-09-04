@@ -371,6 +371,38 @@ by_ask() {                      # prints .answer; exit 2 on runner failure
 }
 ```
 
+**Multi-turn runner** (`by_ask_seq` in `lib-agent-harness.sh`) — N questions as
+N sequential turns of ONE conversation, in one process:
+
+```bash
+by_ask_seq() {                  # prints every turn's answer, in order
+  local flags=() q
+  for q in "$@"; do flags+=(-q "$q"); done
+  ${BY_BIN:-bb tui} ask --json -u "$USER_ID" -s "$SESSION_ID" \
+      -p "$PROVIDER" -m "$MODEL" ${AGENT:+-a "$AGENT"} "${flags[@]}" \
+    | grep -E '^\{.*\}$' | tail -1 | jq -r '.turns[].answer'
+}
+```
+
+Reach for it when the claim under test is about a **turn boundary** — state that
+must survive from turn N to turn N+1 (the code-eval sandbox, the
+`:previous-turns` timeline). Calling `by_ask` twice does **not** test that: each
+call is its own process building a fresh agent, and turn 2 will report itself as
+the conversation's first turn. The alternative surface — a live `by run -s <id>`
+plus `by ask --attach <id>`, as `test-conversation-timeline.sh` does — is what
+you still need when the turns must come from *different* processes.
+
+Two cautions:
+
+- **Cost.** Each `-q` is a billed turn, and they run whether or not an earlier
+  assertion would have failed.
+- **Evo import.** `evo$import-suite` mints *one task per turn*; a `by_ask_seq`
+  line is one shell invocation carrying several. Check how it splits before
+  importing a suite that uses it — a multi-turn episode is a different rollout
+  shape from a single-turn one, and a task whose setup turn is missing cannot
+  pass. This is why `test-agent-coact.sh` keeps its within-turn SCI probe (case
+  4) *alongside* the cross-turn one (case 5) rather than replacing it.
+
 **Assertion tally** (case-insensitive substring; never aborts the suite):
 
 ```bash

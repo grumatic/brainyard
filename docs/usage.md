@@ -256,7 +256,7 @@ with an explicit `-s <id>` for a deterministic id to attach to. Full guide:
 
 ---
 
-## `by ask` — one-shot question
+## `by ask` — non-interactive question
 
 ```bash
 by ask 'What is 2+2?'
@@ -266,21 +266,56 @@ by ask --json 'list the open todos'                   # machine-readable
 by ask -s notes 'remember: the deploy key rotates Friday'
 by ask -s notes 'when does the deploy key rotate?'    # same id ⇒ shared session memory
 by ask -A agt-1779952718824-5844 -t 300 'status?'     # ask a RUNNING session
+
+# multi-turn: two turns, ONE process, ONE agent
+by ask -q 'Remember the token ZEBRA-77. Also (def x 41).' \
+       -q 'Which token? And report (inc x).'
 ```
 
 `ask` is for piping into other tools or scripting. It writes the agent's answer
-to stdout and exits 0 on success. The question is the only positional argument.
-`-i`/`-v` are `run`-only and not accepted here.
+to stdout and exits 0 on success. `-i`/`-v` are `run`-only and not accepted here.
 
 | Short | Long | Default | Notes |
 |---|---|---|---|
+| `-q` | `--question S` | — | A question. **Repeat it for a multi-turn conversation** — each `-q` is one turn, run in order against the same agent. |
 | `-A` | `--attach ID` | — | Ask a **running** session over its ask socket instead of starting a fresh one. See [session-channel.md](session-channel.md). |
 | `-t` | `--timeout N` | `120` | Seconds to wait for an `--attach` answer. |
 | `-s` | `--session ID` | fresh `ask-<millis>` | Pin the session id. Reusing one id across one-shot asks shares session-scoped (L1/L2) memory recall between them. |
 |  | `--[no-]json` | off | Machine-readable JSON instead of a table. |
 
-> `-s` shares what the **memory store** recalls, not a live transcript: each
-> one-shot ask is still its own turn in its own process.
+### Multi-turn (`-q`)
+
+Repeating `-q` runs the questions as sequential turns **inside one process**, so
+they share one agent instance: the code-eval sandbox, the `:previous-turns`
+conversation timeline and the session all carry from one turn to the next. Turns
+run in order and **stop at the first failure**.
+
+That is the thing two separate `by ask` commands cannot do. Each invocation
+builds a fresh agent, and nothing rehydrates the conversation or the sandbox
+across the process boundary — turn 2 of a two-process `ask -s foo` will tell you
+it is the first turn of the conversation. So:
+
+> `-s` shares what the **memory store** recalls, not a live transcript.
+> `-q` shares the transcript **and** the sandbox, but only within the one process.
+> For turns spread over time from different shells, use a long-lived
+> `by run -s <id>` plus `by ask --attach <id>` ([session-channel.md](session-channel.md)).
+
+The question can be given positionally **or** with `-q`, never both — cli-matic
+hands positionals and repeated flags back separately, so their order on the
+command line cannot be recovered, and for a conversation the order is the
+meaning. The positional form stays single-question on purpose: making every
+leftover argument a turn would silently turn one mis-quoted `by ask What is 2+2`
+into four billed turns.
+
+Under `--json`, a `turns` array reports every turn (`question`, `success`,
+`answer`, and `usage`/`error` when present). The top-level `answer`, `usage` and
+exit code describe the **last** turn — unchanged for a single question.
+
+```console
+$ by ask --json -q 'def x 41' -q 'report (inc x)' | jq '.turns[].answer'
+"✓ `(def x 41)` evaluated. `x` is now bound to 41 in the sandbox."
+"The result of `(inc x)` is **42**."
+```
 
 ---
 

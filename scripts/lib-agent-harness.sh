@@ -26,6 +26,8 @@
 #   Functions:
 #     by_ask <question>            → prints .answer; exit 2 on runner failure
 #     by_ask_in <turn-agent> <q>   → same, overriding the agent for one turn
+#     by_ask_seq <q1> <q2> …       → MULTI-TURN: one process, one agent, N turns
+#     by_ask_seq_in <agent> <q…>   → same, overriding the agent
 #     proj_file <relpath>          → absolute path under $PROJ
 #     trajectory_channels          → prints the per-iteration channel strings
 #     assert_contains <n> <needle> <hay>     (case-insensitive substring)
@@ -109,15 +111,17 @@ harness_cleanup() {
 # _by <args...> → raw stdout of the runner (native binary or bb tui).
 _by() { if [[ -n "$BY_BIN" ]]; then "$BY_BIN" "$@"; else bb tui "$@"; fi; }
 
-# by_ask_in <agent> <question> → .answer text; exit 2 on a non-content failure.
-# Pins -u/-s and -C/BY_PROJECT_DIR so memory + artifacts stay in the sandbox.
-by_ask_in() {
-    local agent="$1" q="$2" raw json
+# _by_ask_json <agent> <label> <question-flags…> → the runner's JSON object.
+# Shared spine of by_ask_in / by_ask_seq_in. Pins -u/-s and -C/BY_PROJECT_DIR so
+# memory + artifacts stay in the sandbox. Exits 2 on a non-content failure.
+_by_ask_json() {
+    local agent="$1" label="$2"; shift 2
+    local raw json
     raw="$(_by ask --json -u "$USER_ID" -s "$SESSION_ID" \
-              -p "$PROVIDER" -m "$MODEL" -C "$PROJ" -a "$agent" "$q" 2>/dev/null)"
+              -p "$PROVIDER" -m "$MODEL" -C "$PROJ" -a "$agent" "$@" 2>/dev/null)"
     json="$(grep -E '^\{.*\}$' <<<"$raw" | tail -1)"
     if [[ -z "$json" ]]; then
-        echo "FATAL: no JSON from runner for: $q" >&2
+        echo "FATAL: no JSON from runner for: $label" >&2
         echo "--- raw output ---" >&2; echo "$raw" | tail -6 >&2
         exit 2
     fi
@@ -125,25 +129,69 @@ by_ask_in() {
         echo "FATAL: runner reported failure: $(jq -r '.error // "unknown"' <<<"$json")" >&2
         exit 2
     fi
-    local answer; answer="$(jq -r '.answer // ""' <<<"$json")"
-    # Two backend CANNOT-RUN conditions come back as a "successful" run whose
-    # answer IS the failure notice — neither is an agent failure, so classify
-    # them as exit 2 rather than let them masquerade as a failed assertion:
-    #   (a) provider quota/rate-limit exhaustion (e.g. claude-code:
-    #       "You've hit your session limit · resets …").
-    #   (b) a backend transport failure where the LM produced nothing — the
-    #       coact loop wraps the terminal reason as `Agent stopped: …` (e.g.
-    #       "Claude CLI stream produced no usable output (exit 1)" when the
-    #       claude-code ACP subprocess errors / is unauthenticated).
-    if grep -qiE 'hit your session limit|session limit · resets|rate.?limit(ed)?|quota exceeded|429 too many|produced no usable output|Claude CLI stream' <<<"$answer"; then
-        echo "FATAL: provider unavailable or limit reached (cannot run): $(head -1 <<<"$answer")" >&2
+    printf '%s' "$json"
+}
+
+# _guard_answer <text> — classify backend CANNOT-RUN notices as exit 2.
+# Two conditions come back as a "successful" run whose answer IS the failure
+# notice; neither is an agent failure, so neither may masquerade as a failed
+# assertion:
+#   (a) provider quota/rate-limit exhaustion (e.g. claude-code:
+#       "You've hit your session limit · resets …").
+#   (b) a backend transport failure where the LM produced nothing — the coact
+#       loop wraps the terminal reason as `Agent stopped: …` (e.g. "Claude CLI
+#       stream produced no usable output (exit 1)" when the claude-code ACP
+#       subprocess errors / is unauthenticated).
+_guard_answer() {
+    if grep -qiE 'hit your session limit|session limit · resets|rate.?limit(ed)?|quota exceeded|429 too many|produced no usable output|Claude CLI stream' <<<"$1"; then
+        echo "FATAL: provider unavailable or limit reached (cannot run): $(head -1 <<<"$1")" >&2
         exit 2
     fi
+}
+
+# by_ask_in <agent> <question> → .answer text; exit 2 on a non-content failure.
+by_ask_in() {
+    local agent="$1" q="$2" answer
+    answer="$(jq -r '.answer // ""' <<<"$(_by_ask_json "$agent" "$q" "$q")")"
+    _guard_answer "$answer"
     printf '%s' "$answer"
 }
 
 # by_ask <question> → run against $AGENT (the agent under test).
 by_ask() { by_ask_in "$AGENT" "$1"; }
+
+# by_ask_seq_in <agent> <q1> <q2> … → run N questions as N SEQUENTIAL TURNS of
+# ONE conversation, and print every turn's answer (newline-separated, in order).
+#
+# This is `by ask -q … -q …`: one process, one agent instance, so the turns
+# share the SCI sandbox, the `:previous-turns` timeline and the session. That
+# is what N separate `by_ask` calls CANNOT give you — each is its own process
+# building a fresh agent, and nothing rehydrates conversation state or the
+# sandbox across the process boundary (turn 2 of a two-process `ask -s foo`
+# reports itself as the first turn of the conversation). The other multi-turn
+# surface, a live `by run` plus `ask --attach`, needs a second process to
+# babysit; this one does not.
+#
+# All answers are printed, not just the last, so a case can assert against any
+# turn. When only the final turn matters, assert on the needle it must contain.
+#
+# NOTE for the evo importer (`evo$import-suite`, "one task per turn"): a
+# `by_ask_seq` line is ONE shell invocation carrying several turns. Check how it
+# splits before importing a suite that uses this — a multi-turn episode is a
+# different rollout shape from a single-turn one.
+by_ask_seq_in() {
+    local agent="$1"; shift
+    (( $# >= 1 )) || { echo "FATAL: by_ask_seq needs at least one question." >&2; exit 2; }
+    local flags=() q
+    for q in "$@"; do flags+=(-q "$q"); done
+    local answers
+    answers="$(jq -r '.turns[].answer' <<<"$(_by_ask_json "$agent" "$1 (+$(($# - 1)) more)" "${flags[@]}")")"
+    _guard_answer "$answers"
+    printf '%s' "$answers"
+}
+
+# by_ask_seq <q1> <q2> … → multi-turn against $AGENT (the agent under test).
+by_ask_seq() { by_ask_seq_in "$AGENT" "$@"; }
 
 # ---------- artifact helpers ----------
 proj_file() { printf '%s/%s' "$PROJ" "$1"; }

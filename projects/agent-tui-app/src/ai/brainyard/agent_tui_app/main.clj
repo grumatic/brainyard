@@ -276,6 +276,11 @@
    :as "Seconds to wait for an --attach answer (default 120)"
    :type :int})
 
+(def question-opt
+  {:option "question" :short "q"
+   :as "A question to ask; repeat for a MULTI-TURN conversation (each -q is one turn, in order, against the same agent)"
+   :type :string :multiple true})
+
 (def session-opt
   {:option "session" :short "s"
    :as "Pin the session-id (default: a fresh ephemeral ask-<millis>). Reuse the same id across one-shot asks to share session-scoped (L1/L2) memory recall between them."
@@ -1111,20 +1116,60 @@
 ;; Subcommand: ask — one-shot non-interactive question
 ;; ============================================================================
 
+(defn- resolve-questions
+  "Resolve the ordered turn list for `ask` from the repeatable `-q/--question`
+   flag and the single positional QUESTION. Returns `{:questions [q …]}` or
+   `{:error msg}`.
+
+   Repeating `-q` is what makes `ask` multi-turn: each value becomes its own
+   turn against the SAME agent instance, so the SCI sandbox, the conversation
+   timeline and the session carry across them. A second `by ask` PROCESS cannot
+   do that — every invocation builds a fresh agent and nothing rehydrates
+   `:messages` / `:previous-turns` / the sandbox across the process boundary
+   (verified: turn 2 of a two-process `ask -s foo` says it is the first turn of
+   the conversation). Before this flag the only multi-turn surface was a live
+   `by run` plus `ask --attach`, which needs a second process to babysit.
+
+   The POSITIONAL deliberately stays single. Making every leftover argument a
+   turn would be shorter to type and would silently turn one mis-quoted
+   `by ask What is 2+2` into four billed turns; today it truncates to \"What\",
+   which is wrong but free.
+
+   Mixing the two is refused rather than merged. cli-matic hands positionals
+   (`:_arguments`) and repeated flags back in separate keys, so their relative
+   order on the command line is not recoverable — and for a conversation the
+   order of the turns IS the meaning, so guessing it is worse than saying no."
+  [opts]
+  (let [flagged    (into [] (keep #(some-> % str/trim not-empty)) (:question opts))
+        positional (some-> (first (:_arguments opts)) str/trim not-empty)]
+    (cond
+      (and (seq flagged) positional)
+      {:error (str "pass the question either positionally or with -q/--question, not both "
+                   "(their command-line order cannot be recovered)")}
+
+      (seq flagged)   {:questions flagged}
+      positional      {:questions [positional]}
+      :else           {:error "question argument is required"})))
+
 (defn cmd-ask-attach
-  "Ask a question of an already-running session over its side ask channel.
-   Resolves <project>/.brainyard/sessions/<session-id>/ask.sock, sends the
-   question, prints the answer. Bypasses all agent setup — the live TUI runs
-   the turn. See docs/design/ask-attach-channel.md."
+  "Ask one or more questions of an already-running session over its side ask
+   channel. Resolves <project>/.brainyard/sessions/<session-id>/ask.sock, sends
+   each question in turn, prints the answers. Bypasses all agent setup — the
+   live TUI runs the turns. See docs/design/ask-attach-channel.md.
+
+   Repeated `-q` is sequential here too, and for the same reason it is on the
+   one-shot path: turn N+1 must not be sent until turn N has been answered, or
+   the live session receives an interleaving the caller never wrote."
   [opts session-id]
   (install-working-dir! opts)            ;; so the sessions root resolves to this project
-  (let [json?    (:json opts)
-        question (first (:_arguments opts))]
-    (when (or (nil? question) (str/blank? question))
+  (let [json?     (:json opts)
+        {:keys [questions error]} (resolve-questions opts)]
+    (when error
       (if json?
-        (print-json! {:success false :error "question argument is required" :session-id session-id})
-        (do (println "Error: question argument is required.")
-            (println "Usage: by ask --attach <session-id> [options] QUESTION")))
+        (print-json! {:success false :error error :session-id session-id})
+        (do (println (str "Error: " error "."))
+            (println "Usage: by ask --attach <session-id> [options] QUESTION")
+            (println "       by ask --attach <session-id> [options] -q Q1 -q Q2 …")))
       (System/exit 1))
     (let [^java.io.File sock (persist/file-of session-id :ask-sock)]
       (when-not (and sock (.exists sock))
@@ -1153,33 +1198,61 @@
                           (str/join ", " ignored)
                           " ignored.")))))
       (let [timeout-ms (* 1000 (or (:timeout opts) 120))
-            resp (try
-                   (ask-channel/ask-via-socket!
-                    {:path (.getAbsolutePath sock)
-                     :question question
-                     :timeout-ms timeout-ms})
-                   (catch Exception e
-                     {:status :error
-                      :error (str "could not reach session: " (.getMessage e)
-                                  " (is it still running?)")}))]
-        (let [ok? (= :ok (:status resp))]
-          (if json?
-            (print-json! (if ok?
-                           (cond-> {:success true
-                                    :answer (or (:answer resp) "")
-                                    :provider (:provider resp)
-                                    :model (:model resp)
-                                    :agent (:agent resp)
-                                    :session-id session-id}
-                             (:usage resp) (assoc :usage (:usage resp)))
-                           {:success false :error (:error resp) :session-id session-id}))
-            (if ok?
-              (println (or (:answer resp) ""))
-              (println (str "Error: " (:error resp)))))
-          (System/exit (if ok? 0 1)))))))
+            ask-1 (fn [q]
+                    (try
+                      (ask-channel/ask-via-socket!
+                       {:path (.getAbsolutePath sock)
+                        :question q
+                        :timeout-ms timeout-ms})
+                      (catch Exception e
+                        {:status :error
+                         :error (str "could not reach session: " (.getMessage e)
+                                     " (is it still running?)")})))
+            ;; Sequential, and STOPS at the first failure: the questions after
+            ;; it were written as later turns of one conversation, so sending
+            ;; them on top of a turn that never landed asks something the
+            ;; caller did not mean — and on a dead socket it would just wait
+            ;; out the full timeout once per remaining question.
+            resps (reduce (fn [acc q]
+                            (let [resp (assoc (ask-1 q) :question q)]
+                              (cond-> (conj acc resp)
+                                (not= :ok (:status resp)) reduced)))
+                          [] questions)
+            final (peek resps)
+            ok?   (= :ok (:status final))]
+        (if json?
+          (print-json! (cond-> {:success ok?
+                                :session-id session-id
+                                :provider (:provider final)
+                                :model (:model final)
+                                :agent (:agent final)
+                                ;; :answer stays the LAST answer, which is what a
+                                ;; single-question caller already reads.
+                                :answer (when ok? (or (:answer final) ""))
+                                :turns (mapv (fn [r]
+                                               (cond-> {:question (:question r)
+                                                        :success (= :ok (:status r))
+                                                        :answer (or (:answer r) "")}
+                                                 (:error r) (assoc :error (:error r))
+                                                 (:usage r) (assoc :usage (:usage r))))
+                                             resps)}
+                         (:usage final)   (assoc :usage (:usage final))
+                         (not ok?)        (assoc :error (:error final))))
+          (doseq [[i r] (map-indexed vector resps)]
+            (when (pos? i) (println))     ;; blank line between turns; no chrome
+            (if (= :ok (:status r))
+              (println (or (:answer r) ""))
+              (println (str "Error: " (:error r))))))
+        (System/exit (if ok? 0 1))))))
 
 (defn cmd-ask
-  "Ask a one-shot question and print the answer.
+  "Ask a question non-interactively and print the answer.
+
+   Repeat `-q/--question` to run a MULTI-TURN conversation in this one process:
+   the turns run in order against ONE agent instance, so the SCI sandbox, the
+   `:previous-turns` timeline and the session are shared across them. That is
+   the thing a second `by ask` process cannot give you — see `resolve-questions`.
+
    With --attach <session-id>, ask a running session over its side channel
    instead of spinning up a throwaway agent.
    Config precedence: CLI flags > config.edn > hardcoded defaults."
@@ -1193,13 +1266,14 @@
         _ (register-project!)
         ;; Register user-authored defs (skills, user tools, user agents) BEFORE
         ;; the agent is built. Synchronous for skills specifically: a one-shot
-        ;; ask has exactly one turn, so a background scan would race it and the
-        ;; skill would silently not exist for the only turn that mattered.
+        ;; ask has few turns and often exactly one, so a background scan would
+        ;; race the first one and the skill would silently not exist for it.
         ;; Until this call existed, `by ask` never registered skills at all —
         ;; `reload-skills!`'s only entry point was the TUI's `start!`.
         _ (agent/boot-registries! :skills :sync)
         file-config (agent/read-edn-config (agent/init-dirs!))
-        question (first (:_arguments opts))
+        qs (resolve-questions opts)
+        questions (:questions qs)
         cli-agent (:agent opts)
         agent-id (keyword (or (when-not (= cli-agent "coact-agent") cli-agent)
                               (some-> (get-in file-config [:agent :default-agent]) name)
@@ -1236,11 +1310,12 @@
         ;; Raw :model, NOT `model` above — that one folds in the LLM
         ;; :default-model, which is not a backend model.
         acp-model   (:model opts)]
-    (when (or (nil? question) (str/blank? question))
+    (when-let [err (:error qs)]
       (if json?
-        (print-json! {:success false :error "question argument is required"})
-        (do (println "Error: question argument is required.")
-            (println "Usage: by ask [options] QUESTION")))
+        (print-json! {:success false :error err})
+        (do (println (str "Error: " err "."))
+            (println "Usage: by ask [options] QUESTION")
+            (println "       by ask [options] -q Q1 -q Q2 …   (multi-turn, one process)")))
       (System/exit 1))
 
     ;; Pre-flight the provider credential. In --json mode a setup failure is
@@ -1269,11 +1344,17 @@
           ;; (teardown / close) throwing AFTER a successful emit, which would
           ;; otherwise fall into the --json catch below and print again.
           !emitted (atom false)
+          answer-of (fn [result] (or (:answer result) (:result result)))
+          ;; `turns` is [{:question q :result r} …] — one entry per -q, in
+          ;; order, truncated at the first failure. The top-level :answer /
+          ;; :usage / exit code describe the LAST turn, which is exactly what a
+          ;; single-question caller already read; :turns is the new detail.
           emit-result!
-          (fn [{:keys [result sess-id] rprov :provider rmodel :model}]
+          (fn [{:keys [turns sess-id] rprov :provider rmodel :model}]
             (when (compare-and-set! !emitted false true)
-              (let [err    (:error result)
-                    answer (or (:answer result) (:result result))]
+              (let [final  (:result (peek turns))
+                    err    (:error final)
+                    answer (answer-of final)]
                 (if json?
                   ;; stdout stays pure JSON even though `run` executes under
                   ;; *out*→*err* in --json mode.
@@ -1283,13 +1364,22 @@
                                           :provider rprov
                                           :model rmodel
                                           :agent (name agent-id)
-                                          :session-id sess-id}
-                                   (:usage result) (assoc :usage (:usage result))
-                                   err             (assoc :error err))))
+                                          :session-id sess-id
+                                          :turns (mapv (fn [{:keys [question result]}]
+                                                         (cond-> {:question question
+                                                                  :success (not (boolean (:error result)))
+                                                                  :answer (or (answer-of result) "")}
+                                                           (:error result) (assoc :error (:error result))
+                                                           (:usage result) (assoc :usage (:usage result))))
+                                                       turns)}
+                                   (:usage final) (assoc :usage (:usage final))
+                                   err            (assoc :error err))))
                   (binding [*out* real-out]
-                    (if err
-                      (println (str "Error: " err))
-                      (println (or answer ""))))))))
+                    (doseq [[i {:keys [result]}] (map-indexed vector turns)]
+                      (when (pos? i) (println))  ;; blank line between turns; no chrome
+                      (if-let [e (:error result)]
+                        (println (str "Error: " e))
+                        (println (or (answer-of result) "")))))))))
           run (fn []
                 (helpers/suppress-jul-cookie-warnings!)
                 ;; No LM for an acp-agent — the backend owns the loop, and
@@ -1366,9 +1456,24 @@
                                acp-backend (into [:acp-backend (keyword acp-backend)])
                                acp-model   (into [:acp-backend-opts {:model acp-model}])))))]
                   (try
-                    (let [result (agent/ask ag question)
+                    (let [;; The turns run SEQUENTIALLY against this one `ag`,
+                          ;; which is the whole point of -q: turn N+1 sees turn
+                          ;; N's SCI sandbox, conversation window and session.
+                          ;; A throw is captured per-turn rather than unwinding
+                          ;; the whole run, so the turns that DID answer are
+                          ;; still reported; and the sequence STOPS there,
+                          ;; because the questions after it were written as
+                          ;; later turns of a conversation whose earlier turn
+                          ;; just failed.
+                          turns (reduce (fn [acc q]
+                                          (let [r (try (agent/ask ag q)
+                                                       (catch Exception e
+                                                         {:error (.getMessage e)}))]
+                                            (cond-> (conj acc {:question q :result r})
+                                              (:error r) reduced)))
+                                        [] questions)
                           lm     (clj-llm/get-default-lm)
-                          out    {:result result :sess-id sess-id
+                          out    {:turns turns :sess-id sess-id
                                   :provider (some-> (:provider lm) name) :model (:model lm)}]
                       ;; Print here, INSIDE the try — the `finally` below closes
                       ;; the agent, and that close can block on the session-end
@@ -1376,14 +1481,16 @@
                       (emit-result! out)
                       out)
                     (catch Exception e
-                      (let [out {:result {:error (.getMessage e)} :sess-id sess-id
+                      (let [out {:turns [{:question (first questions)
+                                          :result {:error (.getMessage e)}}]
+                                 :sess-id sess-id
                                  :provider (name provider) :model model}]
                         (emit-result! out)
                         out))
                     (finally
                       (teardown-app-log!)
                       (.close ^java.io.Closeable ag)))))
-          {:keys [result]}
+          {:keys [turns]}
           (if json?
             ;; In --json mode a setup failure (e.g. missing API key, thrown by
             ;; setup-lm! before the inner try) must still surface as JSON, not a
@@ -1394,14 +1501,16 @@
                    (catch Exception e
                      ;; `run` never got far enough to emit (or its finally threw
                      ;; after emitting — the atom makes that a no-op).
-                     (let [out {:result {:error (.getMessage e)}
+                     (let [out {:turns [{:question (first questions)
+                                         :result {:error (.getMessage e)}}]
                                 :provider (name provider) :model model}]
                        (emit-result! out)
                        out))))
             (run))]
-      ;; The answer is already on stdout — `emit-result!` printed it before the
-      ;; agent was closed. Only the exit code is left.
-      (System/exit (if (:error result) 1 0)))))
+      ;; The answers are already on stdout — `emit-result!` printed them before
+      ;; the agent was closed. Only the exit code is left. A multi-turn run stops
+      ;; at its first failure, so the last turn carries the verdict for all.
+      (System/exit (if (:error (:result (peek turns))) 1 0)))))
 
 ;; ============================================================================
 ;; Subcommand: memory — maintenance on the user-scoped L1/L2/L3 store
@@ -3062,18 +3171,20 @@
                                  :type :with-flag :default false}]
                   :runs        cmd-run}
                  {:command     "ask"
-                  :description "Ask a one-shot question (non-interactive); --attach to ask a running session"
+                  :description (str "Ask a question (non-interactive); repeat -q for a multi-turn "
+                                    "conversation in one process; --attach to ask a running session")
                   :opts        [agent-opt
                                 provider-opt
                                 model-opt
                                 user-id-opt
                                 working-dir-opt
                                 max-iter-opt
+                                question-opt
                                 attach-opt
                                 ask-timeout-opt
                                 session-opt
                                 json-opt]
-                  :args        [{:arg "question" :as "Question to ask" :type :string}]
+                  :args        [{:arg "question" :as "Question to ask (or use -q, repeatably)" :type :string}]
                   :runs        cmd-ask}
                  {:command     "agents"
                   :description "List available agents"

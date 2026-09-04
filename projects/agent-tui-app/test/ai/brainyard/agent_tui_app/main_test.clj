@@ -120,6 +120,73 @@
       (doseq [opts [{} {:_arguments []} {:_arguments ["  "]}]]
         (is (= {:error @#'main/label-usage} (parse opts)))))))
 
+;; ============================================================================
+;; ask -q/--question (multi-turn)
+;; ============================================================================
+
+(deftest resolve-questions-test
+  (let [resolve-qs @#'main/resolve-questions]
+    (testing "the positional form is unchanged and stays SINGLE-question"
+      (is (= {:questions ["What is 2+2?"]}
+             (resolve-qs {:_arguments ["What is 2+2?"]})))
+      (is (= {:questions ["What"]}
+             (resolve-qs {:_arguments ["What" "is" "2+2"]}))
+          "a mis-quoted question truncates as it always did — it must never fan
+           out into one billed turn per leftover word"))
+
+    (testing "repeated -q becomes an ordered turn list"
+      (is (= {:questions ["one" "two" "three"]}
+             (resolve-qs {:question ["one" "two" "three"]})))
+      (is (= {:questions ["only"]}
+             (resolve-qs {:question ["only"]}))
+          "a single -q is just a one-turn conversation"))
+
+    (testing "whitespace is trimmed and blank turns are dropped"
+      (is (= {:questions ["a" "b"]}
+             (resolve-qs {:question ["  a  " "   " "b" nil]}))))
+
+    (testing "mixing the two forms is REFUSED, not merged"
+      ;; cli-matic hands positionals and repeated flags back in separate keys,
+      ;; so their command-line order is unrecoverable — and for a conversation
+      ;; the order of the turns is the meaning.
+      (let [{:keys [error questions]} (resolve-qs {:question ["a"] :_arguments ["b"]})]
+        (is (some? error))
+        (is (nil? questions) "no guessed ordering reaches the agent")
+        (is (re-find #"not both" error))))
+
+    (testing "no question at all is a usage error"
+      (doseq [opts [{} {:_arguments []} {:_arguments ["   "]}
+                    {:question []} {:question ["  "]}]]
+        (let [{:keys [error questions]} (resolve-qs opts)]
+          (is (= "question argument is required" error) (str "rejected: " (pr-str opts)))
+          (is (nil? questions)))))))
+
+(defn- ask-opts []
+  (->> (:subcommands main/cli-config)
+       (filter #(= "ask" (:command %)))
+       first :opts
+       (map (juxt :option identity))
+       (into {})))
+
+(deftest question-flag-registered
+  (testing "-q/--question is wired into `ask` as a REPEATABLE string option"
+    (let [opt (get (ask-opts) "question")]
+      (is (some? opt) "the flag is registered")
+      (is (= "q" (:short opt)))
+      (is (= :string (:type opt)))
+      (is (true? (:multiple opt))
+          ":multiple is what makes repeats accumulate into an ordered vector
+           rather than last-one-wins — without it there is no multi-turn")
+      (is (nil? (:default opt))
+          "no default, so the key is absent when unused and the positional
+           path stays exactly as it was")))
+
+  (testing "the flags it composes with are still there"
+    (let [opts (ask-opts)]
+      (is (contains? opts "attach"))
+      (is (contains? opts "session"))
+      (is (contains? opts "json")))))
+
 (defn- memory-subcommands []
   (->> (:subcommands main/cli-config)
        (filter #(= "memory" (:command %)))
