@@ -74,6 +74,7 @@
             [ai.brainyard.agent.common.schedule-agent]
             [ai.brainyard.agent.common.event-agent]
             [ai.brainyard.agent.common.state-machine-agent]
+            [ai.brainyard.agent.common.evoharness-agent]
             [ai.brainyard.agent.common.rag-agent]
             [ai.brainyard.agent.common.tsf-agent]
             [ai.brainyard.agent.common.init-agent]
