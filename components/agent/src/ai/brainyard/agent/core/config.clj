@@ -164,6 +164,10 @@
                                           ;; Discovery / mechanical transform — varies with breadth,
                                           ;; so the router may escalate one step.
                                           :explore-agent       {:default :light :max :deep}
+                                          ;; Script work is mostly mechanical, and a router
+                                          ;; asking for :deep on a shell pipeline is wrong
+                                          ;; about cost — capped one step below the rest.
+                                          :script-agent        {:default :light :max :standard}
                                           :edit-agent          {:default :standard :max :deep}
                                           :exec-agent          {:default :standard :max :deep}
                                           :rlm-agent           {:default :standard :max :deep}
@@ -652,6 +656,20 @@
                                            v ::env-unset)
                                 :default "127.0.0.1"
                                 :doc "nREPL endpoint HOST for the :nrepl Clojure backend (default loopback). Set to a trusted remote host for off-laptop execution (R4). Env: BY_NREPL_HOST."}
+   :code-langs                 {:type "vector"
+                                :env-fn #(if-let [v (not-empty (System/getenv "BY_CODE_LANGS"))]
+                                           (mapv keyword (str/split v #"[,\s]+")) ::env-unset)
+                                :default [:clojure :bash :python :javascript]
+                                :doc "Languages the CoAct code channel will EXECUTE. A fence in any other language is refused as a value (an :error eval-entry), not run. This is a CONTRACT, not advice: the disabled languages are also dropped from the `code-blocks` output description and from the prompt's execution-model/format sections, so the schema can never advertise a fence the runtime will reject — the same discipline :code-channel?/:tool-channel? apply to whole channels. script-agent pins [:bash :python]. Env: BY_CODE_LANGS (comma- or space-separated)."}
+   :enable-script-library      {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_SCRIPT_LIBRARY")]
+                                           (not= "false" v) ::env-unset)
+                                :default true
+                                :doc "The script library: <project>/.brainyard/scripts/bin (+ the user and builtin scopes) are prepended to PATH for every bash/python block, and rendered as the `## Scripts` prompt section. Applies only to agents whose :code-langs EXCLUDE :clojure — an agent with a clojure fence already reaches capabilities through the tool registry, and a second competing answer helps nobody (see coact-agent/script-library-active?). Off means no PATH injection and no section, so a bash fence behaves exactly as it did before the library existed. Env: BY_ENABLE_SCRIPT_LIBRARY=false."}
+   :script-lib-dirs            {:type "vector" :default []
+                                :doc "Override the script-library ROOTS (each holding bin/ and lib/), highest precedence first. Empty (default) derives <project>/.brainyard/scripts then ~/.brainyard/scripts. The builtin scope is always appended last and cannot be removed — scripts-ls must be able to describe the library it lists."}
+   :script-index-limit         {:type "integer" :default 60
+                                :doc "Max scripts rendered in the `## Scripts` prompt section (one line each). Overflow becomes a `…and N more — run scripts-ls` line, so a large library costs a bounded number of tokens rather than a growing one."}
    :clj-backend                {:type "keyword" :default :sandbox
                                 :doc "Clojure code-execution backend for ```clojure blocks in CoAct: :sandbox (SCI, safe default) or :nrepl (live JVM via clj-nrepl; debug-agent, needs server). Per-agent override; not persisted."}
    :exec-backend               {:type "keyword"

@@ -62,6 +62,14 @@ DISCOVERY & READ-MOSTLY
                    'find me X' / 'what's in Y' / 'is there a Z?' question
                    that crosses surfaces or warrants a durable artifact.
 
+- script-agent   → bash/python work whose tool surface is a DIRECTORY of
+                   reusable scripts under .brainyard/scripts/bin, not the tool
+                   registry. It has NO tool channel, NO clojure sandbox and NO
+                   registered tools — so route here when the work is naturally
+                   a shell pipeline or a small local-file program AND needs no
+                   brainyard tool. It BUILDS its library as it goes, so
+                   repeated work of this shape gets cheaper.
+
 - rlm-agent      → MapReduce over too-big context (>200K tokens or
                    200+ files). Use for 'summarize patterns across N
                    files', 'extract all X from this corpus', 'consolidate
@@ -405,6 +413,17 @@ V. AGENT-LIFECYCLE → meta-agent
            specialist, NOT a single tool (U), skill (N), or MCP (O). Do
            NOT route here to merely USE an existing user agent — call it.
 
+X. SCRIPT-WORK     → script-agent
+   Shapes: 'process every file under X', 'convert these', 'summarize
+           the logs', 'wire up a script that …' — work whose natural
+           expression is a shell pipeline or a small python program over
+           local files, needing NO registered tool, NO sub-agent and NO
+           memory. Prefer it over C when the work is script-shaped AND
+           likely to recur: script-agent leaves a reusable executable
+           behind, whereas a code-compose block leaves nothing.
+           NOT for a single concrete source edit (E), NOT for discovery
+           across surfaces (D).
+
 The self-answered shape tokens (the only ones you ever name — see ROUTING LOG
 below) are: :direct-answer :tool-fetch :code-compose :meta-resume :clarify.
 (Specialist moves don't need a token — the hook derives the shape from which
@@ -568,6 +587,7 @@ instruction §6 (DECISION TABLE) for the full per-agent rule. Headline:
 - eval-agent       → verdict against acceptance.
 - research-agent   → end-to-end multi-specialist research.
 - workflow-agent   → domain-template multi-stage workflow.
+- script-agent     → bash/python work over local files; builds a script library.
 - rlm-agent        → MapReduce over too-big context.
 - skill-agent      → skill lifecycle (write/install).
 - mcp-agent        → MCP lifecycle + write-side calls.

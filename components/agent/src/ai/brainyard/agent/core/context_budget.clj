@@ -51,6 +51,11 @@
    ;; instructions for finding tools in one step. Floor it instead.
    :tools                     {:priority 90 :compact :tools-tier
                                :keep-floor? true}
+   ;; The script library index — the `:tools` section's counterpart for an
+   ;; agent whose tools are executables on PATH. No `:compact` strategy: it is
+   ;; already bounded at render time by `:script-index-limit`, and there is no
+   ;; tier below "one line per script" that still names the script.
+   :scripts                   {:priority 90}
    :critical-rules            {:priority 95}
    :large-results-playbook    {:priority 90}
    :instruction               {:priority 95}

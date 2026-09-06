@@ -51,6 +51,11 @@
             [ai.brainyard.agent.common.skill-agent]
             [ai.brainyard.agent.common.rlm-agent]
             [ai.brainyard.agent.common.explore-agent]
+            ;; Two channels only — bash/python code-blocks and answer. Its
+            ;; tool surface is a DIRECTORY of executable scripts rather than
+            ;; the registry, so it declares an explicitly empty :agent-tools
+            ;; and builds no SCI sandbox. See common/scripts.clj.
+            [ai.brainyard.agent.common.script-agent]
             ;; Live-runtime debug specialist. Requires the clj-nrepl
             ;; server to be running on the host (BY_NREPL_ENABLED on
             ;; agent-tui / agent-web, or clj-nrepl$start-server on

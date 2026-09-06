@@ -283,7 +283,7 @@
    {:title     "Code channel"
     :family    :exec
     :gate      :code-channel?
-    :keys      [:clj-backend :exec-backend :sandbox-interop]
+    :keys      [:clj-backend :exec-backend :sandbox-interop :code-langs]
     :lifecycle :session
     :doc       "The in-process code-eval channel and its backends."}
 
@@ -294,6 +294,15 @@
     :keys      []
     :lifecycle :session
     :doc       "The JSON tool-calls emission channel. Off ⇒ code-only; tools stay reachable as sandbox callables."}
+
+   :exec/script-library
+   {:title     "Script library"
+    :family    :exec
+    :gate      :enable-script-library
+    :keys      [:script-lib-dirs :script-index-limit]
+    :requires  #{:exec/code-channel}
+    :lifecycle :session
+    :doc       "PATH-injected directory of reusable scripts; the `## Scripts` prompt section. For a code-only agent it replaces the tool roster."}
 
    :exec/sandbox-persistence
    {:title     "Sandbox persistence"

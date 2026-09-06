@@ -39,6 +39,7 @@
             [ai.brainyard.agent.common.user-agents :as ua]
             [ai.brainyard.agent.common.auto-notify :as auto-notify]
             [ai.brainyard.agent.common.schedule :as schedule]
+            [ai.brainyard.agent.common.scripts :as scripts]
             [ai.brainyard.agent.common.events :as events]
             [ai.brainyard.agent.common.reactor :as reactor]
             [ai.brainyard.agent.common.fsm :as fsm]
@@ -222,33 +223,30 @@ ACTION CHANNELS — WHEN TO USE EACH
     {% if code-channel %}code-blocks: \"\"   {% endif %}answer: \"\"
 
 {% endif %}{% if code-channel %}CODE CHANNEL — populate `code-blocks` with markdown-fenced blocks. Supported
-languages: `clojure` (evaluated in the shared SCI sandbox), `bash` (written to
-a temp file and executed), `python` (temp file + python3), `javascript`
-(temp file + node). Use when:
+languages: {{lang-blurb|safe}}. Use when:
   - Composition: filter → map → reduce → pretty-print.
-  - `def` persistence across iterations (use a `clojure` block).
-  - Raw scripts with nested quotes or regex backslashes — use a `bash` or
-    `python` block. The block content is passed verbatim; no SCI escaping.
-  - Parallel fan-out IN clojure: `(pmap f coll)` inside ONE block — NOT
+{% if clj-lang %}  - `def` persistence across iterations (use a `clojure` block).
+{% endif %}  - Raw scripts with nested quotes or regex backslashes — use a `bash` or
+    `python` block. The block content is passed verbatim{{no-sci|safe}}.
+{% if clj-lang %}  - Parallel fan-out IN clojure: `(pmap f coll)` inside ONE block — NOT
     `<!-- ParallelBlock -->`, which does nothing for clojure. (`future` is
     not bound; `pmap` is.)
-  - Parallel fan-out across PROCESSES: separate independent `bash`/`python`/
-    `javascript` blocks with a line containing only `<!-- ParallelBlock -->`.
-    Those run concurrently, each in a fresh process; `clojure` blocks in the
-    same partition still run sequentially in source order.
+{% endif %}  - Parallel fan-out across PROCESSES: separate independent {{script-fences|safe}} with a line containing only `<!-- ParallelBlock -->`.
+    Those run concurrently, each in a fresh process{{clj-seq-note|safe}}.
   - Producing document content (markdown/HTML/text report): use a FOUR-backtick
     verbatim fence (```` ````markdown name.md ````). The body is saved verbatim
     to a file and you get the path back — never hand-escape large content into a
     string literal. See the code-blocks format help for details.
 
-  Parallel examples — clojure fans out INSIDE a block:
+{% if clj-lang %}  Parallel examples — clojure fans out INSIDE a block:
     ```clojure
     (pmap (fn [q] (search :query q)) [\"topic A\" \"topic B\" \"topic C\"])
     ```
 
   Processes fan out ACROSS blocks (the delimiter line is the only
   non-obvious part):
-    ```bash
+{% else %}  Fan out across blocks — the delimiter line is the only non-obvious part:
+{% endif %}    ```bash
     curl -s https://api.example.com/status
     ```
     <!-- ParallelBlock -->
@@ -304,11 +302,11 @@ CHANNEL DECISION HEURISTICS
 ---------------------------------------------------------------------------
 {% if tool-channel %}1. One registered tool, no post-processing                    → TOOL
 2. Background/long-running task                               → TOOL
-{% endif %}{% if code-channel %}{{h-compose}}. Compose, filter, transform, pprint                         → CODE (clojure)
+{% endif %}{% if code-channel %}{% if clj-lang %}{{h-compose}}. Compose, filter, transform, pprint                         → CODE (clojure)
 {{h-parallel}}. Parallel independent sub-queries                           → CODE (clojure, pmap)
-{{h-raw}}. Raw shell/Python with nested quotes or regex backslashes   → CODE (bash/python fence)
-{{h-def}}. Need cross-iteration `def` state                           → CODE (clojure)
-{% endif %}{{h-answer}}. Ready to answer (or cannot proceed, or need clarification) → ANSWER
+{% endif %}{{h-raw}}. Raw shell/Python with nested quotes or regex backslashes   → CODE (bash/python fence)
+{% if clj-lang %}{{h-def}}. Need cross-iteration `def` state                           → CODE (clojure)
+{% endif %}{% endif %}{{h-answer}}. Ready to answer (or cannot proceed, or need clarification) → ANSWER
 
 ---------------------------------------------------------------------------
 FIELD-CONSISTENCY RULES (enforced by the BT router)
@@ -319,51 +317,167 @@ FIELD-CONSISTENCY RULES (enforced by the BT router)
 {% endif %}- Populating NEITHER a channel NOR an answer triggers a repair iteration.
 ")
 
+(def all-code-langs
+  "Every language the code channel can execute. The `:code-langs` default, and
+   the value the two-arity `render-instructions` / `think-act-code-signature`
+   render for — so the pre-existing call sites are unchanged by the language
+   gate rather than merely equivalent to it."
+  #{:clojure :bash :python :javascript})
+
+(def ^:private lang-fence
+  "Fence token → the one-line description the CODE CHANNEL section renders."
+  {:clojure    "`clojure` (shared SCI sandbox)"
+   :bash       "`bash` (temp file + bash)"
+   :python     "`python` (temp file + python3)"
+   :javascript "`javascript` (temp file + node)"})
+
+(def ^:private lang-order
+  "Stable render order. A set has none, and the instruction block sits at the
+   head of the system message where byte-stability is the cache."
+  [:clojure :bash :python :javascript])
+
+(defn- lang-blurb
+  "The `Supported languages: …` clause.
+
+   The full set renders the ORIGINAL hand-wrapped sentence verbatim — every
+   shipped agent has that text in its cached prompt prefix, and a re-wrap that
+   changes nothing semantically would still bust the cache for all of them.
+   Narrowed sets get a generated one-liner, which has no prefix to preserve."
+  [langs]
+  (if (= (set langs) all-code-langs)
+    "`clojure` (evaluated in the shared SCI sandbox), `bash` (written to\na temp file and executed), `python` (temp file + python3), `javascript`\n(temp file + node)"
+    (str/join ", " (keep lang-fence (filter (set langs) lang-order)))))
+
+(defn- script-fences
+  "The `bash`/`python`/`javascript` enumeration in the ParallelBlock bullet,
+   narrowed to the script langs actually enabled.
+
+   Carries the trailing word \"blocks\" AND the line break before it, which
+   reads oddly until you see why: the wrap position is inside the cached prompt
+   prefix of every shipped agent, so the template cannot own it — a var
+   substituted mid-line would re-flow the sentence and bust that cache to say
+   exactly the same thing. Owning the break here lets the all-three case
+   reproduce the original two lines byte-for-byte and a narrowed case wrap at
+   its own natural column."
+  [langs]
+  (let [ls (filter (set langs) [:bash :python :javascript])]
+    (cond
+      (= 3 (count ls)) "`bash`/`python`/\n    `javascript` blocks"
+      (empty? ls)      "script\n    blocks"
+      :else            (str (str/join "/" (map #(str "`" (name %) "`") ls))
+                            "\n    blocks"))))
+
+(defn resolve-code-langs
+  "The set of languages this agent's code channel will execute, from a config
+   snapshot. Empty or unset falls back to `all-code-langs`, so a misconfigured
+   `:code-langs` degrades to the historical behaviour rather than to an agent
+   that can emit code and run none of it.
+
+   Deliberately NOT a per-language feature flag family: the languages are one
+   choice with one answer, and four independent booleans would make
+   `#{:clojure :javascript}` — a combination nothing wants — as expressible as
+   the two that do."
+  [cfg-snap]
+  (let [v (get cfg-snap :code-langs)
+        s (into #{} (map keyword) (if (coll? v) v (when v [v])))]
+    (if (seq s) s all-code-langs)))
+
+(defn script-library-active?
+  "Whether this agent's blocks get the script library — the PATH injection AND
+   the `## Scripts` prompt section, which must be the same answer.
+
+   Scoped to agents with NO clojure fence, not merely to `:enable-script-library`.
+   The two halves have to agree: prepending directories to PATH without saying
+   so in the prompt is a silent change to what a bare command resolves to, and
+   rendering the section for an agent whose tools are sandbox callables adds a
+   second, competing answer to \"how do I reach a capability\". A clojure agent
+   has a registry; a script agent has a directory; nobody needs both.
+
+   Widening this to every code agent is a deliberate later decision, not an
+   oversight — it would add a prompt section to every shipped agent."
+  [cfg-snap]
+  (and (feature/on?* cfg-snap :exec/script-library)
+       (not (contains? (resolve-code-langs cfg-snap) :clojure))))
+
+(defn- script-env-prologue
+  "The script-library shell prefix for `agent`'s fenced blocks, or \"\" when
+   the library does not apply. See `scripts/env-prologue`."
+  [agent]
+  (if-not (script-library-active? (config/get-config-snapshot agent))
+    ""
+    (try (scripts/env-prologue (scripts/script-roots agent))
+         (catch Exception e
+           (mulog/warn ::script-env-failed :error (ex-message e))
+           ""))))
+
 (def render-instructions
-  "Render `coact-instructions-template` for a pair of channel flags.
+  "Render `coact-instructions-template` for a pair of channel flags and (in the
+   three-arity form) the set of code languages that channel will execute.
 
    List numbering (the `1./2./3.` channel enumeration and the decision-heuristic
    rows) is computed HERE and passed in as vars rather than expressed as nested
    `{% if %}` arithmetic in the template — the template stays readable prose,
    and renumbering can't silently skip an index.
 
+   The three Clojure-specific heuristic rows and the `pmap` fan-out prose are
+   gated on `:clj-lang` for the same reason `:tool-channel` gates the JSON
+   envelope: prose describing a fence the dispatcher will refuse is not a
+   softer version of the contract, it is a contradiction of it.
+
    Memoized for the same reason as `think-act-code-signature`: this text is the
-   tail of the DSPy system message, so it must be byte-stable within a session."
+   tail of the DSPy system message, so it must be byte-stable within a session.
+   The two-arity form delegates to the three-arity one with `all-code-langs`,
+   so the pre-existing renders are unchanged by construction, not by agreement."
   (memoize
-   (fn [code-channel? tool-channel?]
-     (let [n     (fn [& preds] (inc (count (filter true? preds))))
-           ;; Heuristic rows: 2 tool rows (if tool), 4 code rows (if code).
-           h0    (if tool-channel? 2 0)]
-       (selmer/render
-        coact-instructions-template
-        {:tool-channel   tool-channel?
-         :code-channel   code-channel?
-         :channel-count  (if (and code-channel? tool-channel?) "three" "two")
-         :n-tool         1
-         :n-code         (n tool-channel?)
-         :n-answer       (n tool-channel? code-channel?)
-         :action-fields  (if (and code-channel? tool-channel?)
-                           "both action fields" "the action field")
-         :action-turns   (cond (and code-channel? tool-channel?) "tool-calls and code-blocks"
-                               tool-channel? "tool-calls"
-                               :else "code-blocks")
-         ;; Oxford-comma list; with one action channel the both-mode
-         ;; "`a`, `b`, AND `answer`" would leave a dangling comma.
-         :empty-list     (cond (and code-channel? tool-channel?)
-                               "`tool-calls`, `code-blocks`, AND `answer`"
-                               tool-channel? "`tool-calls` AND `answer`"
-                               :else "`code-blocks` AND `answer`")
-         ;; Same dangling-separator problem in the consistency rules; the
-         ;; both-mode spacing ("[],  code") is load-bearing for byte-identity.
-         :answer-clears  (cond (and code-channel? tool-channel?)
-                               "tool-calls=[],  code-blocks=\"\""
-                               tool-channel? "tool-calls=[]"
-                               :else "code-blocks=\"\"")
-         :h-compose      (+ h0 1)
-         :h-parallel     (+ h0 2)
-         :h-raw          (+ h0 3)
-         :h-def          (+ h0 4)
-         :h-answer       (+ h0 (if code-channel? 5 1))})))))
+   (fn
+     ([code-channel? tool-channel?]
+      (render-instructions code-channel? tool-channel? all-code-langs))
+     ([code-channel? tool-channel? langs]
+      (let [langs (set (or (seq langs) all-code-langs))
+            clj?  (contains? langs :clojure)
+            n     (fn [& preds] (inc (count (filter true? preds))))
+            ;; Heuristic rows: 2 tool rows (if tool), then 4 code rows with
+            ;; clojure or 1 without (only the raw-script row survives).
+            h0    (if tool-channel? 2 0)
+            n-code-rows (if code-channel? (if clj? 4 1) 0)]
+        (selmer/render
+         coact-instructions-template
+         {:tool-channel   tool-channel?
+          :code-channel   code-channel?
+          :clj-lang       (and code-channel? clj?)
+          :lang-blurb     (lang-blurb langs)
+          :script-fences  (script-fences langs)
+          ;; Two phrases that only mean anything beside a clojure fence.
+          :no-sci         (if clj? "; no SCI escaping" "")
+          :clj-seq-note   (if clj?
+                            "; `clojure` blocks in the\n    same partition still run sequentially in source order"
+                            "")
+          :channel-count  (if (and code-channel? tool-channel?) "three" "two")
+          :n-tool         1
+          :n-code         (n tool-channel?)
+          :n-answer       (n tool-channel? code-channel?)
+          :action-fields  (if (and code-channel? tool-channel?)
+                            "both action fields" "the action field")
+          :action-turns   (cond (and code-channel? tool-channel?) "tool-calls and code-blocks"
+                                tool-channel? "tool-calls"
+                                :else "code-blocks")
+          ;; Oxford-comma list; with one action channel the both-mode
+          ;; "`a`, `b`, AND `answer`" would leave a dangling comma.
+          :empty-list     (cond (and code-channel? tool-channel?)
+                                "`tool-calls`, `code-blocks`, AND `answer`"
+                                tool-channel? "`tool-calls` AND `answer`"
+                                :else "`code-blocks` AND `answer`")
+          ;; Same dangling-separator problem in the consistency rules; the
+          ;; both-mode spacing ("[],  code") is load-bearing for byte-identity.
+          :answer-clears  (cond (and code-channel? tool-channel?)
+                                "tool-calls=[],  code-blocks=\"\""
+                                tool-channel? "tool-calls=[]"
+                                :else "code-blocks=\"\"")
+          :h-compose      (+ h0 1)
+          :h-parallel     (+ h0 2)
+          :h-raw          (+ h0 (if clj? 3 1))
+          :h-def          (+ h0 4)
+          :h-answer       (+ h0 n-code-rows 1)}))))))
 
 (defsignature ThinkActCode
   (render-instructions true true)
@@ -413,6 +527,16 @@ field is required. There is NO JSON tool-calls channel for this agent — never 
 `tool-calls`. This costs you nothing: every tool is callable as an ordinary sandbox function
 from a `clojure` block, e.g. `(some-tool :arg \"val\")`. Pick exactly one of (1), (2); the
 router prefers code > answer.")
+
+(def ^:private coact-role-script-only
+  "You are an AI agent that answers questions by choosing ONE of two output channels per turn:
+(1) **code-blocks** — write markdown fenced code (bash / python) that runs as a
+    fresh subprocess, rooted at the project directory.
+(2) **answer** — finalize with a rich markdown answer. Non-blank `answer` TERMINATES the loop.
+Your reasoning is captured automatically by the chain-of-thought layer — no separate `thought`
+field is required. There is NO JSON tool-calls channel and NO clojure sandbox for this agent:
+your tools are EXECUTABLES on PATH (see `## Scripts`), and you extend the set by writing
+another one. Pick exactly one of (1), (2); the router prefers code > answer.")
 
 (def ^:private coact-channel-routing
   "## When to Use Which Channel
@@ -551,6 +675,40 @@ size, a `SAFE_LINES` chunk limit, and a recovery snippet — read it and obey it
 4. **\"Show me X\" → populate `answer`** verbatim next iteration, don't re-print.
 
 Marker format, chunk modes, and worked recipes: `(usage$guide :topic :truncation)`.")
+
+(def ^:private coact-critical-rules-script
+  "## Critical Rules
+- **Iteration 1 has no history.** When `iterations` is empty in the user message, do NOT reference
+  prior results or earlier findings — there are none. Act on the question as posed; gather what you
+  need with a block this iteration.
+- **Terminate ONLY by populating `answer`.** There is no `(FINAL …)` and no exit code that ends
+  the loop; a block that prints \"done\" is still just a block.
+- **Every block is rooted at the PROJECT ROOT (git-root)**, not the JVM cwd (which under `bb tui`
+  is a `projects/…` subdir). `.brainyard/…` is therefore correct from any block; do not prepend
+  cwd guesses, and do not `cd` to \"fix\" a path that was already right.
+- **Both `.brainyard` roots matter.** Project artifacts live under `<repo-root>/.brainyard/`, user
+  ones under `~/.brainyard/`. When you sweep for something, search BOTH:
+  `find \".brainyard\" \"$HOME/.brainyard\" -name '…'`.")
+
+(def ^:private coact-large-results-playbook-script
+  "## Large Output Playbook
+A block whose combined stdout+stderr exceeds the output cap is SPILLED to a
+file; the result you get back carries the path and the original size.
+
+### Rules
+1. **Never `cat` a spilled path** — it re-truncates and you get another marker,
+   which is a loop that costs one iteration per lap.
+2. **Reach for `grep` first.** A pattern match over the spill inlines cleanly
+   where the whole file cannot.
+3. **Take a window**: `sed -n '400,460p' <path>`, `head -c 4000`, `tail -50`.
+   Read the part that answers the question, not the file.
+4. **Do not re-run the command to see the rest.** The output is already on
+   disk; re-running pays for it twice and may not even be deterministic.
+5. **\"Show me X\" → populate `answer`** with it next iteration, rather than
+   printing it again from a block.
+
+Prevention beats recovery: pipe through `head`, `grep`, `wc -l` or `jq` INSIDE
+the block, so the big thing never crosses the boundary.")
 
 (def ^:private coact-footer
   "## Answer Format
@@ -858,6 +1016,86 @@ and the results (return value, stdout, or error) are sent back for the next iter
   repeatedly. `task$detail` (`:last-n N` for the output tail) and `task$cancel`
   work on the id if you must. There is no per-iteration timeout knob."))
 
+(def ^:private execution-model-script
+  "## Execution Model — bash / python subprocesses
+Each fenced block is written to a temp file and run as a FRESH PROCESS
+(`bash <file>` / `python3 <file>`). There is no interpreter session and no
+shared sandbox.
+- **Working directory is the PROJECT ROOT** for every block, whatever the
+  session's cwd. Relative paths mean the same thing in every block.
+- **No state carries between blocks.** A shell variable, a `cd`, an imported
+  module, a Python name — all gone when the block ends. To carry something
+  forward, write it to a FILE and read it back in a later block. That file is
+  the state, and it survives the turn.
+- **Captured output**: stdout and stderr are merged and returned to you, with
+  the exit code as the block's result. A non-zero exit is reported, not fatal —
+  the loop continues and you see what failed.
+- **`stdin` is closed and there is no terminal.** A command that would prompt
+  for a password fails instead of hanging. Pass credentials through the
+  environment or a file; never expect an interactive prompt.
+- **The script library is on PATH** — see `## Scripts`. A script you save this
+  turn is callable by bare name in the very next block.
+- **Large output is spilled to a file** past the output cap, and the block's
+  result tells you the path. Read the part you need (`sed -n '…p'`, `grep`)
+  rather than re-running the command to see the rest.
+- **Auto-background detach** (the ONLY statement of this — it is not repeated
+  elsewhere in the prompt): blocks run synchronously in the foreground; one
+  that hasn't finished by the agent's `:auto-background-timeout-ms` (default
+  180s) detaches into the background and returns `:status :pending :task-id
+  <id>` immediately so the loop continues. The resolved result is harvested
+  into a later iteration as an `[↺ async-completion]` record — wait for it, do
+  NOT poll repeatedly. For work you KNOW is long, prefer running it yourself
+  with `cmd > .brainyard/run-<name>.log 2>&1 &` and reading the log in a later
+  block: you choose where the output lands and can watch it grow.
+- **There is no per-iteration timeout knob.**")
+
+(def ^:private coact-code-blocks-format-script
+  "## code-blocks Format (markdown fences, one string)
+`code-blocks` is ONE markdown string with one or more fenced blocks.
+
+| Fence | Runtime | Escaping | State |
+|---|---|---|---|
+| ```bash / ```sh    | fresh subprocess, /bin/bash | raw — no escaping | stateless |
+| ```python / ```py  | fresh subprocess, python3   | raw | stateless |
+| ````markdown / ````text / ````html | NOT executed — body saved verbatim to a file | raw — no escaping | returns the file path |
+
+Any other language tag is REFUSED, not executed — the block comes back as an
+error and the iteration is spent. There is no clojure fence and no SCI sandbox
+for this agent.
+
+### Verbatim content fences (markdown / text / html)
+To PRODUCE document content, emit a **four-backtick** fence with an optional
+filename hint (````markdown report.md). The body is written byte-for-byte to a
+scratch file; the result is its absolute path. 4+ backticks so any ordinary ```
+inside the content passes through. Scratch files are GC'd ~24h — promote with a
+`cp` in a bash fence. (For content you author by hand this is usually clearer
+than a heredoc, because nothing inside it is interpreted.)
+
+### Parallel execution
+A line containing only `<!-- ParallelBlock -->` makes the blocks around it run
+CONCURRENTLY, each in its own process. Without it, blocks run sequentially in
+source order — which is what you want whenever a later block reads a file an
+earlier one wrote.
+
+    ```bash
+    curl -s https://api.example.com/status
+    ```
+    <!-- ParallelBlock -->
+    ```bash
+    curl -s https://api.example.com/health
+    ```
+
+### Rules
+- One channel per iteration: `code-blocks` OR `answer`, never both. No XML tool-calling.
+- **Fences take only the language token** — no per-block modifiers (```bash,
+  not ```bash :something). The dispatcher errors on unexpected fence text.
+- **Code whose body contains ``` fences** must be wrapped in a LONGER fence —
+  open with 4 backticks ````bash … ```` — so the inner ``` passes through
+  unparsed. A 3-backtick fence closes at the first inner ```.
+- Prefer `set -euo pipefail` at the top of a bash block: without it a failing
+  command in the middle is invisible, because the block's exit code is the LAST
+  command's.")
+
 (def ^:private execution-model-nrepl
   "## Execution Model — Live JVM via clj-nrepl
 Your ```clojure blocks run against the LIVE brainyard JVM via clj-nrepl —
@@ -905,13 +1143,21 @@ reflection, every loaded namespace, and arbitrary interop are all reachable.
   Wait for it; do NOT poll repeatedly.")
 
 (defn- execution-model-for
-  "Pick the system-prompt execution-model section for `agent` based on its
-   `:clj-backend` config. Defaults to the SCI-sandbox text when nil or
-   unknown — same as historical behavior for non-overriding agents."
+  "Pick the system-prompt execution-model section for `agent`.
+
+   Language first, then backend. An agent with no `clojure` fence has no
+   Clojure execution model to describe — neither the SCI sandbox's interop
+   levels and `pmap` semantics nor the nREPL image's full-trust contract apply
+   to a bash subprocess — so it gets the script model regardless of what
+   `:clj-backend` happens to say. `:clj-backend` is then the historical
+   sandbox/nrepl choice, unchanged, for everyone who does have the fence."
   [agent]
-  (case (when agent (config/resolve-clj-backend agent))
-    :nrepl   execution-model-nrepl
-    (execution-model-sandbox (config/resolve-sandbox-interop agent))))
+  (let [langs (resolve-code-langs (config/get-config-snapshot agent))]
+    (if-not (contains? langs :clojure)
+      execution-model-script
+      (case (when agent (config/resolve-clj-backend agent))
+        :nrepl   execution-model-nrepl
+        (execution-model-sandbox (config/resolve-sandbox-interop agent))))))
 
 (def ^:private sandbox-context-accessor
   "## SCI Sandbox State Memory
@@ -1099,7 +1345,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
      :skill-substrate :mcp-substrate :todo-substrate :exec-substrate
      :subagent-substrate]]
    [:session-context
-    [:system-info :tools :instruction :agent-context
+    [:system-info :tools :scripts :instruction :agent-context
      :project-instructions :project-memory :user-instructions
      :footer]]
    [:history-context
@@ -1150,7 +1396,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
   [{:keys [sandbox-bindings instruction agent-context tool-context agent-tools
            include-function-directory? system-info tools-disabled-tiers
            brainyard-instructions project-memory execution-model code-channel?
-           tool-channel? enable-subagent-calls clj-backend]
+           tool-channel? enable-subagent-calls clj-backend code-langs scripts]
     :or {code-channel? true tool-channel? true enable-subagent-calls true}}
    & {:keys [return-breakdown?]}]
   (let [tools-section (build-tools-section
@@ -1167,13 +1413,39 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
         ;; (e.g. early bootstrap paths with no agent) — fall back to the
         ;; sandbox text in that case.
         exec-model (or execution-model execution-model-sandbox)
+        ;; nil (the bootstrap/standalone-render path) means "unspecified", which
+        ;; has always meant the full set — not "no languages".
+        langs (if (seq code-langs) (set code-langs) all-code-langs)
+        clj?  (contains? langs :clojure)
+        ;; Can this agent reach the tool REGISTRY at all? Two ways in: the JSON
+        ;; tool-calls channel, or a clojure fence (where every visible tool is
+        ;; auto-bound as a sandbox callable). With neither, the five base
+        ;; substrates below — skill / MCP / todo / exec / subagent — describe
+        ;; procedures whose every verb is a registered tool this agent cannot
+        ;; invoke. They are the largest thing in the prompt after the execution
+        ;; model, and teaching an agent a procedure it cannot perform is worse
+        ;; than the tokens: it invites an iteration spent discovering that.
+        registry? (or tool-channel? clj?)
         sections
         (cond-> {:role                         (cond
+                                                 (and (not tool-channel?) (not clj?))
+                                                 coact-role-script-only
                                                  (not tool-channel?) coact-role-code-only
                                                  code-channel?       coact-role
                                                  :else               coact-role-tool-only)
-                 :critical-rules               coact-critical-rules
-                 :large-results-playbook       coact-large-results-playbook}
+                 ;; Both baseline sections are written for an agent with a
+                 ;; registry and a clojure fence: the rules cite `doc$read` /
+                 ;; `plan$read` / `usage$guide`, and the playbook's recovery
+                 ;; verbs are `read-file :lines` and the `grep` TOOL. Handing
+                 ;; those to a bash-only agent is not merely wasted tokens —
+                 ;; it is instructions it cannot follow, and the shell has its
+                 ;; own perfectly good answers (`sed -n`, `grep`, `head -c`).
+                 :critical-rules               (if registry?
+                                                 coact-critical-rules
+                                                 coact-critical-rules-script)
+                 :large-results-playbook       (if registry?
+                                                 coact-large-results-playbook
+                                                 coact-large-results-playbook-script)}
 
           ;; The JSON tool-calls envelope — meaningless for a code-only agent,
           ;; whose tools are sandbox callables instead.
@@ -1186,7 +1458,9 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
           ;; applies without a code channel.
           code-channel?
           (assoc :execution-model    exec-model
-                 :code-blocks-format coact-code-blocks-format)
+                 :code-blocks-format (if clj?
+                                       coact-code-blocks-format
+                                       coact-code-blocks-format-script))
 
           ;; The SCI state-memory contract (`context-get`, `[:user-vars]`) is a
           ;; sandbox construct. On the :nrepl backend the clojure fences never
@@ -1194,7 +1468,8 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
           ;; cannot resolve — the live image is that agent's state surface
           ;; instead. Registered tools DO bind on both backends (see
           ;; agent.common.nrepl-bindings); only these accessors are sandbox-only.
-          (and code-channel? (not= :nrepl clj-backend))
+          ;; …and only when there IS a clojure fence to reach the sandbox with.
+          (and code-channel? clj? (not= :nrepl clj-backend))
           (assoc :sandbox-context-accessor sandbox-context-accessor)
 
           ;; "When to use which channel" only earns its tokens when there IS a
@@ -1207,6 +1482,14 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
 
           tools-section
           (assoc :tools tools-section)
+
+          ;; The script library. For a script-only agent this IS the tool
+          ;; directory — `tools-section` is nil there (no bindings, no roster),
+          ;; so nothing else in the prompt says how to reach a capability.
+          ;; It is additive for everyone else: an agent that also has clojure
+          ;; and a roster gets the library listed beside them.
+          (and code-channel? (not (str/blank? scripts)))
+          (assoc :scripts scripts)
 
           (and instruction (not (str/blank? instruction)))
           (assoc :instruction (str "## Instructions\n" instruction))
@@ -1234,13 +1517,13 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
           ;; every coact-derived agent. Cousin of Project Memory (consult the
           ;; store before reinventing). The skills READ subset rides
           ;; default-agent-roster; the WRITE subset stays on skill-agent.
-          true
+          registry?
           (assoc :skill-substrate agent-roster/skill-substrate-protocol)
 
           ;; Base MCP substrate — discover→inspect→invoke an external MCP server,
           ;; inherited by every coact-derived agent. Cousin of the skill
           ;; substrate. The MCP command family rides default-agent-roster.
-          true
+          registry?
           (assoc :mcp-substrate agent-roster/mcp-substrate-protocol)
 
           (and user-instructions (not (str/blank? user-instructions)))
@@ -1251,12 +1534,12 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
           ;; Base todo substrate — checklist-management convention inherited by
           ;; every coact-derived agent (modeled on Project Memory). Static prose;
           ;; the tools it references already ride default-agent-roster.
-          true
+          registry?
           (assoc :todo-substrate agent-roster/todo-substrate-protocol)
 
           ;; Base exec substrate — route/verify/record/flip discipline; layers
           ;; over the todo substrate so any agent can DO its checklist safely.
-          true
+          registry?
           (assoc :exec-substrate agent-roster/exec-substrate-protocol)
 
           ;; Base agent-lifecycle substrate — every dispatched subagent stays
@@ -1264,7 +1547,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
           ;; inherited by every coact-derived agent. Tools ride
           ;; default-agent-roster. Gated on :enable-subagent-calls: skip the
           ;; section when subagent dispatch is off (nothing to manage).
-          enable-subagent-calls
+          (and enable-subagent-calls registry?)
           (assoc :subagent-substrate agent-roster/subagent-substrate-protocol)
 
           true
@@ -1685,7 +1968,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                                    :tools-disabled-tiers
                                    :brainyard-instructions :project-memory
                                    :execution-model :code-channel? :tool-channel?
-                                   :clj-backend
+                                   :clj-backend :code-langs :scripts
                                    :enable-subagent-calls])
                :return-breakdown? true)
           usr (coact-user-context
@@ -1758,9 +2041,44 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
   {:code-channel? :code-blocks
    :tool-channel? :tool-calls})
 
+(defn- code-blocks-schema
+  "The `::code-blocks` output schema narrowed to `langs`.
+
+   The description is the ONLY place the model is told which fences exist at
+   the level a structured-output provider can see, so leaving it naming
+   `clojure` for a bash/python agent would put the contradiction right back
+   where dropping the field removed it. The full set returns the shared schema
+   var untouched, so nothing about an ordinary agent changes.
+
+   The refusal is stated in the DESCRIPTION rather than as an enum of fence
+   tags because the fences live inside one markdown string — there is no
+   schema position to constrain. What makes it a contract rather than a hope
+   is `run-single-block`, which refuses the same set; this text is how the
+   model finds that out before spending an iteration on it."
+  [langs]
+  (let [langs (set langs)]
+    (if (= langs all-code-langs)
+      ::code-blocks
+      (let [names   (->> lang-order (filter langs) (map name))
+            listed  (str/join " or " names)
+            fan-out (if (contains? langs :clojure)
+                      (str "; a line containing only `<!-- ParallelBlock -->` runs the "
+                           (str/join "/" (remove #{"clojure"} names))
+                           " ones concurrently in fresh processes, while clojure blocks stay "
+                           "sequential in the shared sandbox (fan out with `(pmap f coll)`)")
+                      "; a line containing only `<!-- ParallelBlock -->` runs them concurrently, each in a fresh process")]
+        [:string {:desc (str "Markdown text containing fenced code blocks tagged " listed
+                             " — ANY OTHER language tag is refused, not executed. "
+                             "Blocks run sequentially in source order" fan-out ". "
+                             "Four-backtick fences tagged markdown/text/html are verbatim "
+                             "content blocks: saved to a file (path returned), not executed. "
+                             "Empty when using answer.")}]))))
+
 (def think-act-code-signature
-  "Compile the ThinkActCode signature for a given pair of channel flags,
-   dropping the output field of each disabled channel.
+  "Compile the ThinkActCode signature for a given pair of channel flags and
+   (in the three-arity form) the set of executable code languages: dropping the
+   output field of each disabled channel, and narrowing the surviving
+   `code-blocks` description to the languages that will actually run.
 
    Why bother: the output JSON schema is embedded verbatim in the DSPy system
    message, so a field the agent can never use is paid for every turn AND
@@ -1768,34 +2086,46 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
    code-blocks channel' while its schema still demanded `code_blocks`. Dropping
    the field makes the contract structural: providers with native structured
    output refuse the dead channel at the API level, the rest see a schema that
-   simply lacks it.
+   simply lacks it. The language gate is the same argument one level down: a
+   schema advertising a ```clojure fence the dispatcher will refuse is the same
+   bug in a smaller box.
 
-   Memoized on [code? tool?] (3 reachable combos — `resolve-action-channels`
-   rules out both-false). Memoization is not just for speed: the compiled
-   schema string sits at the head of the system message, the most
-   cache-sensitive position, so it must be byte-stable across a session.
+   Memoized on the argument vector — 3 reachable channel combos
+   (`resolve-action-channels` rules out both-false) times the distinct language
+   sets in play. Memoization is not just for speed: the compiled schema string
+   sits at the head of the system message, the most cache-sensitive position,
+   so it must be byte-stable across a session.
 
    Note the `:instructions` docstring still describes all three channels; the
    role/prompt sections in `build-system-context` are what narrow it. Only the
-   output CONTRACT is specialized here."
+   output CONTRACT is specialized here.
+
+   The two-arity form delegates with `all-code-langs`, so every pre-existing
+   call site compiles exactly the signature it did before."
   (memoize
-   (fn [code-channel? tool-channel?]
-     (let [drop-keys (keep (fn [[flag k]] (when-not (get {:code-channel? code-channel?
-                                                          :tool-channel? tool-channel?}
-                                                         flag)
-                                            k))
-                           channel-output-key)]
-       (if (empty? drop-keys)
-         ThinkActCode
-         (clj-llm/compile-signature
-          (:name ThinkActCode)
-          ;; Instructions are re-rendered for these flags too — dropping the
-          ;; output field without dropping the prose that describes it would
-          ;; leave the same contradiction one layer up.
-          (render-instructions code-channel? tool-channel?)
-          (:inputs ThinkActCode)
-          (apply dissoc (:outputs ThinkActCode) drop-keys)
-          (:input-order ThinkActCode)))))))
+   (fn
+     ([code-channel? tool-channel?]
+      (think-act-code-signature code-channel? tool-channel? all-code-langs))
+     ([code-channel? tool-channel? langs]
+      (let [langs     (set (or (seq langs) all-code-langs))
+            drop-keys (keep (fn [[flag k]] (when-not (get {:code-channel? code-channel?
+                                                           :tool-channel? tool-channel?}
+                                                          flag)
+                                             k))
+                            channel-output-key)
+            narrow?   (and code-channel? (not= langs all-code-langs))]
+        (if (and (empty? drop-keys) (not narrow?))
+          ThinkActCode
+          (clj-llm/compile-signature
+           (:name ThinkActCode)
+           ;; Instructions are re-rendered for these flags too — dropping the
+           ;; output field without dropping the prose that describes it would
+           ;; leave the same contradiction one layer up.
+           (render-instructions code-channel? tool-channel? langs)
+           (:inputs ThinkActCode)
+           (cond-> (apply dissoc (:outputs ThinkActCode) drop-keys)
+             narrow? (assoc :code-blocks (code-blocks-schema langs)))
+           (:input-order ThinkActCode))))))))
 
 (defn- truncate-thought
   "Cap an iteration record's `:thought` — the LLM's own reasoning, which is
@@ -1874,6 +2204,14 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
 
         ;; Runtime config + sandbox-reuse/restore inputs
         cfg-snap (config/get-config-snapshot agent)
+        ;; Resolved ONCE and threaded into the prompt, the signature and the
+        ;; eval dispatch, so those three cannot disagree about which fences
+        ;; are real. `clj-fences?` is the whole basis of the light path below:
+        ;; without a clojure fence nothing can reach an SCI sandbox, so
+        ;; building one — and the tool-binding palette that fills it — is work
+        ;; whose only product is prompt text describing an unreachable surface.
+        code-langs   (resolve-code-langs cfg-snap)
+        clj-fences?  (contains? code-langs :clojure)
         enable-sandbox-persistence (feature/on?* cfg-snap :exec/sandbox-persistence)
         ;; sandbox (live SCI context) lives in !state; sandbox-state (extracted
         ;; user vars) lives in !session so it persists with the session and
@@ -1948,7 +2286,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
         ;; create-sandbox's `:restored-vars` below, which keeps them visible to
         ;; `extract-user-vars` so they are re-persisted at turn end instead of
         ;; being filtered out and dropped from the snapshot.
-        bindings (sb-bind/make-tool-bindings agent)
+        bindings (if clj-fences? (sb-bind/make-tool-bindings agent) {})
 
         ;; :nrepl backend — intern that SAME map into the live image, so the
         ;; function directory the prompt renders below is callable there too
@@ -1979,11 +2317,20 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
 
         ;; Reuse previous turn's sandbox when available (so user `def`s
         ;; persist across turns); otherwise create a fresh one.
-        sandbox (if existing-sandbox
+        sandbox (cond
+                  ;; No clojure fence ⇒ no sandbox at all. Every downstream
+                  ;; reader already guards on it (`(:sandbox st)` at finalize,
+                  ;; the clojure dispatch arm the language gate now refuses),
+                  ;; so nil is a supported value rather than a hole.
+                  (not clj-fences?) nil
+
+                  existing-sandbox
                   (do (clj-sandbox/update-context! existing-sandbox sandbox-context)
                       (clj-sandbox/update-bindings! existing-sandbox bindings)
                       (clj-sandbox/clear-history!   existing-sandbox :keep-last 5)
                       existing-sandbox)
+
+                  :else
                   (clj-sandbox/create-sandbox
                    :context        sandbox-context
                    :bindings       bindings
@@ -1997,7 +2344,27 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
         ;; particular tool-agent$create's register! binds the new
         ;; `user$tool$<name>` symbol here so a create-then-call in the SAME turn
         ;; resolves instead of failing until the next turn.
-        _ (when agent (swap! (:!state agent) assoc :sandbox sandbox))
+        _ (when (and agent sandbox) (swap! (:!state agent) assoc :sandbox sandbox))
+
+        ;; Script library: create the project dirs, materialize the builtin
+        ;; pack, and render the index. Done here (not lazily at first use) so
+        ;; the dirs are on PATH from the first block of the turn — a script
+        ;; written this turn has to be callable the next block, not the next
+        ;; turn. Best-effort: an unwritable library degrades to a smaller one,
+        ;; never a failed turn.
+        script-roots   (when (script-library-active? cfg-snap)
+                         (try (scripts/ensure-roots! (scripts/script-roots agent))
+                              (catch Exception e
+                                (mulog/warn ::script-roots-failed :error (ex-message e))
+                                nil)))
+        script-entries (when script-roots
+                         (try (scripts/list-scripts script-roots)
+                              (catch Exception _ nil)))
+        scripts-section (when script-roots
+                          (scripts/format-scripts-section
+                           script-entries
+                           (get cfg-snap :script-index-limit 60)
+                           (scripts/project-bin script-roots)))
 
         ;; Load brainyard instructions once per turn
         agent-dirs (sb-bind/get-dirs agent)
@@ -2137,6 +2504,10 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                          ;; tool-call envelope. Both default true.
                          :code-channel? (:code-channel? action-channels)
                          :tool-channel? (:tool-channel? action-channels)
+                         ;; Same set the signature is compiled from, three
+                         ;; lines below — one resolution, three consumers.
+                         :code-langs    code-langs
+                         :scripts       scripts-section
                          ;; Gate the agent-lifecycle substrate: no point teaching
                          ;; the agent-registry$* subagent management when subagent
                          ;; dispatch is disabled for this agent.
@@ -2245,7 +2616,11 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
              ;; ThinkActCode call and both retry paths), so all three agree.
              :signature        (think-act-code-signature
                                 (:code-channel? action-channels)
-                                (:tool-channel? action-channels))
+                                (:tool-channel? action-channels)
+                                code-langs)
+             ;; Read by coact-eval-action's dispatch-opts, so the runtime
+             ;; refuses exactly the fences the schema above declined to offer.
+             :code-langs       code-langs
              :prompt-token-breakdown prompt-token-breakdown
              :context-briefing briefing
              :iterations       []
@@ -3439,7 +3814,15 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                      "cat ")
         tmp-file (coact-scratch-path ext)
         _ (spit tmp-file code)
-        command (str cmd-prefix tmp-file)
+        ;; The script library rides in as a COMMAND PREFIX
+        ;; (`PATH="…:$PATH" … bash /tmp/x.sh`) rather than an env map threaded
+        ;; through the three spawn paths below — all three hand the string to
+        ;; `/bin/sh -c`, so one prefix covers the sync backend, the fast-eval
+        ;; ProcessBuilder and the `:bash` task executor, and none of them grows
+        ;; a parameter that could fall out of sync with the other two.
+        ;; "" when the library is off, so the command is byte-identical to
+        ;; what it was before the library existed.
+        command (str (script-env-prologue agent) cmd-prefix tmp-file)
         ;; Anchor the fence's relative paths at the git-root (project-dir),
         ;; matching the `bash` tool (tools.clj) and the prompt's own promise —
         ;; NOT the JVM cwd, which under `bb tui` is the projects/agent-tui-app/
@@ -3820,7 +4203,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
    Blocks whose fence had unexpected trailing text (`:fence-error` set
    by `extract-all-code-blocks-multi`) short-circuit with that error."
   [sandbox {:keys [lang code fence-error filename verbatim?]}
-   {:keys [auto-bg-ms fast-eval-ms from-iteration agent]}]
+   {:keys [auto-bg-ms fast-eval-ms from-iteration agent code-langs]}]
   (when (Thread/interrupted)
     (throw (ex-info "Code eval interrupted" {:lang lang :interrupted true})))
   ;; Sub-agents run code blocks inline (no detach): detach is top-level-only
@@ -3839,6 +4222,17 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
 
       verbatim?
       (run-verbatim-block lang code filename)
+
+      ;; A language this agent does not run is REFUSED as a value, in the same
+      ;; shape as the "Unsupported language" arm below — one legible iteration,
+      ;; not an aborted turn. It sits above every executing arm on purpose: the
+      ;; gate has to be the thing that decides, not a fallthrough that a new
+      ;; language arm could quietly step in front of.
+      (and code-langs (not (contains? code-langs (keyword lang))))
+      {:lang lang :code code :result nil :output ""
+       :error (str "Language `" lang "` is not enabled for this agent. Enabled: "
+                   (str/join ", " (map name (filter code-langs lang-order)))
+                   ".")}
 
       (= "clojure" lang)
       ;; Route Clojure eval through the execution backend (R4). LocalBackend's
@@ -4015,6 +4409,14 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                        :agent          agent
                        :tools          tools
                        :tools-fn-map   tools-fn-map
+                       ;; Stamped by coact-init from the SAME resolution that
+                       ;; shaped the prompt and compiled the signature, so the
+                       ;; three cannot disagree about which fences are real.
+                       ;; The config fallback covers direct-dispatch callers
+                       ;; (tests, in-task paths) that never ran init.
+                       :code-langs     (or (:code-langs @st-memory)
+                                           (resolve-code-langs
+                                            (config/get-config-snapshot agent)))
                        :from-iteration iteration-count}
         parallel? (parallel-mode? code-blocks)
         entries
@@ -5057,7 +5459,9 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
         (swap! (proto/get-st-memory-init agent) assoc
                :previous-turns updated-turns)
 
-        (when enable-sandbox-persistence
+        ;; `(:sandbox st)` is nil for a script-only agent — there are no SCI
+        ;; user vars to survive, and extraction would be reaching into nothing.
+        (when (and enable-sandbox-persistence (:sandbox st))
           (let [survival (clj-sandbox/extract-user-vars-with-survival (:sandbox st))
                 kept     (:kept survival)
                 lost     (:lost survival)]
@@ -5372,11 +5776,19 @@ above.")
 
 (defn- merge-derived-tools
   "Merge two :agent-tools maps by concatenating their :tools vectors with
-   distinct. Either side being nil yields the other side."
+   distinct. Either side being nil yields the other side.
+
+   An EXPLICITLY EMPTY roster on the derived side wins outright. `nil` means
+   \"not specified — inherit CoAct's\"; `{:tools []}` means \"none\", and
+   concatenating the parent roster onto it would make the declaration
+   unexpressible. script-agent depends on this: its tools are executables on
+   PATH, and inheriting `default-agent-roster` would hand it a registry it has
+   no channel to call and pay for the full spec block describing it."
   [base addition]
   (cond
     (nil? addition) base
     (nil? base)     addition
+    (and (contains? base :tools) (empty? (:tools base))) base
     :else           {:tools (vec (distinct (concat (:tools base)
                                                    (:tools addition))))}))
 

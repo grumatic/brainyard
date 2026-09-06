@@ -1,0 +1,436 @@
+;; Copyright (c) 2024-2026 Grumatic, Inc.
+;; SPDX-License-Identifier: MIT
+;; Licensed under the MIT License. See LICENSE at the repository root.
+
+(ns ai.brainyard.agent.script-agent-test
+  "Tests for script-agent and the script library.
+
+   The properties under test are all CONTRACTS rather than behaviours: that the
+   compiled signature, the rendered prompt and the eval dispatch agree about
+   which fences exist, and that the library's PATH composition matches the
+   index the prompt shows. A drift between any two of those is invisible at
+   runtime until a turn is spent on it, which is exactly why they are pinned
+   here rather than left to a live run.
+
+   No LLM is involved. `run-single-block` is driven directly, which is enough
+   because the language gate sits in it, above every executing arm."
+  (:require [clojure.test :refer [deftest testing is]]
+            [clojure.java.io :as io]
+            [clojure.string :as str]
+            [ai.brainyard.agent.common.coact-agent :as ca]
+            [ai.brainyard.agent.common.script-agent]
+            [ai.brainyard.agent.common.scripts :as scripts]
+            [ai.brainyard.agent.core.agent :as agent]
+            [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.context-budget :as cb]
+            [ai.brainyard.agent.core.context.section-assembler :as sa]
+            [ai.brainyard.agent.core.tool :as tool])
+  (:import [java.io File]))
+
+(def ^:private script-langs #{:bash :python})
+
+(defn- resolve-private [sym]
+  @(resolve (symbol "ai.brainyard.agent.common.coact-agent" (name sym))))
+
+(defn- tmp-dir!
+  "A fresh scratch directory, removed by `delete-tree!`."
+  [label]
+  (let [d (io/file (System/getProperty "java.io.tmpdir")
+                   (str "by-script-test-" label "-" (System/nanoTime)))]
+    (.mkdirs d)
+    d))
+
+(defn- delete-tree! [^File f]
+  (when (.isDirectory f) (run! delete-tree! (.listFiles f)))
+  (.delete f))
+
+(defn- write-script! [dir nm body]
+  (let [d (io/file dir "bin")
+        f (io/file d nm)]
+    (.mkdirs d)
+    (spit f body)
+    (.setExecutable f true true)
+    f))
+
+;; ============================================================================
+;; 1. Registration
+;; ============================================================================
+
+(deftest script-agent-registered-test
+  (testing "script-agent self-registers as a defagent"
+    (let [d (get @tool/!tool-defs :script-agent)]
+      (is (some? d) "script-agent must be in !tool-defs")
+      (is (= :agent (:type d)))))
+
+  (testing "its config pins two channels and two languages"
+    (let [m (:meta (get @tool/!tool-defs :script-agent))
+          x (:config-extra m)]
+      (is (true?  (:code-channel? x)))
+      (is (false? (:tool-channel? x)))
+      (is (= [:bash :python] (:code-langs x)))
+      (is (= {:tools []} (:agent-tools m))
+          "an explicit empty roster is what stops default-agent-roster being inherited"))))
+
+;; ============================================================================
+;; 2. The compiled output contract
+;; ============================================================================
+
+(deftest signature-narrows-to-the-enabled-languages-test
+  (let [sigf (resolve-private 'think-act-code-signature)
+        full (resolve-private 'ThinkActCode)
+        ks   #(set (keys (:outputs %)))
+        sig  (sigf true false script-langs)]
+
+    (testing "the tool channel's output field is gone"
+      (is (not (contains? (ks sig) :tool-calls)))
+      (is (contains? (ks sig) :code-blocks))
+      (is (contains? (ks sig) :answer)))
+
+    (testing "the code-blocks description names bash and python and NOTHING else"
+      (let [d (-> sig :outputs :code-blocks second :desc)]
+        (is (str/includes? d "bash"))
+        (is (str/includes? d "python"))
+        (is (not (str/includes? d "clojure"))
+            "a schema that still names clojure re-creates the contradiction")
+        (is (not (str/includes? d "javascript")))
+        (is (str/includes? d "refused")
+            "the refusal is the contract; the model must be able to read it")))
+
+    (testing "the JSON schema does not GROW — it rides the system message"
+      (is (< (count (str (:output-json-schema sig)))
+             (count (str (:output-json-schema full))))))
+
+    (testing "the two-arity form is unchanged by the language gate"
+      ;; Every pre-existing call site goes through it, so it must compile
+      ;; exactly what it did before — identity, not equality.
+      (is (identical? full (sigf true true)))
+      (is (identical? (sigf true false) (sigf true false)))
+      (is (= (:instructions (sigf true false))
+             (:instructions (sigf true false ca/all-code-langs)))
+          "the 2-arity form must mean 'all languages', not 'some default'"))))
+
+(deftest instructions-drop-the-clojure-prose-test
+  (let [ri     (resolve-private 'render-instructions)
+        script (ri true false script-langs)
+        clj    (ri true false)]
+
+    (testing "no Selmer markup or HTML escaping survives"
+      (is (not (str/includes? script "{%")))
+      (is (not (str/includes? script "{{")))
+      (is (not (str/includes? script "&quot;"))))
+
+    (testing "clojure-specific prose is gone, script prose is kept"
+      (is (not (str/includes? script "pmap")))
+      (is (not (str/includes? script "clojure")))
+      (is (not (str/includes? script "SCI")))
+      (is (str/includes? script "ParallelBlock")
+          "the marker DOES apply to bash/python and must survive")
+      (is (str/includes? script "CODE CHANNEL"))
+      (is (str/includes? script "ANSWER CHANNEL")))
+
+    (testing "narrowing shrinks the block"
+      (is (< (count script) (count clj))))
+
+    (testing "heuristic numbering stays contiguous from 1"
+      ;; The clojure rows are gated out, so the remaining rows must renumber.
+      (let [rows (->> (str/split-lines script)
+                      (drop-while #(not (str/includes? % "CHANNEL DECISION HEURISTICS")))
+                      (keep #(second (re-find #"^(\d+)\. " %)))
+                      (mapv parse-long))]
+        (is (seq rows))
+        (is (= rows (vec (range 1 (inc (count rows))))) (str "rows: " rows))))))
+
+;; ============================================================================
+;; 3. The rendered prompt
+;; ============================================================================
+
+(defn- script-sections []
+  (sa/sections (resolve-private 'coact-assembler)
+               {:agent-tools []
+                :sandbox-bindings {}
+                :code-channel? true
+                :tool-channel? false
+                :code-langs script-langs
+                :scripts "## Scripts — your reusable tools\nfoo — does a thing."
+                :execution-model nil}))
+
+(deftest prompt-has-no-registry-surface-test
+  (let [s (script-sections)
+        all (str/join "\n" (vals s))]
+
+    (testing "the tool surface is the Scripts section, not the registry"
+      (is (contains? s :scripts))
+      (is (not (contains? s :tools))
+          "no bindings and no roster ⇒ no ## Tools section at all")
+      (is (not (contains? s :tool-call-format))
+          "there is no JSON channel to describe")
+      (is (not (contains? s :sandbox-context-accessor))
+          "context-get is an SCI construct and there is no SCI here")
+      (is (not (contains? s :channel-routing))
+          "'which channel' earns nothing with one action channel"))
+
+    (testing "the five registry substrates are dropped"
+      ;; Each one's every verb is a registered tool this agent cannot invoke.
+      (doseq [k [:skill-substrate :mcp-substrate :todo-substrate
+                 :exec-substrate :subagent-substrate]]
+        (is (not (contains? s k)) (str k " describes tools with no channel"))))
+
+    (testing "the rules and playbook are the script variants"
+      (is (not (str/includes? (:critical-rules s) "usage$guide"))
+          "usage$guide is called from a clojure fence that does not exist here")
+      (is (not (str/includes? (:large-results-playbook s) "read-file"))
+          "the recovery verbs must be shell ones, not the read-file TOOL")
+      (is (str/includes? (:large-results-playbook s) "sed -n")))
+
+    (testing "the role names the two real channels"
+      (is (str/includes? (:role s) "bash / python"))
+      (is (not (str/includes? (:role s) "SCI"))))
+
+    (testing "nothing anywhere promises a clojure fence"
+      (is (not (str/includes? all "```clojure"))))))
+
+(deftest scripts-section-rides-the-session-zone-test
+  (testing ":scripts is in the system order, in the :session-context zone"
+    ;; Zone placement is not cosmetic: :agent-core is the largest cached prefix
+    ;; and invalidates only on an agent/binary upgrade. The index changes every
+    ;; time the model saves a script, so parking it there would bust the whole
+    ;; static prefix on a `chmod +x`. :session-context is the zone whose stated
+    ;; cadence is "one cache miss per on-disk edit".
+    (let [asm    (resolve-private 'coact-assembler)
+          order  (resolve-private 'coact-system-order)
+          marker "zzz-unique-index-marker"
+          secs   (sa/sections asm {:agent-tools [] :sandbox-bindings {}
+                                   :code-channel? true :tool-channel? false
+                                   :code-langs script-langs
+                                   :scripts (str "## Scripts\n" marker)})
+          zones  (into {} (map (fn [[z o]] [z (cb/compose secs o)])) (sa/system-zones asm))]
+      (is (some #{:scripts} order)
+          "a section missing from the order is silently dropped by compose")
+      (is (str/includes? (str (:session-context zones)) marker))
+      (is (not (str/includes? (str (:agent-core zones)) marker))
+          ":scripts must not sit in the static zone — it changes on every save"))))
+
+(deftest prompt-is-materially-smaller-test
+  (testing "the script prompt is a fraction of the full CoAct one"
+    ;; The claim this design is sold on. A regression here means a registry
+    ;; section crept back in for an agent that cannot use it.
+    (let [chars #(reduce + (map (comp count str) (vals %)))
+          script (chars (script-sections))
+          coact  (chars (sa/sections (resolve-private 'coact-assembler)
+                                     {:agent-tools [] :sandbox-bindings {}
+                                      :code-channel? true :tool-channel? true}))]
+      (is (< script (* 0.7 coact))
+          (str "script=" script " coact=" coact)))))
+
+(deftest coact-prompt-is-untouched-test
+  (testing "an ordinary agent still gets every section it did before"
+    (let [s (sa/sections (resolve-private 'coact-assembler)
+                         {:agent-tools [] :sandbox-bindings {}
+                          :code-channel? true :tool-channel? true})]
+      (doseq [k [:tool-call-format :channel-routing :sandbox-context-accessor
+                 :skill-substrate :mcp-substrate :todo-substrate :exec-substrate
+                 :subagent-substrate :critical-rules :large-results-playbook]]
+        (is (contains? s k) (str k " must survive for a full-channel agent")))
+      (is (str/includes? (:critical-rules s) "usage$guide")
+          "the registry variant is what a registry agent gets"))))
+
+;; ============================================================================
+;; 4. Dispatch refuses rather than executes
+;; ============================================================================
+
+(deftest disabled-language-is-refused-not-run-test
+  (let [rsb  (resolve-private 'run-single-block)
+        opts {:auto-bg-ms 180000 :agent nil :code-langs script-langs}
+        run  #(rsb nil {:lang %1 :code %2} opts)]
+
+    (testing "a clojure fence never reaches the evaluator"
+      ;; If it did, the nil sandbox would NPE rather than return a value —
+      ;; so a clean :error map is itself evidence the gate ran first.
+      (let [r (run "clojure" "(+ 1 1)")]
+        (is (str/includes? (:error r) "not enabled"))
+        (is (str/includes? (:error r) "bash, python")
+            "the refusal must say what IS enabled, or it costs another iteration")
+        (is (nil? (:result r)))))
+
+    (testing "javascript is refused too"
+      (is (str/includes? (:error (run "javascript" "1")) "not enabled")))
+
+    (testing "the enabled languages run"
+      (let [r (run "bash" "echo ok-bash")]
+        (is (= "" (:error r)))
+        (is (str/includes? (:output r) "ok-bash")))
+      (let [r (run "python" "print('ok-py')")]
+        (is (= "" (:error r)))
+        (is (str/includes? (:output r) "ok-py"))))
+
+    (testing "verbatim content fences are unaffected by the language gate"
+      ;; They are not executed, so the gate must not reach them.
+      (let [r (rsb nil {:lang "markdown" :code "# hi" :verbatim? true} opts)]
+        (is (= "" (:error r)))
+        (is (some? (:result r)))))
+
+    (testing "no gate configured ⇒ historical behaviour"
+      (let [r (rsb nil {:lang "javascript" :code "1"}
+                   (dissoc opts :code-langs))]
+        (is (not (str/includes? (str (:error r)) "not enabled"))
+            "a nil :code-langs must not silently refuse everything")))))
+
+;; ============================================================================
+;; 5. No sandbox, no inherited roster
+;; ============================================================================
+
+(deftest explicit-empty-roster-is-not-inherited-test
+  (testing "{:tools []} means none; nil means inherit"
+    (let [merge-fn (resolve-private 'merge-derived-tools)
+          coact    {:tools [:a :b]}]
+      (is (= {:tools []} (merge-fn {:tools []} coact))
+          "an explicit empty roster must survive the derived merge")
+      (is (= coact (merge-fn nil coact))
+          "nil still means 'unspecified — inherit'")
+      (is (= {:tools [:x :a :b]} (merge-fn {:tools [:x]} coact))
+          "a non-empty roster still concatenates"))))
+
+(deftest script-agent-builds-no-sandbox-test
+  (let [a (agent/setup-agent-by-id
+           :script-agent {:agent-session {:user-id "test" :session-id "script-sbx"}})]
+    (testing "config resolves to the pinned two-channel, two-language shape"
+      (let [snap (config/get-config-snapshot a)]
+        (is (= script-langs ((resolve-private 'resolve-code-langs) snap)))
+        (is (false? (get snap :tool-channel?)))
+        (is (true? ((resolve-private 'script-library-active?) snap))
+            "the library is what replaces the roster")))
+
+    (testing "an agent WITH a clojure fence gets no library"
+      ;; Both halves — PATH and prompt section — must answer the same way, and
+      ;; for a registry agent that answer is no.
+      (let [c (agent/setup-agent-by-id
+               :coact-agent {:agent-session {:user-id "test" :session-id "script-sbx-2"}})]
+        (is (false? ((resolve-private 'script-library-active?)
+                     (config/get-config-snapshot c))))))))
+
+;; ============================================================================
+;; 6. The library: precedence, PATH, index
+;; ============================================================================
+
+(deftest path-composition-and-shadowing-test
+  (let [root (tmp-dir! "roots")
+        p    (io/file root "proj")
+        u    (io/file root "user")
+        b    (io/file root "builtin")]
+    (try
+      (write-script! p "fetch" "#!/usr/bin/env bash\n# desc: Forked fetch.\n")
+      (write-script! u "hi"    "#!/usr/bin/env bash\n# desc: Say hi.\n")
+      (write-script! b "fetch" "#!/usr/bin/env bash\n# desc: Builtin fetch.\n")
+      (write-script! b "plain" "#!/usr/bin/env bash\necho no header\n")
+      (let [roots [{:scope :project :root (str p) :bin (str (io/file p "bin")) :lib (str (io/file p "lib"))}
+                   {:scope :user    :root (str u) :bin (str (io/file u "bin")) :lib (str (io/file u "lib"))}
+                   {:scope :builtin :root (str b) :bin (str (io/file b "bin")) :lib (str (io/file b "lib"))}]
+            entries (scripts/list-scripts roots)
+            by-name (group-by :name entries)
+            prologue (scripts/env-prologue roots)]
+
+        (testing "precedence: the project copy wins, the builtin is marked"
+          (is (= 2 (count (by-name "fetch"))))
+          (is (= [:project false] ((juxt :scope :shadowed?) (first (by-name "fetch")))))
+          (is (= [:builtin true]  ((juxt :scope :shadowed?) (second (by-name "fetch")))))
+          (is (false? (:shadowed? (first (by-name "hi"))))))
+
+        (testing "a header-less script still lists, and still runs"
+          (is (nil? (:desc (first (by-name "plain"))))))
+
+        (testing "PATH is prepended in precedence order"
+          (let [path (second (re-find #"PATH=\"([^\"]*)\"" prologue))]
+            (is (str/ends-with? path ":$PATH") "the host PATH must survive")
+            (is (< (.indexOf path (str p)) (.indexOf path (str u)))
+                "project before user")
+            (is (< (.indexOf path (str u)) (.indexOf path (str b)))
+                "user before builtin")))
+
+        (testing "the scopes are exported for scripts-ls, and the write target for scripts-new"
+          (is (str/includes? prologue "BY_SCRIPT_ROOTS="))
+          (is (str/includes? prologue (str "BY_SCRIPT_PROJECT_BIN=\"" (io/file p "bin") "\""))))
+
+        (testing "a lib dir that does not exist contributes no empty PATH element"
+          (is (not (re-find #"::" prologue)))
+          (is (not (re-find #"PATH=\":" prologue)))))
+      (finally (delete-tree! root)))))
+
+(deftest env-prologue-quotes-hostile-paths-test
+  (testing "a path containing shell metacharacters is data, never a substitution"
+    (let [roots [{:scope :project
+                  :root "/tmp/x $(touch /tmp/pwned) `id`"
+                  :bin  (System/getProperty "java.io.tmpdir")
+                  :lib  (System/getProperty "java.io.tmpdir")}]
+          p (scripts/env-prologue roots)]
+      (is (str/includes? p "\\$(touch") "the $ must be escaped")
+      (is (str/includes? p "\\`id\\`") "the backticks must be escaped"))))
+
+(deftest header-parsing-stops-at-the-header-test
+  (let [root (tmp-dir! "hdr")]
+    (try
+      ;; The real failure this guards: `scripts-new` contains `# name: $name`
+      ;; inside the heredoc it emits, so a whole-file scan indexed the
+      ;; generator as a script called `$name`.
+      (write-script! root "gen"
+                     (str "#!/usr/bin/env bash\n"
+                          "# name: gen\n"
+                          "# desc: Emits another script.\n"
+                          "set -e\n"
+                          "cat > x <<EOF\n"
+                          "# name: \\$other\n"
+                          "# desc: The generated one.\n"
+                          "EOF\n"))
+      (let [e (first (scripts/list-scripts
+                      [{:scope :project :root (str root)
+                        :bin (str (io/file root "bin")) :lib (str (io/file root "lib"))}]))]
+        (is (= "gen" (:name e)) "a nested header must not rename the script")
+        (is (= "Emits another script." (:desc e))))
+      (finally (delete-tree! root)))))
+
+(deftest scripts-section-rendering-test
+  (let [mk (fn [n] {:name (str "s" n) :scope :project :desc (str "Does " n ".")
+                    :path (str "/x/s" n) :shadowed? false})]
+
+    (testing "one line per script, and the write instructions"
+      (let [s (scripts/format-scripts-section (map mk (range 3)) 60 "/proj/.brainyard/scripts/bin")]
+        (is (str/includes? s "## Scripts"))
+        (is (str/includes? s "s0"))
+        (is (str/includes? s "chmod +x"))
+        (is (str/includes? s "scripts-new"))
+        (is (not (str/includes? s "more —")))))
+
+    (testing "overflow past the limit becomes a bounded pointer, not more lines"
+      (let [s (scripts/format-scripts-section (map mk (range 100)) 10 "/proj/bin")]
+        (is (str/includes? s "s9"))
+        (is (not (str/includes? s "s99")))
+        (is (str/includes? s "and 90 more"))
+        (is (str/includes? s "scripts-ls"))))
+
+    (testing "an empty library still explains how to start one"
+      (let [s (scripts/format-scripts-section [] 60 "/proj/bin")]
+        (is (str/includes? s "library is empty"))
+        (is (str/includes? s "chmod +x"))))
+
+    (testing "no library and nowhere to write ⇒ no section at all"
+      (is (nil? (scripts/format-scripts-section [] 60 nil))))))
+
+(deftest builtin-pack-is-well-formed-test
+  (testing "every builtin has a shebang and a desc header"
+    (doseq [[nm body] scripts/builtin-scripts]
+      (is (str/starts-with? body "#!") (str nm " needs a shebang"))
+      (is (re-find #"(?m)^# desc: " body) (str nm " needs a # desc: line"))
+      (is (re-find (re-pattern (str "(?m)^# name: " nm "$")) body)
+          (str nm "'s header name must match its filename"))))
+
+  (testing "materialization is idempotent and marks them executable"
+    (let [d (tmp-dir! "builtins")]
+      (try
+        (let [bin (str (io/file d "bin"))]
+          (scripts/materialize-builtins! bin)
+          (let [fs (into {} (for [[nm _] scripts/builtin-scripts]
+                              [nm (io/file bin nm)]))]
+            (doseq [[nm ^File f] fs]
+              (is (.exists f) (str nm " was not written"))
+              (is (.canExecute f) (str nm " is not executable"))
+              (is (= (get scripts/builtin-scripts nm) (slurp f))))))
+        (finally (delete-tree! d))))))
