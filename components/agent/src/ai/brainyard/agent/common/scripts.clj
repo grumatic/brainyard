@@ -550,20 +550,59 @@ esac
            (when proj-bin
              (str "BY_SCRIPT_PROJECT_BIN=\"" (sh-dq proj-bin) "\" "))))))
 
-(defn resolve-invoked
-  "Best-effort: which library script (if any) a bash block invoked, for the
-   `::script-invoked` event.
+(def ^:private interpreters
+  "Tokens that take the real command as their next argument."
+  #{"bash" "sh" "zsh" "python" "python3" "env" "exec" "time" "nohup" "sudo"})
 
-   Matches the first bare word of each non-comment line against the index. It
-   is a heuristic and says so — the question it answers is whether the library
-   is being REUSED or re-typed, and that question tolerates a miss far better
-   than it tolerates the cost of instrumenting the shell."
+(defn- command-heads
+  "The tokens in `line` that sit in COMMAND position: the first word of each
+   pipeline/list segment, plus whatever follows an interpreter.
+
+   Splitting on shell separators rather than scanning every token is what keeps
+   this from counting a name that merely appears as an argument or inside a
+   message — `echo clj-count` is not an invocation of `clj-count`."
+  [line]
+  (let [segs (str/split line #"\||;|&&|\|\||\$\(|`|\bthen\b|\bdo\b|\belse\b")]
+    (mapcat (fn [seg]
+              (let [ws (remove str/blank? (str/split (str/trim seg) #"\s+"))
+                    ;; skip leading VAR=value assignments, then the head; and
+                    ;; if the head is an interpreter, the next token too.
+                    ws (drop-while #(re-matches #"[A-Za-z_][A-Za-z_0-9]*=.*" %) ws)]
+                (when-let [h (first ws)]
+                  (if (interpreters (last (str/split h #"/")))
+                    [h (second ws)]
+                    [h]))))
+            segs)))
+
+(defn resolve-invoked
+  "Which library scripts (if any) `code` invokes, for the `::script-block`
+   event.
+
+   Matches tokens in COMMAND position against the index, by bare name (the
+   `:full` case, where the library is on PATH) or by the basename of a path
+   (the `:brief` case, where an agent runs `bash .brainyard/scripts/bin/foo`).
+   Both forms have to be covered or the measurement answers only for the agent
+   that needed it least.
+
+   It is a heuristic and says so — a name built at runtime from a variable is
+   invisible to it. The question it exists to answer is whether the library is
+   REUSED or re-typed, and that tolerates a miss far better than it tolerates
+   instrumenting the shell to find out."
   [code entries]
   (let [names (into #{} (map :name) entries)]
     (->> (str/split-lines (or code ""))
          (map str/trim)
          (remove #(or (str/blank? %) (str/starts-with? % "#")))
-         (keep #(let [w (first (str/split % #"\s+"))]
-                  (when (contains? names w) w)))
+         (mapcat command-heads)
+         (keep (fn [tok]
+                 (when tok
+                   ;; A command head can carry trailing shell punctuation that
+                   ;; belongs to the surrounding syntax, not the name —
+                   ;; `$(design-docs-over-1000)` leaves the closing paren on
+                   ;; the token.
+                   (let [tok  (str/replace tok #"[)\];&\"']+$" "")
+                         base (last (str/split tok #"/"))]
+                     (cond (contains? names tok)  tok
+                           (contains? names base) base)))))
          distinct
          vec)))

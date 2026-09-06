@@ -2655,6 +2655,13 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
              ;; Read by coact-eval-action's dispatch-opts, so the runtime
              ;; refuses exactly the fences the schema above declined to offer.
              :code-langs       code-langs
+             ;; The library index AS THE PROMPT SHOWED IT, kept for the
+             ;; `::script-block` telemetry. Deliberately this list and not a
+             ;; fresh scan at emit time: the question is whether the model
+             ;; reused what it was told about, so the denominator has to be
+             ;; what it was told, and re-listing per block would also pay a
+             ;; directory walk on the eval path.
+             :script-entries   (vec script-entries)
              :prompt-token-breakdown prompt-token-breakdown
              :context-briefing briefing
              :iterations       []
@@ -4421,6 +4428,51 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
         (cancel-scripts!)
         (throw t)))))
 
+(defn- script-block-events
+  "Pure: the `::script-block` payloads for `blocks` against library index `lib`.
+
+   Split from the emitter because `mulog/log` is a MACRO — `with-redefs`
+   cannot reach it — so building the payload somewhere a test can call is the
+   only way to pin its shape.
+
+   One event per SCRIPT block, emitted even when nothing was invoked, and that
+   is the whole point. A bare `::script-invoked` would be a numerator with no
+   denominator, and the question the library exists to answer is a RATIO: is it
+   being reused, or is the model re-typing pipelines it already saved? A reuse
+   rate near zero means the index is in the wrong place or the save rule is
+   wrong, and no amount of adding scripts fixes that.
+
+   `:scopes` is what says whether the shipped builtins earn their slots. nil
+   when the agent has no library — the ratio is not a question there."
+  [lib blocks]
+  (when (seq lib)
+    (let [scope-of (into {} (map (juxt :name :scope)) lib)]
+      (for [e blocks
+            :when (#{"bash" "python" "javascript"} (:lang e))]
+        (let [invoked (scripts/resolve-invoked (:code e) lib)]
+          {:lang    (:lang e)
+           :invoked invoked
+           :reused? (boolean (seq invoked))
+           :scopes  (mapv #(get scope-of %) invoked)
+           :library (count lib)
+           :exit    (:result e)
+           :failed? (not (str/blank? (str (:error e))))
+           :ms      (:duration-ms e)})))))
+
+(defn- emit-script-telemetry!
+  "Log the `script-block-events` for this eval. Never throws — telemetry must
+   not be able to fail a turn. Agent identity rides mulog's global context
+   (set in coact-init), so it is not passed here."
+  [{:keys [script-entries blocks]}]
+  (try
+    (doseq [{:keys [lang invoked reused? scopes library exit failed? ms]}
+            (script-block-events script-entries blocks)]
+      (mulog/log ::script-block
+                 :lang lang :invoked invoked :reused? reused? :scopes scopes
+                 :library library :exit exit :failed? failed? :ms ms))
+    (catch Throwable t
+      (mulog/warn ::script-telemetry-failed :error (ex-message t)))))
+
 (defn coact-code-eval-action
   "BT action: parse :code-blocks, execute each fenced block, and populate
    :last-code-results. CoAct terminates ONLY via the signature's `answer`
@@ -4525,6 +4577,11 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                :iteration (:iteration-count @st-memory)
                :blocks (count blocks)
                :parallel parallel?)
+    ;; In the COMMON tail on purpose: the sequential and parallel arms build
+    ;; their entries differently, and instrumenting either one alone would
+    ;; report a reuse rate for half the blocks.
+    (emit-script-telemetry! {:script-entries (:script-entries @st-memory)
+                             :blocks entries})
     ;; Parallel mode :post fires (sequential mode fired inline above).
     ;; Clojure blocks report the agent's backend (:nrepl serialized through the
     ;; live JVM, else :sandbox); non-clojure blocks always run in the sandbox.

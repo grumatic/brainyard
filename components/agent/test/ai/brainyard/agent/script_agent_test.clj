@@ -479,6 +479,88 @@
         (is (< (count b) (* 0.5 (count f))))
         (is (str/includes? (scripts/format-scripts-brief es 10) "…+30 more"))))))
 
+(deftest resolve-invoked-reads-command-position-test
+  (let [lib [{:name "clj-count"} {:name "design-docs-over-1000"} {:name "fetch"}]
+        inv #(scripts/resolve-invoked % lib)]
+
+    (testing "a bare name — the :full case, where the library is on PATH"
+      (is (= ["clj-count"] (inv "clj-count components/agent")))
+      (is (= ["clj-count"] (inv "THRESH=5 clj-count ."))
+          "leading VAR=value assignments are not the command")
+      (is (= ["clj-count"] (inv "./bin/clj-count ."))))
+
+    (testing "a PATH — the :brief case, where an agent runs one by location"
+      ;; Matching bare names only would measure the agent that needed the
+      ;; measurement least, since :brief never puts the library on PATH.
+      (is (= ["design-docs-over-1000"]
+             (inv "bash .brainyard/scripts/bin/design-docs-over-1000 1200"))))
+
+    (testing "command position in a pipeline, a list, a loop, a substitution"
+      (is (= ["clj-count"] (inv "find . -name '*.md' | clj-count")))
+      (is (= ["fetch"]     (inv "cd /tmp && fetch https://example.com")))
+      (is (= ["clj-count"] (inv "for f in *; do clj-count $f; done")))
+      (is (= ["design-docs-over-1000"] (inv "result=$(design-docs-over-1000)"))
+          "the closing paren is shell syntax, not part of the name"))
+
+    (testing "a NAME is not an INVOCATION — the false positives that matter"
+      ;; Counting these would inflate the reuse rate, which is the one number
+      ;; this exists to produce.
+      (is (= [] (inv "echo clj-count is a script")))
+      (is (= [] (inv "# clj-count in a comment")))
+      (is (= [] (inv "grep -r fetch .")))
+      (is (= [] (inv "python3 script.py"))))
+
+    (testing "several distinct scripts in one block, deduped"
+      (is (= ["clj-count" "fetch"]
+             (inv "clj-count .\nfetch https://x\nclj-count src"))))
+
+    (testing "no library, no matches"
+      (is (= [] (scripts/resolve-invoked "clj-count ." []))))))
+
+(deftest script-telemetry-emits-per-block-test
+  (let [evs  (resolve-private 'script-block-events)
+        emit (resolve-private 'emit-script-telemetry!)
+        lib  [{:name "clj-count" :scope :project} {:name "fetch" :scope :builtin}]]
+
+    (testing "one event per SCRIPT block, emitted even when nothing was reused"
+      ;; A bare ::script-invoked would be a numerator with no denominator, and
+      ;; the question is a ratio.
+      (let [out (vec (evs lib [{:lang "bash"   :code "clj-count ." :result "0" :error "" :duration-ms 5}
+                               {:lang "bash"   :code "ls -l"       :result "0" :error "" :duration-ms 3}
+                               {:lang "python" :code "print(1)"    :result "0" :error "" :duration-ms 9}]))]
+        (is (= 3 (count out)))
+        (is (= [true false false] (mapv :reused? out)))
+        (is (= [["clj-count"] [] []] (mapv :invoked out)))
+        (is (= [[:project] [] []] (mapv :scopes out))
+            ":scopes is what says whether the shipped builtins earn their slots")
+        (is (= [5 3 9] (mapv :ms out)))
+        (is (every? #(= 2 (:library %)) out))))
+
+    (testing "clojure and verbatim blocks are not script blocks"
+      (is (empty? (evs lib [{:lang "clojure"  :code "(clj-count)" :result "1"}
+                            {:lang "markdown" :code "clj-count"   :result "/tmp/x.md"}]))))
+
+    (testing "no library ⇒ no events — the ratio is not a question"
+      (is (empty? (evs [] [{:lang "bash" :code "clj-count ."}]))))
+
+    (testing "failure is recorded, not swallowed"
+      (let [e (first (evs lib [{:lang "bash" :code "clj-count ." :result "2"
+                                :error "Exit code: 2" :duration-ms 7}]))]
+        (is (true? (:failed? e)))
+        (is (= "2" (:exit e)))
+        (is (true? (:reused? e)) "a failed run of a library script is still a reuse")))
+
+    (testing "a builtin invocation is attributed to :builtin"
+      (is (= [[:builtin]] (mapv :scopes (evs lib [{:lang "bash" :code "fetch https://x"}])))))
+
+    (testing "telemetry can never fail a turn"
+      ;; Assert it does not THROW, not that it returns nil — the catch arm
+      ;; logs a warning, and mulog/log returns a value.
+      (let [threw #(try (emit %) nil (catch Throwable t t))]
+        (is (nil? (threw {:script-entries lib :blocks [{:lang "bash" :code nil}]})))
+        (is (nil? (threw :not-a-map)))
+        (is (nil? (threw {:script-entries lib :blocks :not-a-seq})))))))
+
 (deftest builtin-pack-is-well-formed-test
   (testing "every builtin has a shebang and a desc header"
     (doseq [[nm body] scripts/builtin-scripts]

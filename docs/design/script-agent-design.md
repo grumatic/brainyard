@@ -59,9 +59,10 @@
 >   script that writes another script has that shape. Regression test:
 >   `header-parsing-stops-at-the-header-test`.
 > - `:script-lib-dirs` defaults to `[]` (derive), not to an explicit list.
-> - **P1 and P2 are NOT built.** No `by scripts` CLI, no `::script-invoked`
->   telemetry (`scripts/resolve-invoked` exists and has no caller), no `by`
->   shim. §9 and §13 describe intent, not code.
+> - **Telemetry is shipped, as `::script-block` rather than the proposed
+>   `::script-invoked`** — one event per script block, firing even when nothing
+>   was invoked, because a numerator with no denominator cannot answer a ratio.
+>   See §9. The `by scripts` CLI (P1) and the `by` shim (P2) are still unbuilt.
 >
 > **Scope:** `components/agent/src/ai/brainyard/agent/common/script_agent.clj`,
 > `common/scripts.clj`, `common/coact_agent.clj`, `core/config.clj`,
@@ -493,19 +494,64 @@ Two things the persistence *does* change, and their answers:
 
 ## 9. Observability
 
-One event and one derived question. `::script-invoked {:name :scope :exit
-:ms}` is emitted by matching the first PATH-resolvable token of an executed
-bash block against the library index — cheap, and it answers the only question
-that decides whether this design worked:
+**Shipped**, and the event is not the one §9 originally proposed. A bare
+`::script-invoked` fires only when a script ran — a numerator with no
+denominator, which cannot answer the question the library exists to raise:
 
-> Is the library being *reused*, or is the model re-typing pipelines it already
-> saved?
+> Is the library being *reused*, or is the model re-typing pipelines it
+> already saved?
 
-A reuse rate near zero means §5.4's rule or §5.3's index placement is wrong,
-and no amount of adding scripts fixes that. `by scripts` (CLI) lists the
-library with invocation counts, mirroring `by agents`.
+That is a RATIO, so the event is per **block**, and it fires even when nothing
+was invoked:
 
----
+```clojure
+::script-block
+  {:lang "bash" :invoked ["clj-count"] :reused? true :scopes [:project]
+   :library 5 :exit "0" :failed? false :ms 403}
+```
+
+- `:reused?` over all `::script-block` events is the rate. Near zero means the
+  index is in the wrong place or the save rule (§5.4) is wrong — and no amount
+  of adding scripts fixes either.
+- `:scopes` says whether the shipped builtins earn their slots (§5.5).
+- `:failed?` separates "reused it and it broke" from "did not reach for it",
+  which are opposite problems. A failed run of a library script still counts as
+  a reuse.
+
+Emitted from the **common tail** of `coact-code-eval-action`, after both the
+sequential and parallel arms have produced their entries — instrumenting either
+alone would report a rate for half the blocks. Silent when the agent has no
+library, and wrapped so telemetry can never fail a turn. Agent identity rides
+mulog's global context, so every event is already attributed per agent and
+per turn.
+
+**`scripts/resolve-invoked` reads command position, not text.** It splits each
+non-comment line on shell separators and takes the head of each segment, plus
+whatever follows an interpreter — so `bash .brainyard/scripts/bin/foo`,
+`x | foo`, `a && foo`, `$(foo)`, `VAR=1 foo` and `./bin/foo` all count, while
+`echo foo` and `grep -r foo .` do not. Matching bare names alone would have
+measured only `:full` mode, since `:brief` never puts the library on PATH —
+i.e. it would have answered for the agent that needed the answer least.
+It is a heuristic and says so: a name built at runtime from a variable is
+invisible to it.
+
+**Reading it.** In-session, `log$search "script-block"`. Across sessions, over
+the app log:
+
+```bash
+grep -c 'reused? true'  ~/.brainyard/logs/agent-tui-app.log   # numerator
+grep -c 'coact-agent/script-block' ~/.brainyard/logs/agent-tui-app.log  # denominator
+```
+
+A `by scripts` CLI that formats this is still unbuilt (P1).
+
+**First measurement, six live turns:** 2 reuses / 4 script blocks. The one that
+matters is the miss — router-agent had `clj-count` in its `:brief` index and
+still hand-rolled `find | wc -l` for "how many clj files under
+components/memory?", while on a different question it *did* reach for the saved
+script. So the brief index changes the router's behaviour but does not
+determine it. That is a datapoint, not a verdict: four blocks is not a sample,
+and the point of shipping this is that the next hundred will be.
 
 ## 10. Configuration summary
 
