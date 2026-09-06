@@ -62,7 +62,15 @@
 > - **Telemetry is shipped, as `::script-block` rather than the proposed
 >   `::script-invoked`** — one event per script block, firing even when nothing
 >   was invoked, because a numerator with no denominator cannot answer a ratio.
->   See §9. The `by scripts` CLI (P1) and the `by` shim (P2) are still unbuilt.
+>   See §9. `by scripts list` / `by scripts reuse` read it. **P1 is complete;
+>   the `by` shim (P2) is still unbuilt.**
+> - **A script's name is its FILENAME, never its `# name:` header.** PATH
+>   resolves the filename, so anything else is a promise the shell will not
+>   keep. Found by copying `clj-count` to `fetch` without editing the header:
+>   the listing showed a second `clj-count` shadowing the first, while the
+>   project `fetch` — the file that actually shadows the builtin on PATH —
+>   vanished from it. `scripts-doctor` now reports a header/filename
+>   disagreement instead.
 >
 > **Scope:** `components/agent/src/ai/brainyard/agent/common/script_agent.clj`,
 > `common/scripts.clj`, `common/coact_agent.clj`, `core/config.clj`,
@@ -298,7 +306,7 @@ not ask for and cannot easily audit.
 |---|---|
 | `scripts-ls` | the overflow escape for `:script-index-limit`; prints name/desc/path/scope |
 | `scripts-new <name>` | writes the header skeleton + `chmod +x` — removes the only step the model reliably forgets |
-| `scripts-doctor` | `bash -n` / `python -m py_compile` every script, report non-executable or header-less ones |
+| `scripts-doctor` | syntax-check every script; report non-executable, shebang-less, header-less ones, and a `# name:` that disagrees with the filename |
 | `fetch <url>` | `curl` with sane flags, a timeout, and a size cap — the one thing bash gets wrong by default |
 
 Everything else starts life as a project script.
@@ -535,15 +543,20 @@ i.e. it would have answered for the agent that needed the answer least.
 It is a heuristic and says so: a name built at runtime from a variable is
 invisible to it.
 
-**Reading it.** In-session, `log$search "script-block"`. Across sessions, over
-the app log:
+**Reading it.** In-session, `log$search "script-block"`. Otherwise:
 
-```bash
-grep -c 'reused? true'  ~/.brainyard/logs/agent-tui-app.log   # numerator
-grep -c 'coact-agent/script-block' ~/.brainyard/logs/agent-tui-app.log  # denominator
+```
+by scripts list           the library, highest-precedence scope first
+by scripts reuse          the rate, by script and by scope
+by scripts reuse --json   the same, for a dashboard
 ```
 
-A `by scripts` CLI that formats this is still unbuilt (P1).
+`reuse` streams the current app log plus its rotations, parsing only the
+blank-line-delimited blocks that mention the marker — measured at 601 ms across
+~200 MB, against the tens of seconds a full EDN parse of that would cost.
+`list` is read-only: unlike a `:full`-mode turn it does not create the
+directories or materialize the builtin pack, because inspecting a library
+should not be the thing that brings one into existence.
 
 **First measurement, six live turns:** 2 reuses / 4 script blocks. The one that
 matters is the miss — router-agent had `clj-count` in its `:brief` index and

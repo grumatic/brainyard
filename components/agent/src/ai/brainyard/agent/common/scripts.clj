@@ -34,6 +34,7 @@
    and discoverability, not reach."
   (:require [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.mulog.interface :as mulog]
+            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str])
   (:import [java.io File]))
@@ -176,6 +177,12 @@ for e in ${entries[@]+\"${entries[@]}\"}; do
     [ -x \"$f\" ] || probs=\"$probs not-executable;\"
     head -1 \"$f\" | grep -q '^#!' || probs=\"$probs no-shebang;\"
     grep -q '^# *desc:' \"$f\" || probs=\"$probs no-desc-header;\"
+    # A `# name:` that disagrees with the filename is a copy someone forgot to
+    # edit. PATH resolves the FILENAME, so the header is the half that is wrong.
+    declared=\"$(sed -n 's/^# *name: *//p' \"$f\" | head -1)\"
+    if [ -n \"$declared\" ] && [ \"$declared\" != \"$(basename \"$f\")\" ]; then
+      probs=\"$probs name-header-says-'$declared';\"
+    fi
     if head -1 \"$f\" | grep -qi python; then
       python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' \"$f\" 2>/dev/null \\
         || probs=\"$probs syntax-error;\"
@@ -363,16 +370,20 @@ esac
     (catch Exception _ {})))
 
 (defn- script-name
-  "Library name for `f`: the `# name:` header if present, else the FILENAME —
-   extension included.
+  "Library name for `f`: the FILENAME, extension included. The `# name:`
+   header is documentation, never the name.
 
-   Deliberately not the filename with `.py`/`.sh` stripped, tempting as that
-   reads. The file on PATH is `pdf-pages.py`, so that is what the shell
-   resolves; a display name of `pdf-pages` would advertise an invocation that
-   fails. A script that wants the short name should be saved without the
-   extension, which is what `scripts-new` does."
-  [^File f header]
-  (or (not-empty (:name header)) (.getName f)))
+   PATH resolves the filename, so anything else is a promise the shell will not
+   keep — in both directions. Not the stem: the file on PATH is `pdf-pages.py`,
+   so listing it as `pdf-pages` advertises an invocation that fails. And not
+   the header either, which is the subtler half and was wrong here first:
+   copying `clj-count` to `fetch` without editing its header made the index
+   show a SECOND `clj-count` (shadowing the first) while the project `fetch` —
+   the file that actually shadows the builtin on PATH — vanished from the
+   listing entirely. A header that disagrees with its filename is a mistake to
+   report, which `scripts-doctor` now does, not a name to honour."
+  [^File f _header]
+  (.getName f))
 
 (defn list-scripts
   "Every executable in the library, highest-precedence first, with
@@ -606,3 +617,81 @@ esac
                            (contains? names base) base)))))
          distinct
          vec)))
+
+;; ============================================================================
+;; Reuse statistics — reading the ::script-block stream back
+;; ============================================================================
+
+(def ^:private script-block-marker
+  "The substring that identifies a `::script-block` event in the raw log.
+
+   The reader pre-filters on this rather than parsing every event: the app log
+   runs to tens of megabytes per rotation, and parsing all of it to find a few
+   hundred events would make `by scripts reuse` cost seconds for an answer that
+   is three integers."
+  "coact-agent/script-block")
+
+(defn- read-event
+  "Parse one mulog EDN block, or nil. `:default` swallows tagged literals —
+   the log carries `#mulog/flake \"…\"`, which has no reader here and is not
+   information this needs."
+  [^String block]
+  (try (edn/read-string {:default (fn [_tag v] v)} block)
+       (catch Exception _ nil)))
+
+(defn script-block-events-from-log
+  "Every `::script-block` event in `paths`, oldest first.
+
+   Streams line by line, accumulating a blank-line-delimited block and parsing
+   only the ones that mention the marker. A missing or unreadable file is
+   skipped rather than fatal: log rotation means some of the paths a caller
+   offers routinely do not exist."
+  [paths]
+  (into []
+        (mapcat
+         (fn [path]
+           (let [f (io/file path)]
+             (when (and (.isFile f) (.canRead f))
+               (with-open [r (io/reader f)]
+                 (loop [lines (line-seq r), buf (StringBuilder.), out (transient [])]
+                   (if-let [l (first lines)]
+                     (if (str/blank? l)
+                       (let [b (str buf)]
+                         (recur (rest lines) (StringBuilder.)
+                                (if (str/includes? b script-block-marker)
+                                  (if-let [e (read-event b)] (conj! out e) out)
+                                  out)))
+                       (recur (rest lines) (.append buf (str l "\n")) out))
+                     (let [b (str buf)]
+                       (persistent!
+                        (if (and (str/includes? b script-block-marker) (read-event b))
+                          (conj! out (read-event b))
+                          out)))))))))
+         paths)))
+
+(defn reuse-stats
+  "Fold `::script-block` events into the one number this facility exists to
+   produce, plus the two breakdowns that say what to do about it.
+
+   `:rate` is reuses over script BLOCKS, not over invocations — a block that
+   called two library scripts is one act of reuse, and counting invocations
+   would let a single chatty block flatter the number.
+
+   `:by-name` answers which scripts are worth keeping; `:by-scope` answers
+   whether the shipped builtin pack earns its slots. `:failed` is separate from
+   `:reused` on purpose: reaching for a script that then breaks is a different
+   problem from never reaching for one, and averaging them hides both."
+  [events]
+  (let [blocks (count events)
+        reused (count (filter :reused? events))]
+    {:blocks   blocks
+     :reused   reused
+     :rate     (if (pos? blocks) (double (/ reused blocks)) 0.0)
+     :failed   (count (filter :failed? events))
+     :by-name  (->> events (mapcat :invoked) frequencies
+                    (sort-by (juxt (comp - val) key)) vec)
+     :by-scope (->> events (mapcat :scopes) (remove nil?) frequencies
+                    (sort-by (comp - val)) vec)
+     :agents   (->> events (keep :agent-id) frequencies
+                    (sort-by (comp - val)) vec)}))
+

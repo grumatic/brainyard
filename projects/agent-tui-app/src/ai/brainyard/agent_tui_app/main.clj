@@ -2968,6 +2968,72 @@
                          (str (:path r) (when (:missing? r) "  (missing)"))))
                rows))))
 
+(defn- format-scripts-table
+  [rows]
+  (let [col   (fn [k h] (apply max (count h) (map #(count (str (get % k))) rows)))
+        w-n   (col :name "NAME")
+        w-s   (col :scope "SCOPE")
+        fmt   (str "%-" w-n "s  %-" w-s "s  %s")]
+    (cons (format fmt "NAME" "SCOPE" "DESCRIPTION")
+          (map (fn [r]
+                 (format fmt
+                         (str (:name r))
+                         (name (:scope r))
+                         (str (or (:desc r) "(undocumented)")
+                              (when (:shadowed? r) "  [shadowed]"))))
+               rows))))
+
+(defn cmd-scripts-list
+  "List the script library the agents see: project scope first, then user,
+   then the builtin pack, with a `[shadowed]` tag on an entry a
+   higher-precedence scope already claimed.
+
+   Read-only. Unlike a `:full`-mode turn this does NOT create the directories
+   or materialize the builtins — inspecting a library should not be the thing
+   that brings one into existence."
+  [opts]
+  (install-working-dir! opts)
+  (let [rows (agent/list-scripts (agent/script-roots nil))]
+    (if (:json opts)
+      (print-json! rows)
+      (if (empty? rows)
+        (println "No scripts. script-agent writes them to .brainyard/scripts/bin/")
+        (doseq [line (format-scripts-table rows)] (println line))))))
+
+(defn cmd-scripts-reuse
+  "Report how often the library is actually REUSED, from the `::script-block`
+   events in the app log.
+
+   The rate is the point. A library nobody reaches for is a directory of dead
+   files, and the failure is not visible from the directory itself — only from
+   the ratio of script blocks that invoked something to script blocks that did
+   not. `by-name` says which scripts are worth keeping; `by-scope` says whether
+   the shipped builtin pack earns its slots.
+
+   Reads the current log plus its rotations, so the window is however much
+   history the publisher has kept, not just this session."
+  [opts]
+  (let [base   (app-log-path)
+        paths  (cons base (map #(str base "." %) (range 1 6)))
+        events (agent/script-block-events-from-log paths)
+        stats  (agent/reuse-stats events)]
+    (if (:json opts)
+      (print-json! stats)
+      (let [{:keys [blocks reused rate failed by-name by-scope]} stats]
+        (if (zero? blocks)
+          (println "No script blocks recorded yet. Run an agent that has a script library.")
+          (do
+            (println (format "Reuse rate  %.0f%%   (%d of %d script blocks invoked a library script)"
+                             (* 100.0 rate) reused blocks))
+            (when (pos? failed)
+              (println (format "Failed      %d block(s) exited non-zero" failed)))
+            (when (seq by-name)
+              (println "\nBy script")
+              (doseq [[n c] by-name] (println (format "  %-24s %d" n c))))
+            (when (seq by-scope)
+              (println "\nBy scope")
+              (doseq [[sc c] by-scope] (println (format "  %-24s %d" (name sc) c))))))))))
+
 (defn cmd-projects-list
   "List every project registered under `~/.brainyard/projects/`, newest first.
 
@@ -3300,6 +3366,16 @@
                                  :description "Forget one registered project by slug (confirm or --yes)"
                                  :opts        [yes-opt json-opt]
                                  :runs        cmd-projects-remove}]}
+                 {:command     "scripts"
+                  :description "Inspect the agent script library and how often it is reused"
+                  :subcommands [{:command     "list"
+                                 :description "List every script the agents see, highest-precedence scope first"
+                                 :opts        [working-dir-opt json-opt]
+                                 :runs        cmd-scripts-list}
+                                {:command     "reuse"
+                                 :description "Report the library reuse rate from the app log's script-block events"
+                                 :opts        [json-opt]
+                                 :runs        cmd-scripts-reuse}]}
                  {:command     "memory"
                   :description "Maintenance on the user-scoped L1/L2/L3 memory store"
                   :subcommands [{:command     "consolidate"
@@ -3414,7 +3490,7 @@
 ;; Entry point
 ;; ============================================================================
 
-(def ^:private known-subcommands #{"run" "ask" "agents" "models" "config" "sessions" "projects" "memory" "events" "a2a"})
+(def ^:private known-subcommands #{"run" "ask" "agents" "models" "config" "sessions" "projects" "scripts" "memory" "events" "a2a"})
 (def ^:private help-flags #{"--help" "-?" "-h"})
 ;; `-v` is taken by `run --verbose`, so the short version flag is capital `-V`.
 (def ^:private version-flags #{"--version" "-V"})

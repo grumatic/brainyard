@@ -405,6 +405,13 @@
                 project-path-for-slug list-projects refresh-projects-index!
                 prune-projects! remove-project!)
 
+;; Script library (<project>/.brainyard/scripts/bin + the user and builtin
+;; scopes). Backs `by scripts`; see common/scripts.clj for the two renderings
+;; and why the reuse RATE, not a count, is the number worth reading.
+(export-symbols ai.brainyard.agent.common.scripts
+                script-roots project-bin ensure-roots! list-scripts
+                script-block-events-from-log reuse-stats)
+
 ;; ============================================================================
 ;; Live Artifacts
 ;; ============================================================================

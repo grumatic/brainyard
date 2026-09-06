@@ -19,6 +19,11 @@
             [clojure.string :as str]
             [ai.brainyard.agent.common.coact-agent :as ca]
             [ai.brainyard.agent.common.script-agent]
+            ;; The mode test instantiates these by id, so their defagents have
+            ;; to be registered. In the dev REPL everything is loaded and this
+            ;; passes without them; `bb test:ns` runs a clean JVM and does not.
+            [ai.brainyard.agent.common.router-agent]
+            [ai.brainyard.agent.common.react-agent]
             [ai.brainyard.agent.common.scripts :as scripts]
             [ai.brainyard.agent.core.agent :as agent]
             [ai.brainyard.agent.core.config :as config]
@@ -387,6 +392,32 @@
         (is (= "Emits another script." (:desc e))))
       (finally (delete-tree! root)))))
 
+(deftest the-filename-is-the-name-test
+  (let [root (tmp-dir! "naming")]
+    (try
+      ;; PATH resolves the FILENAME, so anything else is a promise the shell
+      ;; will not keep. Found by copying `clj-count` to `fetch` without editing
+      ;; its header: the listing showed a second `clj-count` shadowing the
+      ;; first, while the project `fetch` — the file that actually shadows the
+      ;; builtin on PATH — disappeared from it entirely.
+      (write-script! root "fetch"
+                     "#!/usr/bin/env bash\n# name: clj-count\n# desc: Copied, not edited.\n")
+      (write-script! root "pdf-pages.py"
+                     "#!/usr/bin/env python3\n# desc: Page count.\n")
+      (let [es (scripts/list-scripts
+                [{:scope :project :root (str root)
+                  :bin (str (io/file root "bin")) :lib (str (io/file root "lib"))}])
+            by (into {} (map (juxt :name identity)) es)]
+        (is (contains? by "fetch")
+            "the file on PATH is `fetch`; a stale header must not hide it")
+        (is (not (contains? by "clj-count"))
+            "…nor invent a command that does not exist under that name")
+        (is (contains? by "pdf-pages.py")
+            "the extension is part of what the shell resolves")
+        (is (= "Copied, not edited." (:desc (by "fetch")))
+            "the rest of the header is still documentation"))
+      (finally (delete-tree! root)))))
+
 (deftest scripts-section-rendering-test
   (let [mk (fn [n] {:name (str "s" n) :scope :project :desc (str "Does " n ".")
                     :path (str "/x/s" n) :shadowed? false})]
@@ -567,7 +598,8 @@
       (is (str/starts-with? body "#!") (str nm " needs a shebang"))
       (is (re-find #"(?m)^# desc: " body) (str nm " needs a # desc: line"))
       (is (re-find (re-pattern (str "(?m)^# name: " nm "$")) body)
-          (str nm "'s header name must match its filename"))))
+          (str nm "'s header name must match its filename — `scripts-doctor`
+               reports a mismatch, so the pack must not trip its own check"))))
 
   (testing "materialization is idempotent and marks them executable"
     (let [d (tmp-dir! "builtins")]
