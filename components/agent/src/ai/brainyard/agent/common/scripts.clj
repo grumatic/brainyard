@@ -404,6 +404,40 @@ esac
                     (assoc e :shadowed? dup?)))))
           roots)))
 
+(defn format-scripts-brief
+  "The names-only rendering, for an agent that has a tool REGISTRY and could
+   otherwise re-derive work the library already holds.
+
+   Why a second rendering rather than the same one: the full section teaches
+   authoring — the heredoc skeleton, the `# desc:` contract, when to save —
+   and none of that is a registry agent's job. What it needs is one fact, that
+   these exist, so it can run one or hand the work to script-agent instead of
+   re-deriving it from scratch. That fact is a list of names.
+
+   Builtins are deliberately EXCLUDED. They are script-agent's own furniture
+   (`scripts-new`, `scripts-doctor`), so listing them here is noise a router
+   will never act on — and, since the pack is materialized on first use, it
+   would also make every repo look like it has a library before anyone has
+   written a script. Only what a human or an agent actually saved counts.
+
+   Returns nil when nothing qualifies, which is the common case and costs
+   exactly nothing until someone saves their first script."
+  [entries limit]
+  (let [named (->> entries
+                   (remove :shadowed?)
+                   (remove #(= :builtin (:scope %))))]
+    (when (seq named)
+      (let [limit  (or limit 60)
+            shown  (take limit named)
+            hidden (max 0 (- (count named) limit))]
+        (str "## Scripts (already saved, in .brainyard/scripts/bin)\n"
+             (str/join " · " (map :name shown))
+             (when (pos? hidden) (str " …+" hidden " more"))
+             "\n"
+             "Run one directly — `bash .brainyard/scripts/bin/<name>` — or `cat` it to see "
+             "what it does. Before writing a shell pipeline, check whether one of these "
+             "already is it. script-agent owns adding to the set.")))))
+
 (defn format-scripts-section
   "The `## Scripts` system-prompt section: one line per script, bounded by
    `limit`.

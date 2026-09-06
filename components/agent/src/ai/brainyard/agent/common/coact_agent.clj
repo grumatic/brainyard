@@ -382,22 +382,39 @@ FIELD-CONSISTENCY RULES (enforced by the BT router)
         s (into #{} (map keyword) (if (coll? v) v (when v [v])))]
     (if (seq s) s all-code-langs)))
 
-(defn script-library-active?
-  "Whether this agent's blocks get the script library — the PATH injection AND
-   the `## Scripts` prompt section, which must be the same answer.
+(defn script-library-mode
+  "How this agent sees the script library — `:full`, `:brief`, or nil.
 
-   Scoped to agents with NO clojure fence, not merely to `:enable-script-library`.
-   The two halves have to agree: prepending directories to PATH without saying
-   so in the prompt is a silent change to what a bare command resolves to, and
-   rendering the section for an agent whose tools are sandbox callables adds a
-   second, competing answer to \"how do I reach a capability\". A clojure agent
-   has a registry; a script agent has a directory; nobody needs both.
+     :full   the library IS this agent's tool surface. PATH is injected into
+             every block, the builtin pack is materialized, and the prompt
+             carries the authoring contract. Agents with NO clojure fence.
 
-   Widening this to every code agent is a deliberate later decision, not an
-   oversight — it would add a prompt section to every shipped agent."
+     :brief  the agent has a tool REGISTRY and could otherwise re-derive work
+             the library already holds. It gets NAMES ONLY — no PATH, no
+             authoring instructions, and no builtins (see
+             `scripts/format-scripts-brief`). Agents WITH a clojure fence.
+
+     nil     the feature is off, or `:exec/code-channel` is (the feature
+             requires it), so there is no block to run a script from.
+
+   The split exists because PATH and the prompt must not disagree. Injecting
+   directories without saying so changes what a bare command resolves to; so
+   :full says \"call these by name, here is how to add one\" and injects, while
+   :brief says \"these exist, run one by path or hand it to script-agent\" and
+   does not. What a registry agent must NOT get is the authoring half — a
+   second, competing answer to \"how do I reach a capability\" — and the reason
+   :brief is affordable at all is that it renders nothing until someone has
+   actually saved a script."
   [cfg-snap]
-  (and (feature/on?* cfg-snap :exec/script-library)
-       (not (contains? (resolve-code-langs cfg-snap) :clojure))))
+  (when (feature/on?* cfg-snap :exec/script-library)
+    (if (contains? (resolve-code-langs cfg-snap) :clojure) :brief :full)))
+
+(defn script-library-active?
+  "True when this agent's blocks get the PATH injection — `:full` mode only.
+   `:brief` deliberately does not inject: its listing names a PATH, not a
+   command, precisely so nothing about bare-name resolution changes."
+  [cfg-snap]
+  (= :full (script-library-mode cfg-snap)))
 
 (defn- script-env-prologue
   "The script-library shell prefix for `agent`'s fenced blocks, or \"\" when
@@ -1483,11 +1500,15 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
           tools-section
           (assoc :tools tools-section)
 
-          ;; The script library. For a script-only agent this IS the tool
-          ;; directory — `tools-section` is nil there (no bindings, no roster),
-          ;; so nothing else in the prompt says how to reach a capability.
-          ;; It is additive for everyone else: an agent that also has clojure
-          ;; and a roster gets the library listed beside them.
+          ;; The script library, in whichever of its two renderings
+          ;; `script-library-mode` chose. For a script-only agent this IS the
+          ;; tool directory — `tools-section` is nil there (no bindings, no
+          ;; roster), so nothing else in the prompt says how to reach a
+          ;; capability. For a registry agent it is the NAMES ONLY, and only
+          ;; once a script has actually been saved: measured live, a router
+          ;; asked a one-off script-shaped question answered it with a
+          ;; code-compose block, re-deriving a pipeline the library already
+          ;; held — because nothing in its prompt said the library existed.
           (and code-channel? (not (str/blank? scripts)))
           (assoc :scripts scripts)
 
@@ -2352,8 +2373,17 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
         ;; written this turn has to be callable the next block, not the next
         ;; turn. Best-effort: an unwritable library degrades to a smaller one,
         ;; never a failed turn.
-        script-roots   (when (script-library-active? cfg-snap)
-                         (try (scripts/ensure-roots! (scripts/script-roots agent))
+        script-mode    (script-library-mode cfg-snap)
+        ;; :full CREATES the dirs and materializes the builtin pack — a script
+        ;; saved this turn has to be callable in the next block, not the next
+        ;; turn. :brief only READS: a registry agent must not be the thing that
+        ;; brings a library into existence, or every repo would sprout one (and
+        ;; the builtins would make it look non-empty) before anyone wrote a
+        ;; script. Best-effort throughout: an unwritable or unreadable library
+        ;; degrades to a smaller one, never a failed turn.
+        script-roots   (when script-mode
+                         (try (cond-> (scripts/script-roots agent)
+                                (= :full script-mode) (scripts/ensure-roots!))
                               (catch Exception e
                                 (mulog/warn ::script-roots-failed :error (ex-message e))
                                 nil)))
@@ -2361,10 +2391,14 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                          (try (scripts/list-scripts script-roots)
                               (catch Exception _ nil)))
         scripts-section (when script-roots
-                          (scripts/format-scripts-section
-                           script-entries
-                           (get cfg-snap :script-index-limit 60)
-                           (scripts/project-bin script-roots)))
+                          (if (= :full script-mode)
+                            (scripts/format-scripts-section
+                             script-entries
+                             (get cfg-snap :script-index-limit 60)
+                             (scripts/project-bin script-roots))
+                            (scripts/format-scripts-brief
+                             script-entries
+                             (get cfg-snap :script-index-limit 60))))
 
         ;; Load brainyard instructions once per turn
         agent-dirs (sb-bind/get-dirs agent)

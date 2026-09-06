@@ -30,11 +30,25 @@
 >   `local-exec-shell` / the fast-eval ProcessBuilder / the `:bash` task
 >   executor. All three hand the string to `/bin/sh -c`, so one prefix covers
 >   them and none grows a parameter that can fall out of sync.
-> - **The library is scoped to agents with no clojure fence**, not merely to
->   `:enable-script-library` (`coact-agent/script-library-active?`). PATH and
->   the `## Scripts` section must give the same answer — prepending directories
->   without saying so is a silent change to what a bare command resolves to.
->   Widening it to every code agent is a later decision.
+> - **The library has TWO renderings, chosen by `script-library-mode`.** `:full`
+>   (no clojure fence) injects PATH, materializes the builtin pack, and carries
+>   the authoring contract — the library IS that agent's tool surface. `:brief`
+>   (a clojure fence, so a registry) is NAMES ONLY: no PATH, no authoring, no
+>   builtins, and it renders nothing at all until a script has actually been
+>   saved, so it is free until it has something to say (290 chars vs 1,279 when
+>   populated). PATH stays `:full`-only because prepending directories without
+>   saying so is a silent change to what a bare command resolves to; `:brief`
+>   names a PATH, never a command.
+>
+>   This was added after measuring the gap. Asked "which design docs are over
+>   1000 lines?", router-agent chose `code-compose` and hand-rolled a find/wc
+>   pipeline the library already held, because nothing in its prompt said the
+>   library existed. With `:brief` present the same question routes to
+>   `tool-fetch` with the reason "a saved script already computes this exactly,
+>   so I ran it directly rather than hand-rolling a find/wc pipeline". Builtins
+>   are excluded from `:brief` for the same reason: the pack is materialized on
+>   first use, so counting it would make every repo look like it had a library,
+>   and a router will never run `scripts-new`.
 > - **Builtins are materialized from strings in `scripts.clj`**, not shipped as
 >   classpath resources: a resource needs native-image resource-config, and a
 >   missing entry fails at runtime with an empty library and no error anyone

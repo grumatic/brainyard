@@ -414,6 +414,71 @@
     (testing "no library and nowhere to write ⇒ no section at all"
       (is (nil? (scripts/format-scripts-section [] 60 nil))))))
 
+(deftest library-mode-splits-full-from-brief-test
+  (let [mode (resolve-private 'script-library-mode)
+        snap #(config/get-config-snapshot
+               (agent/setup-agent-by-id
+                % {:agent-session {:user-id "test" :session-id (str "mode-" (name %))}}))]
+
+    (testing "no clojure fence ⇒ :full — the library IS the tool surface"
+      (is (= :full (mode (snap :script-agent)))))
+
+    (testing "a clojure fence ⇒ :brief — it has a registry, so names only"
+      (is (= :brief (mode (snap :coact-agent))))
+      (is (= :brief (mode (snap :router-agent)))
+          "the router is the case this exists for — it dispatches script-agent"))
+
+    (testing "no code channel ⇒ nothing"
+      ;; :exec/script-library :requires :exec/code-channel, so react-agent gets
+      ;; no mode at all — there is no block to run a script from.
+      (is (nil? (mode (snap :react-agent)))))
+
+    (testing "PATH is injected for :full ONLY"
+      ;; :brief names a PATH, never a command, precisely so bare-name
+      ;; resolution is unchanged for an agent that did not ask for it.
+      (let [active? (resolve-private 'script-library-active?)]
+        (is (true?  (active? (snap :script-agent))))
+        (is (false? (active? (snap :router-agent))))))))
+
+(deftest brief-index-is-names-only-and-free-when-empty-test
+  (let [mk (fn [n scope] {:name n :scope scope :desc (str "Does " n ".")
+                          :path (str "/x/" n) :shadowed? false})]
+
+    (testing "builtins alone render NOTHING"
+      ;; The pack is materialized on first use, so counting it would make every
+      ;; repo look like it has a library before anyone wrote a script — and a
+      ;; router will never run `scripts-new`. This is what makes :brief free.
+      (is (nil? (scripts/format-scripts-brief
+                 [(mk "scripts-ls" :builtin) (mk "fetch" :builtin)] 60))))
+
+    (testing "an empty library renders nothing"
+      (is (nil? (scripts/format-scripts-brief [] 60))))
+
+    (testing "saved scripts render as bare names, with no authoring contract"
+      (let [b (scripts/format-scripts-brief
+               [(mk "clj-count" :project) (mk "hi" :user) (mk "fetch" :builtin)] 60)]
+        (is (str/includes? b "clj-count"))
+        (is (str/includes? b "hi"))
+        (is (not (str/includes? b "fetch"))
+            "a builtin is script-agent's own furniture, not library content")
+        (is (not (str/includes? b "chmod"))
+            "authoring belongs to :full — a registry agent does not write scripts")
+        (is (not (str/includes? b "# desc:")))
+        (is (str/includes? b "script-agent owns adding to the set")
+            "it must say who DOES extend the set, or the names read as a dead end")))
+
+    (testing "a shadowed duplicate is listed once"
+      (let [b (scripts/format-scripts-brief
+               [(mk "fetch" :project) (assoc (mk "fetch" :builtin) :shadowed? true)] 60)]
+        (is (= 1 (count (re-seq #"fetch" b))))))
+
+    (testing "it is a fraction of the full section, and bounded"
+      (let [es (mapv #(mk (str "s" %) :project) (range 40))
+            b  (scripts/format-scripts-brief es 60)
+            f  (scripts/format-scripts-section es 60 "/p/bin")]
+        (is (< (count b) (* 0.5 (count f))))
+        (is (str/includes? (scripts/format-scripts-brief es 10) "…+30 more"))))))
+
 (deftest builtin-pack-is-well-formed-test
   (testing "every builtin has a shebang and a desc header"
     (doseq [[nm body] scripts/builtin-scripts]
