@@ -295,6 +295,15 @@
     :lifecycle :session
     :doc       "The JSON tool-calls emission channel. Off ⇒ code-only; tools stay reachable as sandbox callables."}
 
+   :exec/script-bridge
+   {:title     "Script bridge"
+    :family    :exec
+    :gate      :enable-script-bridge
+    :keys      [:script-bridge-tools]
+    :requires  #{:exec/script-library}
+    :lifecycle :session
+    :doc       "A `by-tool` executable over an AF_UNIX socket, letting a script call a curated set of registered tools. Off by default — the one part of the script design that adds reach."}
+
    :exec/script-library
    {:title     "Script library"
     :family    :exec

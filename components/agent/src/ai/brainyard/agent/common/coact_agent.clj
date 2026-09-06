@@ -39,6 +39,7 @@
             [ai.brainyard.agent.common.user-agents :as ua]
             [ai.brainyard.agent.common.auto-notify :as auto-notify]
             [ai.brainyard.agent.common.schedule :as schedule]
+            [ai.brainyard.agent.common.script-bridge :as script-bridge]
             [ai.brainyard.agent.common.scripts :as scripts]
             [ai.brainyard.agent.common.events :as events]
             [ai.brainyard.agent.common.reactor :as reactor]
@@ -422,7 +423,11 @@ FIELD-CONSISTENCY RULES (enforced by the BT router)
   [agent]
   (if-not (script-library-active? (config/get-config-snapshot agent))
     ""
-    (try (scripts/env-prologue (scripts/script-roots agent))
+    (try (scripts/env-prologue (scripts/script-roots agent)
+                               ;; nil unless coact-init bound one this session;
+                               ;; `by-tool` then reports the bridge as off
+                               ;; rather than hanging on a dead path.
+                               (get-in @(:!state agent) [:script-bridge :path]))
          (catch Exception e
            (mulog/warn ::script-env-failed :error (ex-message e))
            ""))))
@@ -2381,9 +2386,14 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
         ;; the builtins would make it look non-empty) before anyone wrote a
         ;; script. Best-effort throughout: an unwritable or unreadable library
         ;; degrades to a smaller one, never a failed turn.
+        ;; The bridge is :full-only for the same reason PATH injection is: a
+        ;; registry agent already reaches these tools directly, and giving it a
+        ;; second, socket-shaped way in would be two answers to one question.
+        bridge-sock    (when (= :full script-mode) (script-bridge/start! agent))
         script-roots   (when script-mode
                          (try (cond-> (scripts/script-roots agent)
-                                (= :full script-mode) (scripts/ensure-roots!))
+                                (= :full script-mode)
+                                (scripts/ensure-roots! {:bridge? (some? bridge-sock)}))
                               (catch Exception e
                                 (mulog/warn ::script-roots-failed :error (ex-message e))
                                 nil)))

@@ -242,6 +242,89 @@ case \"${code:-0}\" in
 esac
 ")
 
+(def ^:private by-tool-body
+  "#!/usr/bin/env python3
+# name: by-tool
+# desc: Call a brainyard tool (memory recall, task inspection). QUOTE the name: by-tool 'memory$recall'
+# usage: by-tool '<tool-name>' [--key value]...      QUOTE the name: $ is a
+#        bash sigil, so by-tool memory$status sends \"memory\".
+#
+# Python rather than bash because the transport is an AF_UNIX socket: `nc -U`
+# is not portable (busybox has no -U), while python3 is already required by
+# this agent's own `python` fence. Composing the request here also keeps the
+# quoting in one language instead of sed-escaping model-authored strings.
+import os
+import socket
+import sys
+
+
+def edn_str(s):
+    return '\"' + s.replace(\"\\\\\", \"\\\\\\\\\").replace('\"', '\\\\\"') + '\"'
+
+
+def main(argv):
+    sock = os.environ.get(\"BY_TOOL_SOCK\")
+    if not sock:
+        sys.stderr.write(
+            \"by-tool: the script bridge is off for this agent.\\n\"
+            \"         Enable it with :enable-script-bridge \"
+            \"(BY_ENABLE_SCRIPT_BRIDGE=true).\\n\")
+        return 3
+    if not argv or argv[0] in (\"-h\", \"--help\"):
+        sys.stderr.write(
+            \"usage: by-tool '<tool-name>' [--key value]...\\n\"
+            \"  QUOTE the tool name — $ is a variable sigil in bash:\\n\"
+            \"  by-tool 'memory$recall' --query 'prompt cache zones'\\n\"
+            \"  by-tool 'task$detail' --task-id t-17 --last-n 40\\n\")
+        return 2
+
+    tool, args = argv[0], argv[1:]
+    req = \"{:op :tool :tool %s :argv [%s]}\" % (
+        edn_str(tool), \" \".join(edn_str(a) for a in args))
+
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(float(os.environ.get(\"BY_TOOL_TIMEOUT\", \"120\")))
+    try:
+        s.connect(sock)
+    except OSError as e:
+        sys.stderr.write(\"by-tool: cannot reach the agent at %s: %s\\n\" % (sock, e))
+        return 4
+
+    try:
+        s.sendall((req + \"\\n\").encode(\"utf-8\"))
+        buf = b\"\"
+        while b\"\\n\" not in buf:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+    except OSError as e:
+        sys.stderr.write(\"by-tool: %s\\n\" % e)
+        return 4
+    finally:
+        s.close()
+
+    line = buf.split(b\"\\n\", 1)[0].decode(\"utf-8\", \"replace\")
+    if not line:
+        sys.stderr.write(\"by-tool: no response from the agent\\n\")
+        return 4
+    print(line)
+    return 1 if line.startswith(\"{:status :error\") else 0
+
+
+if __name__ == \"__main__\":
+    sys.exit(main(sys.argv[1:]))
+")
+
+(def bridge-scripts
+  "Materialized ONLY when `:enable-script-bridge` is on, and PRUNED from the
+   builtin scope when it is off. Shipping `by-tool` unconditionally would put a
+   capability in every library index that answers \"the bridge is off\" — an
+   advertisement for a door that is not there — and materializing without
+   pruning would leave exactly that behind the first time someone tried the
+   bridge and turned it off again."
+  {"by-tool" by-tool-body})
+
 (def builtin-scripts
   "name → source. Materialized into the builtin scope's `bin/` on first use and
    rewritten whenever the content differs, so a binary upgrade refreshes them."
@@ -303,36 +386,55 @@ esac
   (atom #{}))
 
 (defn materialize-builtins!
-  "Write `builtin-scripts` into the builtin scope's `bin/`, creating or
-   rewriting only files whose content differs, and marking them executable.
-   Idempotent, once per process per dir. Never throws — a library that cannot
-   be written degrades to a smaller library."
-  [bin-dir]
-  (when (and bin-dir (not (contains? @!materialized bin-dir)))
-    (swap! !materialized conj bin-dir)
-    (try
-      (ensure-dir! bin-dir)
-      (doseq [[nm body] builtin-scripts]
-        (let [^File f (io/file bin-dir nm)
-              cur (when (.exists f) (try (slurp f) (catch Exception _ nil)))]
-          (when (not= cur body)
-            (spit f body))
-          (when-not (.canExecute f)
-            (.setExecutable f true true))))
-      (catch Exception e
-        (mulog/warn ::materialize-builtins-failed :dir bin-dir :error (ex-message e))))))
+  "Write `pack` (default `builtin-scripts`) into the builtin scope's `bin/`,
+   creating or rewriting only files whose content differs, and marking them
+   executable. Never throws — a library that cannot be written degrades to a
+   smaller library.
+
+   The once-per-process guard keys on the dir AND the pack's names, so turning
+   the script bridge on mid-process materializes `by-tool` instead of being
+   skipped by a guard that only remembers the directory."
+  ([bin-dir] (materialize-builtins! bin-dir builtin-scripts))
+  ([bin-dir pack]
+   (let [k [bin-dir (set (keys pack))]]
+     (when (and bin-dir (not (contains? @!materialized k)))
+       (swap! !materialized conj k)
+       (try
+         (ensure-dir! bin-dir)
+         (doseq [[nm body] pack]
+           (let [^File f (io/file bin-dir nm)
+                 cur (when (.exists f) (try (slurp f) (catch Exception _ nil)))]
+             (when (not= cur body)
+               (spit f body))
+             (when-not (.canExecute f)
+               (.setExecutable f true true))))
+         (catch Exception e
+           (mulog/warn ::materialize-builtins-failed :dir bin-dir :error (ex-message e))))))))
 
 (defn ensure-roots!
   "Create the project/user `bin` and `lib` dirs and materialize the builtin
-   pack. Called once per turn from init; cheap and idempotent."
-  [roots]
-  (doseq [{:keys [scope bin lib]} roots]
-    (when-not (= :builtin scope)
-      (ensure-dir! bin)
-      (ensure-dir! lib)))
-  (some-> (some (fn [r] (when (= :builtin (:scope r)) (:bin r))) roots)
-          (materialize-builtins!))
-  roots)
+   pack. Called once per turn from init; cheap and idempotent.
+
+   `:bridge?` adds `bridge-scripts` (the `by-tool` shim) to the pack."
+  ([roots] (ensure-roots! roots {}))
+  ([roots {:keys [bridge?]}]
+   (doseq [{:keys [scope bin lib]} roots]
+     (when-not (= :builtin scope)
+       (ensure-dir! bin)
+       (ensure-dir! lib)))
+   (when-let [bin (some (fn [r] (when (= :builtin (:scope r)) (:bin r))) roots)]
+     (materialize-builtins! bin (cond-> builtin-scripts
+                                  bridge? (merge bridge-scripts)))
+     ;; Materializing never removes, so turning the bridge back OFF would leave
+     ;; `by-tool` on PATH and in the index — an advertisement for a door that
+     ;; is not there, answering "the bridge is off" to anything that tried it.
+     ;; The BUILTIN scope is ours to manage (we write and rewrite it), so
+     ;; pruning what we no longer ship is the same authority. A user copy in
+     ;; project or user scope is untouched, and would shadow this one anyway.
+     (when-not bridge?
+       (doseq [nm (keys bridge-scripts)]
+         (try (.delete (io/file bin nm)) (catch Exception _ nil)))))
+   roots))
 
 ;; ============================================================================
 ;; Index
@@ -542,7 +644,8 @@ esac
    the system one for the block. That is the same rule as the library's own
    precedence, and it is the only way `scripts-new` can create a working
    override."
-  [roots]
+  ([roots] (env-prologue roots nil))
+  ([roots tool-sock]
   (let [dir?     (fn [p] (.isDirectory ^File (io/file ^String p)))
         existing (fn [k] (into [] (comp (map k) (filter dir?)) roots))
         bins     (existing :bin)
@@ -559,7 +662,12 @@ esac
                   "${PYTHONPATH:+:$PYTHONPATH}\" "))
            "BY_SCRIPT_ROOTS=\"" (str/join ":" (map sh-dq pairs)) "\" "
            (when proj-bin
-             (str "BY_SCRIPT_PROJECT_BIN=\"" (sh-dq proj-bin) "\" "))))))
+             (str "BY_SCRIPT_PROJECT_BIN=\"" (sh-dq proj-bin) "\" "))
+           ;; The script bridge's socket, when this agent has one. Absent means
+           ;; `by-tool` says the bridge is off rather than hanging on a path
+           ;; nothing is listening at.
+           (when (seq tool-sock)
+             (str "BY_TOOL_SOCK=\"" (sh-dq tool-sock) "\" ")))))))
 
 (def ^:private interpreters
   "Tokens that take the real command as their next argument."

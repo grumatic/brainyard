@@ -44,22 +44,22 @@
       "a quarantined key must not also be owned by a feature"))
 
 (deftest partition-counts-match-the-design
-  (testing "35 feature gates + 9 family gates + 103 knobs + 18 presentation + 14 ambient = 179"
+  (testing "36 feature gates + 9 family gates + 104 knobs + 18 presentation + 14 ambient = 181"
     (let [knobs (->> feat/all-features
                      (mapcat :keys)
                      (remove feat/presentation-key?)
                      count)
           pres  (->> feat/all-features (filter :presentation) (mapcat :keys) count)]
-      (is (= 35 (count feat/gate-keys)) "+1: :enable-script-library (exec/script-library)")
+      (is (= 36 (count feat/gate-keys)) "+1: :enable-script-bridge (exec/script-bridge)")
       (is (= 9 (count feat/family-gate-keys)) "one per capability family; :ui has none")
-      (is (= 103 knobs)
-          "+3: :code-langs (exec/code-channel), :script-lib-dirs + :script-index-limit (exec/script-library)")
+      (is (= 104 knobs)
+          "+1: :script-bridge-tools (exec/script-bridge)")
       (is (= 18 pres) "+1: :enable-mouse (ui/mouse)")
       (is (= 14 (count feat/ambient-keys))
           "+1: :permission-timeout-ms, beside :permission-mode")
       (is (= 0 (count feat/unclassified-keys))
           "no schema key is currently unreadable")
-      (is (= 179 (count cfg/config-keys)))
+      (is (= 181 (count cfg/config-keys)))
       (testing "the partition still balances"
         ;; The real invariant behind the hardcoded numbers: every schema key
         ;; lands in exactly one bucket. Asserting the sum catches a
@@ -253,11 +253,11 @@
   (is (= (set feat/families) (set (map :family feat/all-features))))
   (is (= (count feat/feature-registry)
          (reduce + (map (comp count feat/family->features) feat/families))))
-  (testing "nine capability families hold 46 features — 35 gated, 11 ungated groupings"
+  (testing "nine capability families hold 47 features — 36 gated, 11 ungated groupings"
     (let [capability (remove :presentation feat/all-features)]
       (is (= 9 (count (disj (set feat/families) :ui))))
-      (is (= 46 (count capability)) "+1: :exec/script-library")
-      (is (= 35 (count (filter :gate capability)))
+      (is (= 47 (count capability)) "+1: :exec/script-bridge")
+      (is (= 36 (count (filter :gate capability)))
           "every gated feature now has a real schema key")
       (is (= 11 (count (remove :gate capability)))
           "an ungated grouping exists so its knobs have a discoverable home")))

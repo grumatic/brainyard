@@ -661,6 +661,14 @@
                                            (mapv keyword (str/split v #"[,\s]+")) ::env-unset)
                                 :default [:clojure :bash :python :javascript]
                                 :doc "Languages the CoAct code channel will EXECUTE. A fence in any other language is refused as a value (an :error eval-entry), not run. This is a CONTRACT, not advice: the disabled languages are also dropped from the `code-blocks` output description and from the prompt's execution-model/format sections, so the schema can never advertise a fence the runtime will reject — the same discipline :code-channel?/:tool-channel? apply to whole channels. script-agent pins [:bash :python]. Env: BY_CODE_LANGS (comma- or space-separated)."}
+   :enable-script-bridge       {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_SCRIPT_BRIDGE")]
+                                           (= "true" v) ::env-unset)
+                                :default false
+                                :doc "The script bridge (P2): the agent binds its own AF_UNIX socket, exports it as BY_TOOL_SOCK into every block, and ships a `by-tool` executable so a bash/python script can call a CURATED set of registered tools — memory recall, task inspection — that a script-only agent otherwise cannot reach at all. OFF by default because this is the one part of the script-agent design that adds REACH rather than persistence: everything else a script does, a bash fence could already do. What is reachable is :script-bridge-tools, never the whole registry. Env: BY_ENABLE_SCRIPT_BRIDGE=true."}
+   :script-bridge-tools        {:type "vector"
+                                :default [:memory$recall :memory$status :task$detail :task$cancel :task$wait]
+                                :doc "Tools reachable through `by-tool` when :enable-script-bridge is on. An allowlist, not a filter over the registry: exposing call-tool wholesale would hand a script the WRITE surface of every agent in the process (edit-agent, write-file, mcp$*) through a door opened for memory recall. The default is the read/observe half of what a script-only agent gives up (see §7 of docs/design/script-agent-design.md). Empty means the bridge answers nothing."}
    :enable-script-library      {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_SCRIPT_LIBRARY")]
                                            (not= "false" v) ::env-unset)

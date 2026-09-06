@@ -592,6 +592,71 @@
         (is (nil? (threw :not-a-map)))
         (is (nil? (threw {:script-entries lib :blocks :not-a-seq})))))))
 
+(deftest script-bridge-allowlist-and-parsing-test
+  (let [bridge (requiring-resolve 'ai.brainyard.agent.common.script-bridge/argv->args)
+        allow  (requiring-resolve 'ai.brainyard.agent.common.script-bridge/allowed-tools)]
+
+    (testing "argv is parsed SERVER-side into a tool-args map"
+      ;; The alternative is the shim composing EDN in bash, which means quoting
+      ;; model-authored strings into a reader — one unbalanced quote from a
+      ;; frame that parses as something else.
+      (is (= {:query "cache zones" :last-n 40 :json true}
+             (bridge ["--query" "cache zones" "--last-n" "40" "--json"])))
+      (is (= {:ratio 0.5 :on true :off false :kind :deep}
+             (bridge ["--ratio" "0.5" "--on" "true" "--off" "false" "--kind" ":deep"]))
+          "the obvious scalars are recovered; not every tool coerces its own")
+      (is (= {} (bridge [])))
+      (is (= {:_positional ["stray"]} (bridge ["stray"]))
+          "a bare positional is recorded, not dropped silently"))
+
+    (testing "a value is DATA, never code"
+      ;; read-string here would make an argument executable.
+      (is (= {:q "(System/exit 1)"} (bridge ["--q" "(System/exit 1)"]))))
+
+    (testing "the allowlist is a set, and an empty one denies everything"
+      (is (= #{:memory$recall :task$detail}
+             (allow {:script-bridge-tools [:memory$recall "task$detail"]})))
+      (is (= #{} (allow {:script-bridge-tools []})))
+      (is (= #{} (allow {}))
+          "no configured list is not an invitation to expose the registry"))
+
+    (testing "the default allowlist is read/observe only"
+      ;; The whole safety argument: this door was opened for memory recall, and
+      ;; must not also pass the write surface of every agent in the process.
+      (let [d (set (get-in config/config-schema [:script-bridge-tools :default]))]
+        (is (contains? d :memory$recall))
+        (is (contains? d :task$detail))
+        (doseq [t [:write-file :update-file :edit-agent :bash :mcp$call]]
+          (is (not (contains? d t)) (str t " must not be reachable by default")))))
+
+    (testing "the bridge is OFF by default — it adds reach, unlike the rest"
+      (is (false? (get-in config/config-schema [:enable-script-bridge :default]))))))
+
+(deftest bridge-shim-ships-only-when-enabled-test
+  (let [d (tmp-dir! "bridge-pack")]
+    (try
+      (let [bin (str (io/file d "bin"))]
+        (testing "off ⇒ by-tool is not written"
+          (scripts/materialize-builtins! bin scripts/builtin-scripts)
+          (is (not (.exists (io/file bin "by-tool")))))
+
+        (testing "on ⇒ it is"
+          (scripts/materialize-builtins!
+           bin (merge scripts/builtin-scripts scripts/bridge-scripts))
+          (is (.exists (io/file bin "by-tool")))
+          (is (.canExecute (io/file bin "by-tool"))))
+
+        (testing "the shim warns about the $ sigil where the index shows it"
+          ;; Measured live: `by-tool memory$status` sends "memory", because $ is
+          ;; a bash variable. The `# desc:` line is what the prompt renders, so
+          ;; that is where the warning has to live.
+          (let [body (get scripts/bridge-scripts "by-tool")]
+            (is (re-find #"(?m)^# desc:.*QUOTE the name" body))
+            (is (str/starts-with? body "#!/usr/bin/env python3")
+                "python3, not bash: `nc -U` is not portable and this agent
+                 already requires python3 for its own fence"))))
+      (finally (delete-tree! d)))))
+
 (deftest builtin-pack-is-well-formed-test
   (testing "every builtin has a shebang and a desc header"
     (doseq [[nm body] scripts/builtin-scripts]

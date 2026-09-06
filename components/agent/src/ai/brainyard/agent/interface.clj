@@ -56,6 +56,10 @@
             ;; the registry, so it declares an explicitly empty :agent-tools
             ;; and builds no SCI sandbox. See common/scripts.clj.
             [ai.brainyard.agent.common.script-agent]
+            ;; The script bridge's socket-close hook. Required here (not
+            ;; requiring-resolve'd) so AOT emits a class for it — the a2a
+            ;; comment in components/agent/deps.edn explains why that matters.
+            [ai.brainyard.agent.common.script-bridge]
             ;; Live-runtime debug specialist. Requires the clj-nrepl
             ;; server to be running on the host (BY_NREPL_ENABLED on
             ;; agent-tui / agent-web, or clj-nrepl$start-server on

@@ -62,8 +62,9 @@
 > - **Telemetry is shipped, as `::script-block` rather than the proposed
 >   `::script-invoked`** — one event per script block, firing even when nothing
 >   was invoked, because a numerator with no denominator cannot answer a ratio.
->   See §9. `by scripts list` / `by scripts reuse` read it. **P1 is complete;
->   the `by` shim (P2) is still unbuilt.**
+>   See §9. `by scripts list` / `by scripts reuse` read it. **P1 and P2 are
+>   both complete** — the bridge ships OFF by default behind an allowlist
+>   (§13).
 > - **A script's name is its FILENAME, never its `# name:` header.** PATH
 >   resolves the filename, so anything else is a promise the shell will not
 >   keep. Found by copying `clj-count` to `fetch` without editing the header:
@@ -676,22 +677,55 @@ python already cover file I/O, search, HTTP, git, and process control.
 report. Ship only after P0 has run enough turns to say whether the library is
 actually being reused.
 
-**P2 — the bridge, only if earned.** A `by` shim on PATH that speaks the
-existing AF_UNIX EDN transport (`components/ask-channel`, extended per
-`docs/design/session-channel-extensions.md`) back to the running agent, giving
-scripts a curated set of brainyard commands:
+**P2 — the bridge. Shipped, and OFF by default.** The agent binds its own
+AF_UNIX socket (`components/ask-channel`'s transport, unchanged — `start-listener!`
+is already "bind a socket, serve `(fn [req] response)`"), exports it as
+`BY_TOOL_SOCK` in the block environment, and ships a `by-tool` executable:
 
 ```bash
-by tool memory\$recall --query "prompt cache zones"
-by tool task\$detail --task-id t-17 --last-n 40
-by agent explore-agent --question "where is X wired"
+by-tool 'memory$recall' --query "prompt cache zones"
+by-tool 'task$detail' --task-id t-17 --last-n 40
 ```
 
-This restores §7.1–7.3 without restoring the tool *channel* — the model still
-emits only bash, and the shim is just another script, discoverable in the same
-index as the rest.
+This restores part of §7 without restoring the tool *channel* — the model still
+emits only script fences, and the way in is an executable like every other
+capability it has. Five decisions:
 
-**It is listed last on purpose.** Building the bridge first would make
-script-agent a thin skin over CoAct's roster and would answer none of the
-question this design exists to ask: how much of a tool registry a capable model
-actually needs when it can write files and run them.
+- **`:enable-script-bridge` defaults false.** This is the one part of the
+  design that adds REACH rather than persistence: everything else a script does,
+  a bash fence could already do. A new privilege surface is opt-in or it is a
+  surprise.
+- **`:script-bridge-tools` is an allowlist, not a filter.** Default is
+  `memory$recall`, `memory$status`, `task$detail`, `task$cancel`, `task$wait` —
+  the read/observe half of §7.1–7.2. Exposing `call-tool` wholesale would pass
+  the WRITE surface of every agent in the process (`edit-agent`, `write-file`,
+  `mcp$*`) through a door opened for memory recall. §7.3 (sub-agent dispatch)
+  stays closed.
+- **Its own socket, not the session `ask.sock`** — that one is per-session,
+  absent under `by ask`, and carries the *user's* turn queue. This one is per
+  agent instance, so `memory$*` resolves the right identity, and a hook on
+  `:agent.instance/closed` unlinks it. The path is `<tmpdir>/by-tool-<hash>.sock`,
+  short by construction, so AF_UNIX's ~104-byte cap has no long case to handle.
+- **Argument parsing is server-side.** The shim ships raw argv; composing EDN in
+  bash would mean quoting model-authored strings into a reader. Values are
+  coerced (`--last-n 40` → `40`) but never `read-string`-ed — an argument must
+  not become code.
+- **`by-tool` is python3, not bash**, because `nc -U` is not portable and this
+  agent already requires python3 for its own fence. It is materialized only when
+  the bridge is on, and PRUNED from the builtin scope when it is off — otherwise
+  the first person to try the bridge leaves a permanent entry in the index that
+  answers "the bridge is off".
+
+**The `$` trap, found on the first live run.** Every registered tool name
+contains `$`, which is a variable sigil in an unquoted bash word — so
+`by-tool memory$status` arrives at the server as `memory`. The shell has already
+destroyed the information, so the refusal cannot be repaired; instead, when the
+mangled name prefixes exactly the tools that *were* allowed, the error says so
+and names the quoted form. Measured: the model hit it, read the hint,
+re-ran `by-tool 'memory$status'` and got its answer — one iteration, not a turn.
+The warning also rides the shim's `# desc:` line, which is what the prompt
+renders.
+
+**It was listed last on purpose, and that ordering paid.** Building the bridge
+first would have made script-agent a thin skin over CoAct's roster and answered
+none of the question this design exists to ask.

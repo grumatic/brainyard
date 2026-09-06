@@ -38,6 +38,13 @@
         ;; reached only at runtime has no .class in the native image and can never
         ;; load there. That is precisely how the ACP integration shipped broken in
         ;; every released binary — see common/acp_agent.clj:17-38.
+        ;; Ask-channel — the AF_UNIX EDN transport. STATICALLY required by
+        ;; common/script_bridge.clj (the `by-tool` shim's listener), for the
+        ;; same native-image reason spelled out just above: a namespace reached
+        ;; only via requiring-resolve has no .class in the image. The bridge
+        ;; itself is off by default; the TRANSPORT being on the classpath costs
+        ;; nothing, since the base already binds a session ask.sock with it.
+        ai.brainyard/ask-channel {:local/root "../ask-channel"}
         ai.brainyard/a2a {:local/root "../a2a"}
         ai.brainyard/a2a-client {:local/root "../a2a-client"}
         ai.brainyard/a2a-server {:local/root "../a2a-server"}}
