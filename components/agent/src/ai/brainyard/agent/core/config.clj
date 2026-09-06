@@ -687,7 +687,7 @@
                                 :env-fn #(if-let [v (not-empty (System/getenv "BY_SANDBOX_INTEROP"))]
                                            (keyword v) ::env-unset)
                                 :default :auto
-                                :doc "SCI code-sandbox Java-interop level: :restricted (whitelisted pure classes + System/Runtime/ProcessBuilder/ClassLoader denied), :full (arbitrary interop, container-only), or :auto (default; :full when a container is detected, else :restricted). Env: BY_SANDBOX_INTEROP."}})
+                                :doc "SCI code-sandbox Java-interop level: :restricted (a whitelist of pure classes — Math, numeric boxes, Thread, java.time; every other class, System and ClassLoader included, does not resolve), :full (arbitrary interop, container-only), or :auto (default; :full when a container is detected, else :restricted). Env: BY_SANDBOX_INTEROP."}})
 
 (def config-keys (set (keys config-schema)))
 

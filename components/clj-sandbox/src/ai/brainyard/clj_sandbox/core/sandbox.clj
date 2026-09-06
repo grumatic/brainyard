@@ -22,6 +22,10 @@
             ;; expands at build time; both are Clojure core, always on classpath).
             [clojure.java.io]
             [clojure.java.shell]
+            ;; Same reason, and the same compile-time requirement: `copy-ns`
+            ;; snapshots this ns's publics into the `:full` surface under the
+            ;; short name `http`.
+            [ai.brainyard.clj-http-native.interface]
             [ai.brainyard.mulog.interface :as mulog]
             [ai.brainyard.effect.interface :as fx]
             [edamame.core :as edamame]
@@ -102,17 +106,39 @@
    'java.time.ZoneId java.time.ZoneId
    'java.time.format.DateTimeFormatter java.time.format.DateTimeFormatter})
 
-(def ^:private sci-deny
-  "Symbols denied in SCI sandbox."
-  ['System 'Runtime 'ProcessBuilder 'ClassLoader])
+;; NOTE — there is no denylist, and SCI's `:deny` would not be one.
+;;
+;; `:classes` and `:deny` govern DIFFERENT symbol namespaces, and only the first
+;; one reaches Java classes. Measured against sci 0.10.49:
+;;
+;;   class absent from :classes, absent from :deny  -> Could not resolve symbol
+;;   class absent from :classes, present in :deny   -> Could not resolve symbol
+;;   class PRESENT in :classes, present in :deny    -> RESOLVES AND RUNS
+;;   Clojure var (loop, eval) in :deny              -> "loop is not allowed!"
+;;
+;; So `:deny` denies Clojure vars and special forms; naming a class there is a
+;; no-op, and it does NOT override `:classes`. The third line is the one that
+;; matters: a `:deny` entry cannot back-stop a class someone later adds to the
+;; whitelist, which is the only job a denylist would have had here.
+;;
+;; This file used to pass `:deny ['System 'Runtime 'ProcessBuilder 'ClassLoader]`
+;; alongside the `sci-classes` whitelist. All four were already unreachable by
+;; absence from that whitelist, so the list never blocked anything — it read as
+;; a second layer of defence while providing none, which is worse than not
+;; having one. `sci-classes` IS the boundary; keep it closed.
+;;
+;; `eval` and `load-string` ARE bound and cannot be used to get around this:
+;; both evaluate in the same ctx, so `(eval '(System/getProperty "x"))` fails
+;; exactly like the direct call. Verified in `sandbox_test`.
 
 (def ^:private full-classes
   "Broad JDK class palette for the `:full` interop level. SCI resolves classes
    ONLY by the symbols enumerated in the `:classes` map — `:allow :all` lifts
    per-class allow-gating but does NOT enable resolution of un-enumerated
    classes or fully-qualified names. So `:full` is `sci-classes` (Math, numerics,
-   Thread, java.time) plus the previously-denied capability classes
-   (System/Runtime/ProcessBuilder/ClassLoader) and a curated set of common
+   Thread, java.time) plus the capability classes withheld at `:restricted`
+   by being absent from that map (System/Runtime/ProcessBuilder/ClassLoader),
+   and a curated set of common
    java.io / java.nio.file / java.net / java.util / java.security classes the
    agent is likely to reach for. `:allow :all` is added so instance interop on
    values of any returned type is not method-gated.
@@ -153,20 +179,22 @@
           'java.security.MessageDigest java.security.MessageDigest}))
 
 (defn- sci-init-opts
-  "Build the `:classes`/`:deny` portion of `sci/init` opts for an interop level.
+  "Build the `:classes` portion of `sci/init` opts for an interop level.
 
-   - `:restricted` (default, also `nil`) — the whitelisted `sci-classes` plus
-     the `sci-deny` denylist. Raw Java interop is confined to pure helpers
-     (Math, numeric boxes, java.time); System/Runtime/ProcessBuilder/ClassLoader
-     are denied. This is the only safe posture on a host.
-   - `:full` — the broad `full-classes` palette with NO denylist, so the agent
-     can do process exec, filesystem, network and system introspection via Java
-     interop. Only appropriate inside a disposable container. See `full-classes`
-     for the native-image caveat."
+   - `:restricted` (default, also `nil`) — the `sci-classes` whitelist, and
+     nothing else: raw Java interop is confined to pure helpers (Math, numeric
+     boxes, java.time), and every other class — System, Runtime, ProcessBuilder,
+     ClassLoader, arbitrary `java.*` — is unreachable by not being in the map.
+     See the NOTE above `full-classes` for why there is no denylist beside it.
+     This is the only safe posture on a host.
+   - `:full` — the broad `full-classes` palette, so the agent can do process
+     exec, filesystem, network and system introspection via Java interop. Only
+     appropriate inside a disposable container. See `full-classes` for the
+     native-image caveat."
   [interop]
   (case interop
     :full {:classes full-classes}
-    {:classes sci-classes :deny sci-deny}))
+    {:classes sci-classes}))
 
 ;; ============================================================================
 ;; SCI Namespace Configuration
@@ -184,9 +212,83 @@
    short aliases pprint, parse-json, and to-json for convenience.
 
    clojure.core.protocols is needed so SCI can resolve protocol metadata
-   on JDBC result rows (next.jdbc attaches datafy/nav metadata)."
-  {'clojure.core.protocols {'datafy clojure.core.protocols/datafy
+   on JDBC result rows (next.jdbc attaches datafy/nav metadata).
+
+   `http` is the curated HTTP client — clj-http-native, a thin java.net.http
+   wrapper — as `(http/get url opts)` plus `post` / `put` / `delete`, each
+   returning `{:status :headers :body}`. Non-2xx returns rather than throws
+   (`:throw-exceptions` defaults false), so sandboxed code checks `:status`.
+
+   **It sits here, not in `full-namespaces`, because an HTTP call needs
+   nothing `:full` supplies.** `:sandbox-interop` gates JAVA INTEROP — which
+   classes are in the palette at all — not network egress,
+   which is a different layer's question (`--sandbox`, whose default seatbelt
+   policy allows network, and whatever the host permits). And under the default
+   `:as :string` the whole response is plain Clojure data: a map of strings
+   keyed by strings, readable with `get`/`keys` and parseable with
+   `parse-json`. No value escapes that `:restricted`'s palette cannot touch.
+   `:as :stream` / `:as :reader` do return Java objects, and there `:restricted`
+   simply cannot call methods on them — unusable, not unsafe, and the same
+   degradation any un-enumerated class already has.
+
+   NOTE (deliberate non-feature): there is no `add-libs` binding, and this map
+   is why one is not needed. SCI resolves classes only from the enumerated
+   `:classes` map and namespaces only from these maps, `sci/copy-ns` is a
+   compile-time macro, and the native image has no runtime Clojure compiler —
+   so a runtime-loaded dependency would be invisible to SCI on the shipping
+   binary, and on the JVM it would bypass the class whitelist entirely — that
+   whitelist gates which classes SANDBOXED CODE CAN NAME, and says nothing
+   about what a loaded library's own function body calls internally.
+   A library reaches sandboxed code by being curated here."
+  {;; Clojure 1.11/1.12 core FUNCTIONS that SCI does not bundle. SCI ships a
+   ;; curated core and leaves the rest to the embedder — this is not a version
+   ;; axis, and no SCI upgrade supplies them: measured on 0.10.49 (current)
+   ;; running on Clojure 1.12, plain `sci/eval-string` with no ctx resolves
+   ;; none of them. Babashka has them for the same reason we now do: it binds
+   ;; them itself.
+   ;;
+   ;; They earn a place because a model reaches for them from training priors
+   ;; and the miss is expensive — a `Could not resolve symbol` costs a whole
+   ;; LLM round-trip. They cost nothing to grant: pure functions over immutable
+   ;; data, no class palette change, no capability, so they are bound at BOTH
+   ;; interop levels.
+   ;;
+   ;; The justification is the training-prior argument above and NOT frequency
+   ;; data. `parse-long` misses were observed, but only in `evoharness` runs —
+   ;; a synthetic harness stressing generated tasks, which is not evidence
+   ;; about normal use. Every `~/.brainyard/logs/agent-tui-app.log*` file is
+   ;; harness-contaminated, so anyone re-deriving a hit rate from those logs
+   ;; will measure the harness. That is fine for THIS change, which is free
+   ;; either way; it is not fine for a change that spends prompt budget.
+   ;;
+   ;; Into `clojure.core` rather than the `user` ns deliberately. They ARE
+   ;; clojure.core fns, so this is where a reader expects them; and the `user`
+   ;; ns is what the prompt's function directory enumerates, which should list
+   ;; what brainyard ADDS, not restate standard Clojure the model already knows.
+   ;;
+   ;; Scope is "pure and missing". Everything else SCI omits is omitted on
+   ;; purpose and stays that way: agents and STM (`send`, `ref`, `alter`),
+   ;; `future-*`/`pcalls` (the sandbox binds its own `pmap`/`par-map`), proxy /
+   ;; struct / gen-class host internals, and `slurp`/`spit`/`load-file`, which
+   ;; are I/O and remain `:full`-gated via `full-user-aliases`.
+   'clojure.core           {'parse-long     parse-long
+                            'parse-double   parse-double
+                            'parse-boolean  parse-boolean
+                            'parse-uuid     parse-uuid
+                            'random-uuid    random-uuid
+                            'abs            abs
+                            'NaN?           NaN?
+                            'infinite?      infinite?
+                            'update-vals    update-vals
+                            'update-keys    update-keys
+                            'partitionv     partitionv
+                            'partitionv-all partitionv-all
+                            'splitv-at      splitv-at
+                            'println-str    println-str}
+   'clojure.core.protocols {'datafy clojure.core.protocols/datafy
                             'nav    clojure.core.protocols/nav}
+   'http                   (sci/copy-ns ai.brainyard.clj-http-native.interface
+                                        (sci/create-ns 'http))
    'clojure.pprint         {'pprint      pprint/pprint
                             'print-table pprint/print-table
                             'cl-format   pprint/cl-format
@@ -203,7 +305,11 @@
    so this is GraalVM-native-safe; both namespaces are Clojure core). These are
    I/O libraries deliberately withheld by SCI's defaults — exposing them is safe
    only alongside `:full`, which also supplies the class palette their return
-   values (File, Process) need for interop (see `full-classes`)."
+   values (File, Process) need for interop (see `full-classes`).
+
+   Note what is NOT here: `http`. It is a `library-namespace`, available at both
+   levels — see the note there for why an HTTP call needs nothing `:full`
+   supplies."
   {'clojure.java.io    (sci/copy-ns clojure.java.io    (sci/create-ns 'clojure.java.io))
    'clojure.java.shell (sci/copy-ns clojure.java.shell (sci/create-ns 'clojure.java.shell))})
 

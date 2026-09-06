@@ -35,11 +35,17 @@ and the results (return value, stdout, or error) are sent back for the next iter
 - **State persists**: `def` variables survive across iterations.
 - **Captured output**: `println`/`pprint` output is captured and returned to you.
 - **Errors are non-fatal**: Exceptions show the error message; sandbox state is preserved.
+- **HTTP** (available at every interop level): `http/get`, `http/post`, `http/put`, `http/delete`.
+  `(http/get \"https://api.example.com/x\" {})` returns `{:status :headers :body}` — plain data,
+  so `(parse-json (:body r))` reads a JSON response. Opts: `:headers {\"Accept\" \"application/json\"}`,
+  `:body \"…\"`, `:content-type :json`, `:timeout-ms` (default 60000).
+  A non-2xx status does NOT throw — check `:status` yourself.
 "
        (if (= interop :full)
          (str "- **Full Java interop**: arbitrary Java interop is available (System, Runtime, ProcessBuilder, reflection, etc.) — you are running in a container sandbox.\n"
               "- **File/shell libraries**: `slurp`, `spit`, `sh` (`(sh \"ls\" \"-l\")`), plus `clojure.java.io/*` (file, copy, reader…) and `clojure.java.shell/*` are available.")
-         (str "- **No interop**: System, Runtime, ProcessBuilder, ClassLoader access denied. "
+         (str "- **Limited interop**: only WHITELISTED classes resolve — `Math`, the numeric boxes, `Thread`, `java.time`. "
+              "Anything else (System, Runtime, ProcessBuilder, ClassLoader, arbitrary `java.*`) fails with `Could not resolve symbol`; there is no import to add. "
               "For what they are usually reached for: **date and time** via `java.time`, which is "
               "whitelisted and needs no interop — `(java.time.LocalDate/now)`, "
               "`(java.time.ZonedDateTime/now)`, formatted with "

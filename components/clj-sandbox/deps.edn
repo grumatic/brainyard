@@ -2,6 +2,14 @@
  :deps {org.babashka/sci {:mvn/version "0.10.49"}
         org.clojure/data.json {:mvn/version "2.5.1"}
         ai.brainyard/clj-llm {:local/root "../clj-llm"}
+        ;; clj-http-native — the curated HTTP surface exposed as the `http`
+        ;; namespace at the `:full` interop level. Reached transitively via
+        ;; clj-llm already, but declared here because `sandbox.clj` requires it
+        ;; directly (a `sci/copy-ns` needs the ns loaded at COMPILE time), and
+        ;; `poly check` demands a brick declare what it requires. It is
+        ;; java.net.http-based, so it adds no reflection surface the native
+        ;; image does not already carry.
+        ai.brainyard/clj-http-native {:local/root "../clj-http-native"}
         ;; Effect — backs the `par-map` sandbox binding (bounded parallel map
         ;; over SCI closures). `fx/task-of` is the only shape that can cross
         ;; into SCI: `m/sp`/`m/ap` expand through cloroutine's CPS transform,

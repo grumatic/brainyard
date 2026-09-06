@@ -5,6 +5,7 @@
 (ns ai.brainyard.clj-sandbox.sandbox-test
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.string :as str]
+            [sci.core :as sci]
             [ai.brainyard.clj-sandbox.core.sandbox :as sandbox]
             [ai.brainyard.clj-sandbox.core.sandbox-state :as sandbox-state]))
 
@@ -33,13 +34,55 @@
       (is (= [1 2 3] (sandbox/get-var sb 'my-data))))))
 
 (deftest interop-level-test
-  (testing "default :restricted denies System/Runtime/ProcessBuilder interop"
+  (testing "default :restricted blocks System/Runtime/ProcessBuilder interop"
     (let [sb (sandbox/create-sandbox)]
       (is (= :restricted (:interop sb)))
       (is (some? (:error (sandbox/eval-code sb "(System/getenv \"HOME\")")))
           "System/getenv is denied")
+      (is (some? (:error (sandbox/eval-code sb "(Runtime/getRuntime)")))
+          "Runtime does not resolve")
       (is (some? (:error (sandbox/eval-code sb "(ProcessBuilder. [\"echo\" \"x\"])")))
-          "ProcessBuilder is denied")))
+          "ProcessBuilder does not resolve")))
+
+  ;; The whitelist is the WHOLE boundary. This used to also pass a `:deny` list,
+  ;; which read as a second layer and was not one: in SCI, `:deny` denies
+  ;; Clojure vars and special forms, and naming a CLASS there does nothing.
+  ;; Pinned here because the failure mode is silent — a `:deny` entry looks
+  ;; like it back-stops the whitelist and does not, so a future edit that adds
+  ;; System to `sci-classes` for one harmless-looking method would reopen the
+  ;; credential path with the "denylist" still sitting there.
+  (testing ":deny does not gate classes — the :classes whitelist is the boundary"
+    (let [ctx (sci/init {:classes {'System java.lang.System :allow :all}
+                         :deny    ['System]})]
+      (is (string? (sci/eval-string* ctx "(System/getProperty \"user.home\")"))
+          "a class in :classes RESOLVES even when it is also in :deny — :deny cannot back-stop the whitelist"))
+    (let [ctx (sci/init {:classes {'Math java.lang.Math} :deny ['Runtime]})]
+      (is (thrown? Exception (sci/eval-string* ctx "(Runtime/getRuntime)"))
+          "and a class absent from :classes is blocked with or without :deny"))
+    (let [ctx (sci/init {:deny ['loop]})]
+      (is (thrown? Exception (sci/eval-string* ctx "(loop [] 1)"))
+          ":deny does work — on Clojure vars, which is the namespace it governs")))
+
+  ;; `System` is the credential boundary, and it is the one class here that
+  ;; `bash` is NOT a substitute for: the dotenv loader writes every `.env` key
+  ;; into the JVM property table via `System/setProperty`, and a subprocess
+  ;; inherits the process ENVIRONMENT, not that table. Runtime/ProcessBuilder
+  ;; are a different case — process exec is exactly what the `bash` tool does.
+  (testing "the credential path stays closed at :restricted"
+    (let [sb (sandbox/create-sandbox)]
+      (is (some? (:error (sandbox/eval-code sb "(System/getProperties)")))
+          "getProperties returns a plain java.util.Map that method gating never touches")
+      (is (some? (:error (sandbox/eval-code sb "(System/getProperty \"user.home\")")))
+          "and neither may the single-property read")))
+
+  ;; eval/load-string ARE bound. They evaluate in the SAME ctx, so they inherit
+  ;; the same whitelist and are not a way around it — worth pinning, because
+  ;; "the sandbox has eval" reads like a hole until you check.
+  (testing "eval and load-string cannot escape the class whitelist"
+    (let [sb (sandbox/create-sandbox)]
+      (is (= 3 (:result (sandbox/eval-code sb "(eval '(+ 1 2))"))))
+      (is (some? (:error (sandbox/eval-code sb "(eval '(System/getProperty \"user.home\"))"))))
+      (is (some? (:error (sandbox/eval-code sb "(load-string \"(System/getProperty \\\"user.home\\\")\")"))))))
 
   (testing ":full permits Java interop (System, getProperty, ProcessBuilder)"
     (let [sb (sandbox/create-sandbox :interop :full)]
@@ -77,14 +120,88 @@
       (is (some? (:error (sandbox/eval-code sb "(spit \"/tmp/nope\" \"x\")"))))
       (is (some? (:error (sandbox/eval-code sb "(sh \"echo\" \"x\")"))))))
 
+  ;; `http` is a library-namespace, NOT a `:full` addition. `:sandbox-interop`
+  ;; gates Java interop — the sci-deny classes and the class palette — and an
+  ;; HTTP call needs neither: under the default `:as :string` the response is a
+  ;; plain map of strings, readable at `:restricted` with get/keys/parse-json.
+  ;; Network egress is a different layer's question (the OS seatbelt), so
+  ;; withholding the client here would only have moved web access to `bash`.
+  ;;
+  ;; No assertion touches the network — resolution is the whole point, and a
+  ;; test that made a real request would be measuring someone else's uptime.
+  (testing "the http client is bound at BOTH interop levels"
+    (doseq [sb [(sandbox/create-sandbox)
+                (sandbox/create-sandbox :interop :full)]]
+      (let [r (sandbox/eval-code sb "(mapv fn? [http/get http/post http/put http/delete])")]
+        (is (nil? (:error r))
+            (str "http must resolve at " (:interop sb)))
+        (is (= [true true true true] (:result r))))))
+
   (testing "fork inherits the parent's interop level AND its :full library surface"
     (let [full-fork (sandbox/fork-sandbox (sandbox/create-sandbox :interop :full))]
       (is (= :full (:interop full-fork)))
       ;; copy-ns'd namespaces + aliases survive the fork's env snapshot
       (is (= "sh-ok" (:result (sandbox/eval-code
-                               full-fork "(clojure.string/trim (:out (sh \"echo\" \"sh-ok\")))")))))
+                               full-fork "(clojure.string/trim (:out (sh \"echo\" \"sh-ok\")))"))))
+      (is (true? (:result (sandbox/eval-code full-fork "(fn? http/get)")))
+          "the http namespace survives the fork too"))
+    (is (true? (:result (sandbox/eval-code (sandbox/fork-sandbox (sandbox/create-sandbox))
+                                           "(fn? http/get)")))
+        "and survives a :restricted fork, where it is equally bound")
     (is (= :restricted (:interop (sandbox/fork-sandbox
                                   (sandbox/create-sandbox)))))))
+
+(deftest sci-core-gap-is-filled-without-clobbering-core
+  ;; SCI ships a CURATED clojure.core and leaves the rest to the embedder. This
+  ;; is not a version axis — measured on sci 0.10.49 (current) running on
+  ;; Clojure 1.12, plain `sci/eval-string` with no ctx resolves none of these,
+  ;; so no upgrade supplies them. They are bound in `library-namespaces`.
+  (testing "the 1.11/1.12 pure fns a model reaches for from training priors"
+    (let [sb (sandbox/create-sandbox)]
+      (doseq [[form expected]
+              [["(parse-long \"42\")"                 42]
+               ["(parse-double \"1.5\")"              1.5]
+               ["(parse-boolean \"true\")"            true]
+               ["(some? (parse-uuid \"550e8400-e29b-41d4-a716-446655440000\"))" true]
+               ["(some? (random-uuid))"               true]
+               ["(abs -3)"                            3]
+               ["(NaN? ##NaN)"                        true]
+               ["(infinite? ##Inf)"                   true]
+               ["(update-vals {:a 1} inc)"            {:a 2}]
+               ["(update-keys {\"a\" 1} keyword)"      {:a 1}]
+               ["(vec (partitionv 2 [1 2 3 4]))"      [[1 2] [3 4]]]
+               ["(vec (partitionv-all 3 [1 2 3 4]))"  [[1 2 3] [4]]]
+               ["(first (splitv-at 1 [1 2 3]))"       [1]]
+               ["(println-str \"x\")"                  "x\n"]]]
+        (let [r (sandbox/eval-code sb form)]
+          (is (nil? (:error r)) (str form " -> " (:error r)))
+          (is (= expected (:result r)) form)))))
+
+  ;; THE risk in adding a 'clojure.core entry to `:namespaces`: if SCI treated
+  ;; it as a REPLACEMENT rather than a merge, the sandbox would lose all of
+  ;; clojure.core at once. It merges — pinned here so a future edit to that
+  ;; entry cannot quietly take the whole core down with it.
+  (testing "adding to clojure.core merges with SCI's built-in core, never replaces it"
+    (let [sb (sandbox/create-sandbox)]
+      (doseq [[form expected]
+              [["(reduce + (map inc (filter odd? (range 10))))" 30]
+               ["(->> [3 1 2] sort reverse vec)"                [3 2 1]]
+               ["(get-in (assoc-in {} [:a :b] 1) [:a :b])"      1]
+               ["(let [{:keys [a]} {:a 5}] a)"                  5]
+               ["(let [a (atom 0)] (swap! a inc) @a)"           1]
+               ["(count (filter some? [map filter reduce assoc conj into juxt comp partial]))" 9]]]
+        (let [r (sandbox/eval-code sb form)]
+          (is (nil? (:error r)) (str form " -> " (:error r)))
+          (is (= expected (:result r)) form)))))
+
+  ;; Pure fns, so they are bound at :full too — and granting them moved no
+  ;; policy: the I/O and capability lines are exactly where they were.
+  (testing "bound at :full as well, and nothing about the policy moved"
+    (is (= 42 (:result (sandbox/eval-code (sandbox/create-sandbox :interop :full)
+                                          "(parse-long \"42\")"))))
+    (let [sb (sandbox/create-sandbox)]
+      (is (some? (:error (sandbox/eval-code sb "(System/getenv \"HOME\")"))))
+      (is (some? (:error (sandbox/eval-code sb "(slurp \"/etc/hosts\")")))))))
 
 (deftest sys-info-is-a-capability-not-a-getproperty
   ;; `sys-info` exists so the two things System was reached for at :restricted

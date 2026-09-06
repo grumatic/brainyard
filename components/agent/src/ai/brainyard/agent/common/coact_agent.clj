@@ -833,11 +833,17 @@ and the results (return value, stdout, or error) are sent back for the next iter
   `(pmap (fn [g] (g)) [#(probe-a) #(probe-b)])`.
   `future` is NOT bound at any interop level — reaching for it costs you an
   iteration on `Could not resolve symbol`.
+- **HTTP** (bound at every interop level): `http/get`, `http/post`, `http/put`, `http/delete`.
+  `(http/get \"https://api.example.com/x\" {})` returns `{:status :headers :body}` — plain data,
+  so `(parse-json (:body r))` reads a JSON response. Opts: `:headers {\"Accept\" \"application/json\"}`,
+  `:body \"…\"`, `:content-type :json`, `:timeout-ms` (default 60000).
+  A non-2xx status does NOT throw — check `:status` yourself.
 "
        (if (= interop :full)
          (str "- **Full Java interop**: arbitrary Java interop is available (System, Runtime, ProcessBuilder, reflection, etc.) — running in a container sandbox.\n"
               "- **File/shell libraries**: `slurp`, `spit`, `sh` (`(sh \"ls\" \"-l\")`), plus `clojure.java.io/*` and `clojure.java.shell/*` are available.")
-         (str "- **No interop**: System, Runtime, ProcessBuilder, ClassLoader access denied. "
+         (str "- **Limited interop**: only WHITELISTED classes resolve — `Math`, the numeric boxes, `Thread`, `java.time`. "
+              "Anything else (System, Runtime, ProcessBuilder, ClassLoader, arbitrary `java.*`) fails with `Could not resolve symbol`; there is no import to add. "
               "Date/time needs none — `java.time` is whitelisted "
               "(`(java.time.LocalDate/now)`, `(java.time.ZonedDateTime/now)`, "
               "`java.time.format.DateTimeFormatter`); host facts via `(sys-info)`; "

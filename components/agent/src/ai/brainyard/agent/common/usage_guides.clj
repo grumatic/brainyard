@@ -493,10 +493,22 @@ form must take code you do NOT want evaluated as an argument:
   `(:macro (meta #'name))` tells them apart.
 
 ### Interop policy (`:sandbox-interop`)
-- `restricted` (default) — denies `System`/`Runtime`/`ProcessBuilder`/`ClassLoader`.
+- `restricted` (default) — a class WHITELIST (Math, numeric boxes, Thread,
+  `java.time`); every other class simply does not resolve, `System` and
+  `ClassLoader` included. There is no denylist to work around — the whitelist
+  is the whole boundary, and `eval`/`load-string` run in the same ctx so they
+  inherit it.
 - `full` — arbitrary interop (container-only); `auto` — relaxes to `full` only when
   a container is detected. Never auto-relaxes unless explicitly set. A blocked
   interop call throws — prefer a builtin/tool over reaching for raw Java.
+- The level also gates LIBRARIES, not just raw interop. `full` additionally binds
+  `slurp`/`spit`/`sh`, `clojure.java.io/*` and `clojure.java.shell/*`; at
+  `restricted` none of those resolve — file I/O goes through the file tools and
+  shell through `(bash :command \"...\")`.
+- It does NOT gate the network. The `http` client (`http/get` / `post` / `put` /
+  `delete` -> `{:status :headers :body}`) is bound at BOTH levels: the knob is
+  about Java interop, and network egress is the OS sandbox's question, not this
+  one.
 
 ### Isolation vs. the live runtime
 This SCI sandbox is the ISOLATED eval path. For inspecting/patching the running
