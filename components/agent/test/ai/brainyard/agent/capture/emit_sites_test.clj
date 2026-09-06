@@ -64,7 +64,9 @@
             "One :agent.code-eval/post per evaluated block")
         (is (every? #(string? (:code %)) @events))
         (is (every? #(some? (:result %)) @events))
-        (is (= a (:agent (first @events))))
+        ;; `true?` wraps the comparison so a failure prints `(not (true? false))`
+        ;; instead of trying to render two Agents into the report.
+        (is (true? (= a (:agent (first @events)))))
         ;; Confirm the actual block contents flowed through
         (let [codes (mapv :code @events)]
           (is (some #(re-find #"\(\+ 1 2\)" %) codes))

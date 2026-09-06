@@ -119,7 +119,9 @@
               :acp-backend :stub
               :acp-backend-opts {:chunk-delay-ms 5})]
       (try
-        (is (acp-agent/acp-instance? ag) "recognized as an acp instance by id")
+        ;; `true?` so a failure reports a boolean rather than embedding the
+        ;; Agent in the report — see the print-method note in core/agent.clj.
+        (is (true? (acp-agent/acp-instance? ag)) "recognized as an acp instance by id")
         (is (nil? (acp-agent/descriptor ag)) "no descriptor before connecting")
         (let [d (acp-agent/ensure-connected! ag)]
           (is (= :stub (:backend d)) "descriptor records the backend")

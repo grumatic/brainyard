@@ -608,6 +608,41 @@
                                :error (ex-message e))))))))
     (mulog/info ::agent-closed :agent-id agent-id)))
 
+;; ----------------------------------------------------------------------------
+;; An Agent has to be PRINTABLE, because printing one is a crash
+;; ----------------------------------------------------------------------------
+;;
+;; The record closes a reference cycle through itself:
+;;
+;;   Agent -> !state -> :clj-agent (a clojure.lang.Agent)
+;;                   -> its state map {:agent <this Agent> …} -> Agent -> …
+;;
+;; so the default record printer recurses until the stack blows. That makes
+;; `pr-str`, `prn` and `println` of an Agent — or of any collection holding one
+;; — throw StackOverflowError. (`str` and `format "%s"` go through `toString`,
+;; not this, and were never affected.) The dangerous callers are the ones
+;; nobody writes on purpose, like `clojure.test` building a failure report out
+;; of the evaluated arguments of a failing assertion. Measured cost of that:
+;; a one-line test failure in
+;; `session-sharing-test` surfaced as an unreadable StackOverflowError AND, via
+;; `bb test`'s stop-at-first-failure, aborted the whole workspace suite at 137
+;; of ~299 test files.
+;;
+;; Nothing is regressed by defining this. There is no working rendering to
+;; preserve — every attempt to print an Agent today throws — so the only
+;; possible change is from "crash" to "a short identifying token".
+;;
+;; The id is the whole of the useful identity here (it carries the
+;; defagent-type as its namespace, e.g. `:script-agent/orange-bee-893`).
+;; Deliberately NOT the state: dereferencing atoms inside a printer is how a
+;; debugging aid becomes a race, and the state is what was unprintable in the
+;; first place. Reach for `@(:!state a)` explicitly when you want it — and note
+;; that the raw state atom is STILL unprintable on its own, because the
+;; `clojure.lang.Agent` under `:clj-agent` carries its own cycle that this
+;; cannot reach.
+(defmethod print-method Agent [^Agent a ^java.io.Writer w]
+  (.write w (str "#agent[" (:agent-id a) "]")))
+
 ;; ============================================================================
 ;; Agent Factory
 ;; ============================================================================
