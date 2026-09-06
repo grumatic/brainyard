@@ -47,6 +47,26 @@
   [ag]
   (some-> (agent/get-agent (proto/agent-id ag)) proto/agent-id))
 
+;; ── Why every positive assertion below is wrapped in `true?` ────────────────
+;;
+;; The same hazard `live?` guards against, generalized. `clojure.test` builds
+;; its `:actual` form from the EVALUATED arguments of the outermost predicate,
+;; so `(is (subagent? worker))` embeds the Agent RECORD in the failure report —
+;; and an Agent cannot be printed at all: measured, `pr-str` on an Agent, on a
+;; map containing one, or on a `:!state` atom (whose `:clj-agent` closes the
+;; loop) all throw StackOverflowError.
+;;
+;; That turns a one-line failure into an unreadable error, and because
+;; `bb test` stops at the first failing namespace it takes the REST OF THE
+;; WORKSPACE with it — which is exactly what happened here: this namespace
+;; aborted the suite at 137 of ~299 test files, and the assertion that caused
+;; it could not be read from the output.
+;;
+;; `(is (true? X))` evaluates X to a Boolean BEFORE it reaches the report, so a
+;; failure prints `(not (true? false))` and the run continues. `(is (not X))`
+;; and `(is (= a b))` are already safe for the same reason — do not "simplify"
+;; a `true?` away to match them.
+
 (defn- mk
   "Create a throwaway agent. `opts` may carry :parent-agent /
    :share-parent-session."
@@ -73,14 +93,14 @@
         (is (not (agent/dispatched-subagent? root))))
 
       (testing "dispatched worker — a parent, flag defaults false"
-        (is (agent/subagent? worker))
+        (is (true? (agent/subagent? worker)))
         (is (not (agent/share-parent-session? worker))
             "default is false: a subagent is a worker unless it says otherwise")
-        (is (agent/dispatched-subagent? worker)))
+        (is (true? (agent/dispatched-subagent? worker))))
 
       (testing "session-sharing sibling — a parent AND the flag"
-        (is (agent/subagent? sibling) "it is still owned")
-        (is (agent/share-parent-session? sibling))
+        (is (true? (agent/subagent? sibling)) "it is still owned")
+        (is (true? (agent/share-parent-session? sibling)))
         (is (not (agent/dispatched-subagent? sibling))))
 
       (testing "both kinds record their creator as :owner"
@@ -152,8 +172,8 @@
         worker  (mk :ss5-worker  :parent-agent root)
         sibling (mk :ss5-sibling :parent-agent root :share-parent-session true)]
     (try
-      (is (pred {:agent root})    "the root's Q&A is the user's Q&A")
-      (is (pred {:agent sibling}) "so is a sharing sibling's — a second model in
+      (is (true? (pred {:agent root}))    "the root's Q&A is the user's Q&A")
+      (is (true? (pred {:agent sibling})) "so is a sharing sibling's — a second model in
                                    the same conversation, not a sub-task")
       (is (not (pred {:agent worker}))
           "a dispatched worker's ask/post is operational detail")
@@ -170,21 +190,27 @@
   ;; root BOTH advancing the same session's consolidation cadence — the exact
   ;; double-count those gates exist to prevent. This pins the split so the next
   ;; person adding a gate picks the right axis instead of re-deriving it.
-  (let [root      (mk :ss6-root)
-        worker    (mk :ss6-worker  :parent-agent root)
-        shared    (mk :ss6-shared  :parent-agent root :share-parent-session true)
+  ;; The gate has to be ON for the :root-only axis to be observable at all.
+  ;; :enable-memory-consolidation ships FALSE (an opt-in cadence), so without
+  ;; this every agent here answered `false` — the positive assertion failed and
+  ;; the two negatives passed VACUOUSLY, which is the worse half: the block
+  ;; read as green proof of a split it was no longer testing.
+  (let [on-cfg    {:enable-memory-consolidation true}
+        root      (mk :ss6-root                                            :config-extra on-cfg)
+        worker    (mk :ss6-worker  :parent-agent root                      :config-extra on-cfg)
+        shared    (mk :ss6-shared  :parent-agent root :share-parent-session true :config-extra on-cfg)
         root-m    (hooks/match-root-agent)
         user-m    (hooks/match-user-turn-agent)]
     (try
       (testing "axis 1 — root?: the session singleton, and ONLY it"
-        (is (runtime/root-state? (:!state root)))
+        (is (true? (runtime/root-state? (:!state root))))
         (is (not (runtime/root-state? (:!state worker))))
         (is (not (runtime/root-state? (:!state shared)))
             "a session-sharing subagent is still a SUBAGENT — it has a parent"))
 
       (testing "axis 2 — is the user talking?: root + sharing subagent"
         (is (not (runtime/dispatched-subagent-state? (:!state root))))
-        (is (runtime/dispatched-subagent-state? (:!state worker))
+        (is (true? (runtime/dispatched-subagent-state? (:!state worker)))
             "a dispatched worker's ask is operational detail")
         (is (not (runtime/dispatched-subagent-state? (:!state shared)))
             "an acp-agent IS the user, addressing a second model"))
@@ -200,16 +226,25 @@
             "match-user-turn-agent admits the sharing subagent"))
 
       (testing ":root-only features gate on axis 1 — the root alone"
-        (is (feature/on? root :memory/consolidation))
+        (is (true? (feature/on? root :memory/consolidation)))
         (is (not (feature/on? worker :memory/consolidation)))
         (is (not (feature/on? shared :memory/consolidation))
-            "else the acp-agent and the root both advance one session's cadence"))
+            "else the acp-agent and the root both advance one session's cadence")
+        ;; …and OFF for the right REASON. `on?` alone cannot tell "root-only
+        ;; blocked it" from "the gate is shut", so on its own it would go on
+        ;; passing if :root-only were deleted from the feature registry
+        ;; tomorrow. `:root-only-blocked` is the axis-1 decision itself.
+        (is (nil? (:root-only-blocked (feature/feature-state root :memory/consolidation)))
+            "the root is never blocked by the rule it exists to satisfy")
+        (is (true? (:root-only-blocked (feature/feature-state worker :memory/consolidation))))
+        (is (true? (:root-only-blocked (feature/feature-state shared :memory/consolidation)))
+            "sharing a session is not a promotion toward root"))
 
       (testing "L2 capture gates on axis 2 — content, not cadence"
         (let [pred (deref #'agent/agent-capture-event?)]
-          (is (pred {:agent root}))
+          (is (true? (pred {:agent root})))
           (is (not (pred {:agent worker})))
-          (is (pred {:agent shared})
+          (is (true? (pred {:agent shared}))
               "a sharing subagent drives no singleton, but its turns are
                still the user's and worth remembering")))
 
@@ -262,8 +297,8 @@
                ", got " (mapv proto/agent-id roots)))
       (is (= (proto/agent-id root) (proto/agent-id (first roots))))
       (testing "both other kinds are subagents of that root"
-        (is (agent/subagent? worker))
-        (is (agent/subagent? shared)
+        (is (true? (agent/subagent? worker)))
+        (is (true? (agent/subagent? shared))
             "session-sharing does not exempt an instance from being a subagent")
         (is (= (proto/agent-id root) (:owner (agent/lifecycle worker))))
         (is (= (proto/agent-id root) (:owner (agent/lifecycle shared)))))
