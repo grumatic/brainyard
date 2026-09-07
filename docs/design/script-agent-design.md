@@ -1,84 +1,29 @@
 # Script-Agent — A Two-Channel CoAct Where the Tool Registry Is a Directory
 
-> **Status:** **P0 shipped.** `script-agent` is registered in `components/agent`
-> (`common/script_agent.clj`), the library lives in `common/scripts.clj`, and
-> the language gate is in `common/coact_agent.clj`. Tests:
-> `components/agent/test/ai/brainyard/agent/script_agent_test.clj` (14 tests,
-> 128 assertions).
+> **Status: SHIPPED — P0, P1 and P2.** This document describes what is built,
+> not what was proposed; the as-built corrections that used to sit in a delta
+> block here are folded into the sections they belong to.
 >
-> **As-built deltas from the proposal below — read these first:**
-> - **The substrates had to go too, and that was the bulk of the win.** §2.2
->   only counted the role/format/execution-model sections. The five base
->   substrates (skill / MCP / todo / exec / subagent) and BOTH
->   `coact-critical-rules` and `coact-large-results-playbook` are written
->   against the tool registry — `doc$read`, `usage$guide`, `read-file :lines`,
->   `todo$sync`, `edit-agent` dispatch. Gating them on a new `registry?`
->   predicate (`tool-channel? OR a clojure fence`) is what took the static
->   prompt from 20,810 chars to **8,696** — a 58% cut, measured. The rules and
->   playbook get script-shaped variants (`sed -n`, `grep`, `head -c`) rather
->   than being dropped: the problems they describe are real, only the verbs
->   were wrong.
-> - **Byte-identity for existing agents is enforced, not hoped for.** The
->   two-arity `render-instructions` / `think-act-code-signature` delegate to the
->   three-arity form with `all-code-langs`, and the two places where a template
->   literal became a variable (`lang-blurb`, `script-fences`) reproduce the
->   ORIGINAL hand-wrapped text for the full set — including the line break
->   before `` `javascript` ``, which `script-fences` carries along with the word
->   "blocks" for exactly that reason. Verified by capturing all three renders
->   before the edit and diffing after.
-> - **The PATH injection is a COMMAND PREFIX**, not an env map threaded through
->   `local-exec-shell` / the fast-eval ProcessBuilder / the `:bash` task
->   executor. All three hand the string to `/bin/sh -c`, so one prefix covers
->   them and none grows a parameter that can fall out of sync.
-> - **The library has TWO renderings, chosen by `script-library-mode`.** `:full`
->   (no clojure fence) injects PATH, materializes the builtin pack, and carries
->   the authoring contract — the library IS that agent's tool surface. `:brief`
->   (a clojure fence, so a registry) is NAMES ONLY: no PATH, no authoring, no
->   builtins, and it renders nothing at all until a script has actually been
->   saved, so it is free until it has something to say (290 chars vs 1,279 when
->   populated). PATH stays `:full`-only because prepending directories without
->   saying so is a silent change to what a bare command resolves to; `:brief`
->   names a PATH, never a command.
->
->   This was added after measuring the gap. Asked "which design docs are over
->   1000 lines?", router-agent chose `code-compose` and hand-rolled a find/wc
->   pipeline the library already held, because nothing in its prompt said the
->   library existed. With `:brief` present the same question routes to
->   `tool-fetch` with the reason "a saved script already computes this exactly,
->   so I ran it directly rather than hand-rolling a find/wc pipeline". Builtins
->   are excluded from `:brief` for the same reason: the pack is materialized on
->   first use, so counting it would make every repo look like it had a library,
->   and a router will never run `scripts-new`.
-> - **Builtins are materialized from strings in `scripts.clj`**, not shipped as
->   classpath resources: a resource needs native-image resource-config, and a
->   missing entry fails at runtime with an empty library and no error anyone
->   would connect to the cause.
-> - **`# name:` parsing is scoped to the contiguous header block**, first-wins.
->   A whole-head scan indexed `scripts-new` — which contains `# name: $name`
->   inside the heredoc it emits — as a script literally called `$name`. Any
->   script that writes another script has that shape. Regression test:
->   `header-parsing-stops-at-the-header-test`.
-> - `:script-lib-dirs` defaults to `[]` (derive), not to an explicit list.
-> - **Telemetry is shipped, as `::script-block` rather than the proposed
->   `::script-invoked`** — one event per script block, firing even when nothing
->   was invoked, because a numerator with no denominator cannot answer a ratio.
->   See §9. `by scripts list` / `by scripts reuse` read it. **P1 and P2 are
->   both complete** — the bridge ships OFF by default behind an allowlist
->   (§13).
-> - **A script's name is its FILENAME, never its `# name:` header.** PATH
->   resolves the filename, so anything else is a promise the shell will not
->   keep. Found by copying `clj-count` to `fetch` without editing the header:
->   the listing showed a second `clj-count` shadowing the first, while the
->   project `fetch` — the file that actually shadows the builtin on PATH —
->   vanished from it. `scripts-doctor` now reports a header/filename
->   disagreement instead.
->
-> **Scope:** `components/agent/src/ai/brainyard/agent/common/script_agent.clj`,
-> `common/scripts.clj`, `common/coact_agent.clj`, `core/config.clj`,
-> `core/feature.clj`, `common/router_agent.clj`, `interface.clj`.
+> **Scope:** `common/script_agent.clj` (the agent), `common/scripts.clj` (the
+> library), `common/script_bridge.clj` (P2), `common/coact_agent.clj` (the
+> language gate and the registry-substrate gate), `core/config.clj`,
+> `core/feature.clj`, `core/context_budget.clj`, `common/router_agent.clj`,
+> `interface.clj`, and `by scripts` in the app project.
+> **Tests:** `components/agent/test/…/script_agent_test.clj` — 22 tests,
+> 202 assertions.
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`.
 > **Sibling of:** `react-agent` (the other single-action-channel agent — it
 > pins the *opposite* channel off).
+>
+> **The four things that turned out differently from the proposal**, each
+> explained where it lives:
+> - The five base **substrates** had to be gated too, and that was the bulk of
+>   the prompt saving — §6.6.
+> - The library has **two renderings**, not one; a registry agent gets names
+>   only — §5.3.
+> - A script's name is its **filename**, never its `# name:` header — §5.2.
+> - The telemetry event is per **block**, not per invocation, because the
+>   question is a ratio — §9.
 
 ---
 
@@ -94,7 +39,10 @@ index is what gets rendered into the system prompt in place of CoAct's
 `## Tools` section.
 
 That single substitution — registry → directory — is the whole design. Every
-other decision below follows from it.
+other decision below follows from it, including the two that were not obvious
+until it was built: that the registry-shaped *prompt* has to go with the
+registry (§6.6, and it is 58% of the static system prompt), and that agents
+which keep their registry still want to know the library exists (§5.3).
 
 ---
 
@@ -196,13 +144,14 @@ reaches, so it needs no gate the bash fence does not already have (§8).
 ## 4. Position in the agent stack
 
 ```
-                    tool-calls   code-blocks           answer
-react-agent             ✓            ✗                   ✓      registry-only
-coact-agent             ✓      clj/bash/py/js            ✓      both
-script-agent            ✗         bash/py                ✓      directory-only
+                 tool-calls   code-blocks       answer   tool surface   library
+react-agent          ✓             ✗              ✓      registry       —
+coact-agent          ✓      clj/bash/py/js        ✓      registry       :brief
+script-agent         ✗         bash/py            ✓      directory      :full
 ```
 
-`script-agent` is a **leaf** in v1: it dispatches no sub-agents (§7.3). The
+`script-agent` is a **leaf**: it dispatches no sub-agents (§7.3), and the
+script bridge deliberately does not reopen that door. The
 router may dispatch *to* it, and should, for anything whose natural expression
 is a shell pipeline or a small python program over local files — data munging,
 log triage, format conversion, repo-wide mechanical edits, build/CI probing.
@@ -251,9 +200,18 @@ set -euo pipefail
 ...
 ```
 
-`name` defaults to the filename stem when absent, so it is optional in
-practice. `desc` is what appears in the prompt index. `usage` is *not* rendered
-in the prompt — it is there for `--help` and for a human reading the file.
+**`name` is documentation, never the name.** The library name is the FILENAME,
+extension included, because that is what PATH resolves — anything else is a
+promise the shell will not keep. This was wrong in both directions before it
+was right: listing `pdf-pages.py` as `pdf-pages` advertises an invocation that
+fails, and honouring a header that disagrees with its file is worse. Copying
+`clj-count` to `fetch` without editing its header made the index show a second
+`clj-count` shadowing the first, while the project `fetch` — the file that
+actually shadows the builtin on PATH — vanished from the listing entirely.
+`scripts-doctor` reports the disagreement instead.
+
+`desc` is what appears in the prompt index. `usage` is *not* rendered there —
+it is for `--help` and for a human reading the file.
 
 **There is deliberately no parameter schema.** A JSON-schema'd argument list
 would recreate exactly the registry ceremony this design exists to delete, and
@@ -262,25 +220,64 @@ so a stale or wrong schema turns a working script into an unreachable one,
 while a wrong `usage:` comment merely misinforms and is corrected by running
 the thing. The script's real contract is its exit code and its stderr.
 
-### 5.3 What goes into the prompt
+### 5.3 What goes into the prompt — two renderings, not one
+
+**`:full`** — for an agent with no clojure fence, whose tools ARE the library:
 
 ```markdown
-## Scripts (your reusable tools — `.brainyard/scripts/bin/`)
+## Scripts — your reusable tools
+Every script below is on PATH for every bash/python block. Call it by bare name.
 
-changed-since      — List files changed since a git ref, filtered by extension.
-pdf-pages          — Print the page count of a PDF.
-csv-schema         — Infer column types from a CSV sample.
-route-report (shadows builtin) — Summarize routing.log for a session.
-+3 more — run `scripts-ls` to see all.
+changed-since   — List files changed since a git ref, filtered by extension.
+pdf-pages       — Print the page count of a PDF.
+fetch           — HTTP GET a URL with a timeout and a size cap.
+…and 3 more — run `scripts-ls` for the full list.
 
-Read any script's source with `cat $(which <name>)`. To add one:
-write it to .brainyard/scripts/bin/<name>, chmod +x, done — it is on PATH
-for every block from the next one onward.
+### Reading one
+`cat $(which <name>)` — the source IS the contract.
+
+### Writing one
+[the heredoc skeleton, the `# desc:` contract, and §5.4's rule]
 ```
 
-Bounded by `:script-index-limit` (default 60). At ~60 chars a line that is a
-~3.6 KB ceiling — against the ~4.4 KB of *static prose* CoAct spends just
-explaining what its tool channel is, before listing a single tool.
+**`:brief`** — for an agent that HAS a registry (a clojure fence) and could
+otherwise re-derive work the library already holds. Names only:
+
+```markdown
+## Scripts (already saved, in .brainyard/scripts/bin)
+changed-since · pdf-pages · route-report
+Run one directly — `bash .brainyard/scripts/bin/<name>` — or `cat` it to see
+what it does. Before writing a shell pipeline, check whether one of these
+already is it. script-agent owns adding to the set.
+```
+
+Chosen by `coact-agent/script-library-mode`, which returns `:full`, `:brief`,
+or nil (no code channel — the feature requires one).
+
+**Why a second rendering rather than the same one.** The full section teaches
+*authoring*, and none of that is a registry agent's job. What it needs is one
+fact — these exist — so it can run one or hand the work to script-agent instead
+of re-deriving it. This was added after measuring the gap: asked "which design
+docs are over 1000 lines?", router-agent chose `code-compose` and hand-rolled a
+`find`/`wc` pipeline the library already held, because nothing in its prompt
+said the library existed. With `:brief` present the same question routes to
+`tool-fetch` with the reason *"a saved script already computes this exactly, so
+I ran it directly rather than hand-rolling a find/wc pipeline"*.
+
+**`:brief` excludes builtins, and that is what makes it affordable.** The pack
+is materialized on first use, so counting it would make every repo look like it
+had a library before anyone saved a script — and a router will never run
+`scripts-new`. With only builtins present it renders nothing at all. Populated,
+it is 290 chars against `:full`'s 1,279.
+
+**PATH injection is `:full`-only.** Prepending directories without saying so is
+a silent change to what a bare command resolves to; `:brief` names a path,
+never a command, so nothing about resolution moves for an agent that did not
+ask. The two halves must give the same answer, which is why one predicate
+decides both.
+
+Both are bounded by `:script-index-limit` (default 60), overflowing to a
+`…and N more` line rather than more rows.
 
 ### 5.4 When to write one — the rule that makes this work
 
@@ -297,11 +294,17 @@ instruction:
 The index being in the prompt at turn start is half the mechanism: the model
 cannot re-derive a tool it can see it already has.
 
-### 5.5 Builtin pack — kept small on purpose
+### 5.5 Builtin pack — four, plus one that is conditional
 
-Ship ~4, not ~40. A large builtin pack is a roster wearing a different hat, and
-it would re-import the problem: prompt weight for capabilities the model did
-not ask for and cannot easily audit.
+Ship four, not forty. A large builtin pack is a roster wearing a different hat,
+and it would re-import the problem: prompt weight for capabilities the model
+did not ask for and cannot easily audit.
+
+They are **materialized from strings in `scripts.clj`**, not shipped as
+classpath resources: a resource needs native-image resource-config, and a
+missing entry fails at runtime with an empty library and no error anyone would
+connect to the cause. A string compiled into the binary cannot go missing, and
+rewriting on a content change makes a binary upgrade refresh the pack for free.
 
 | script | why it earns a slot |
 |---|---|
@@ -310,13 +313,18 @@ not ask for and cannot easily audit.
 | `scripts-doctor` | syntax-check every script; report non-executable, shebang-less, header-less ones, and a `# name:` that disagrees with the filename |
 | `fetch <url>` | `curl` with sane flags, a timeout, and a size cap — the one thing bash gets wrong by default |
 
+**`by-tool`** is a fifth, materialized only when `:enable-script-bridge` is on
+and PRUNED from the builtin scope when it is off (§13, P2). Without the prune,
+the first person to try the bridge leaves a permanent index entry that answers
+"the bridge is off" — an advertisement for a door that is not there.
+
 Everything else starts life as a project script.
 
 ---
 
 ## 6. Core changes to CoAct
 
-Five edits, each mirroring an existing pattern. The alternative — a
+Six edits, each mirroring an existing pattern. The alternative — a
 prose-only agent that merely *asks* the model not to emit Clojure — is rejected
 for the reason `think-act-code-signature`'s own docstring gives: the output
 contract is what the provider enforces, and a prompt that contradicts it is the
@@ -394,9 +402,9 @@ In `coact-system-context`'s `cond->` (:1170):
   `execution-model-sandbox` when `:clojure` is not in `:code-langs`. The new
   text covers only: the two interpreters, cwd = project-dir, the PATH/PYTHONPATH
   injection, the fast-eval → auto-background detach deadline and its
-  auto-harvest, and output truncation-to-file. It should land near 2 KB against
-  the sandbox model's ~8 KB, because everything about SCI, `context-get`,
-  `[:user-vars]`, and sandbox persistence is inapplicable.
+  auto-harvest, and output truncation-to-file. Everything about SCI,
+  `context-get`, `[:user-vars]` and sandbox persistence is inapplicable and
+  gone.
 - `:sandbox-context-accessor` is dropped by the existing
   `(and code-channel? (not= :nrepl clj-backend))` guard being extended with
   `(langs-allow? :clojure)` — there is no sandbox to accessor into.
@@ -404,10 +412,16 @@ In `coact-system-context`'s `cond->` (:1170):
   `<!-- ParallelBlock -->` marker, the four-backtick verbatim-content fences
   (which are language-independent and still useful for writing files), minus
   every SCI string restriction.
-- `:scripts` is a **new section** carrying §5.3's index plus §5.4's rule. It
-  rides `:session-context` in `coact-system-zones` (it changes when a script is
-  written, which is exactly the session-stable cadence that zone exists for),
-  slotted where `:tools` sits.
+- `:role` selects `coact-role-script-only`, which names the two real channels
+  and says the tools are executables on PATH rather than sandbox callables.
+- `:scripts` is a **new section** carrying whichever of §5.3's two renderings
+  applies. It rides `:session-context` in `coact-system-zones` — it changes
+  when a script is saved, which is exactly the session-stable cadence that zone
+  exists for, and parking it in `:agent-core` would bust the largest cached
+  prefix on a `chmod +x`. It also has a `default-section-policies` entry
+  (priority 90, no compact strategy: it is already bounded at render time by
+  `:script-index-limit`, and there is no tier below "one line per script" that
+  still names the script).
 
 `coact-system-order` derives from `coact-system-zones`, so adding `:scripts`
 to the zone vector is the whole registration — the "compose drops sections
@@ -422,17 +436,53 @@ nREPL tool-namespace interning. `build-tools-section` receives no
 `sandbox-bindings`, so its "bootstrap call describing nothing" guard already
 returns nil and the section simply does not render.
 
-`:agent-tools` is `{}`. `run-coact-derived` merges CoAct's `:agent-tools` onto
-derived agents, so `script-agent` must pass an explicit empty roster and the
-merge helper must treat an explicit `{}` as "none", not as "absent, inherit".
-That is the one place this design touches shared merge behavior, and it needs a
-regression test.
+`:agent-tools` is an explicit `{:tools []}`. `run-coact-derived` merges CoAct's
+roster onto derived agents, so `merge-derived-tools` had to learn that an
+explicitly EMPTY roster is a declaration and `nil` is an omission — without
+that, the declaration is unexpressible and script-agent carries
+`default-agent-roster`, a full spec block for tools it has no channel to call.
+That is the one place this design touches shared merge behaviour; there is a
+regression test pinning all three cases.
+
+### 6.6 The registry substrates had to be gated too — and that was the bulk of it
+
+The proposal counted the role, format and execution-model sections and stopped
+there. It was wrong about where the weight was.
+
+CoAct installs five base substrates — skill, MCP, todo, exec, subagent — and
+both `coact-critical-rules` and `coact-large-results-playbook` are written
+against the tool registry: `doc$read`, `usage$guide`, `read-file :lines`,
+`todo$sync`, `edit-agent` dispatch. For an agent with no registry these are not
+merely wasted tokens. They are **instructions it cannot follow**, and the cost
+of that is an iteration spent discovering so.
+
+The gate is one predicate, `registry?` = `tool-channel? OR a clojure fence` —
+the two ways into the registry, since a clojure block auto-binds every visible
+tool as a callable. With neither, the five substrates are dropped and the rules
+and playbook select script-shaped variants: the same problems (a spilled
+result, no history on iteration 1, both `.brainyard` roots) with shell verbs
+(`sed -n`, `grep`, `head -c`) instead of tool calls.
+
+**Measured: the static system prompt goes from 20,810 chars to 8,696** — 58%.
+A full-channel agent's sections are unchanged, pinned by a test that asserts
+every one of them still renders and still gets the *registry* variants.
 
 ---
 
 ## 7. What is lost, and what happens to it
 
-Removing the tool channel removes real capability. Naming it honestly:
+Removing the tool channel removes real capability. Naming it honestly, with
+what the script bridge (§13, P2) restores marked — **the bridge is off by
+default, so read the unbridged column as the shipping default.**
+
+| | unbridged (default) | bridge on |
+|---|---|---|
+| background execution | kept, free | kept |
+| task inspection (`task$detail`/`wait`/`cancel`) | lost | restored |
+| memory recall / status | lost | restored |
+| artifacts, `trajectory$search` | lost | lost |
+| sub-agent dispatch | lost by design | still closed |
+| MCP | lost | lost |
 
 ### 7.1 Background work — **kept, for free**
 
@@ -443,31 +493,36 @@ they operate on the task manager and the `::eval-entry` records, not on
 still returns a `:pending` entry with a `task-id`, and is still folded back in a
 later iteration.
 
-What is lost is the *interactive* surface: `task$detail`, `task$wait`,
-`task$cancel` are registry tools. In v1 the model backgrounds explicitly
-instead — `nohup cmd > .brainyard/scripts/run/<id>.log 2>&1 &` then `tail` in a
-later block. This is strictly less ergonomic and it is the strongest single
-argument for Phase 2.
+What the unbridged agent loses is the *interactive* surface: `task$detail`,
+`task$wait`, `task$cancel` are registry tools. It backgrounds explicitly
+instead — `cmd > .brainyard/run-<name>.log 2>&1 &` then read the log in a later
+block, which the execution-model section teaches. That is strictly less
+ergonomic, and it was the strongest single argument for P2. With the bridge on,
+all three are on the default allowlist.
 
 ### 7.2 Memory recall, artifacts, project memory — **partly lost**
 
-`memory$recall`, `artifact$*`, `trajectory$search` are registry tools. Project
-memory and BRAINYARD.md still ride the *system context* (they are prompt
-sections, not tools), so the agent keeps its standing instructions and project
-notes. Graph/L1-L3 recall is unavailable in v1.
+`memory$recall`, `artifact$*` and `trajectory$search` are registry tools.
+Project memory and BRAINYARD.md still ride the *system context* — they are
+prompt sections, not tools — so the agent keeps its standing instructions and
+project notes regardless. `memory$recall` and `memory$status` are on the
+bridge's default allowlist; artifacts and trajectory search are not, and stay
+unavailable.
 
-### 7.3 Sub-agent dispatch — **lost by design**
+### 7.3 Sub-agent dispatch — **lost by design, and still closed**
 
 `script-agent` is a leaf. Making it a dispatcher would mean either the tool
-channel (which it does not have) or a shim (Phase 2). A leaf specialist that
-the router calls *into* is the right v1 shape and matches how `explore-agent`
-is used.
+channel (which it does not have) or putting agent tools on the bridge — and the
+bridge deliberately does not carry them: a door opened for memory recall must
+not also pass the write surface of every agent in the process. A leaf
+specialist the router calls *into* is the right shape and matches how
+`explore-agent` is used.
 
 ### 7.4 MCP — **lost**
 
-MCP servers are reached through the registry. Note that many MCP servers are
-themselves stdio subprocesses; a project script wrapping one is a legitimate
-workaround and exactly the pattern §5 is for.
+MCP servers are reached through the registry, and `mcp$*` is not on the
+allowlist. Note that many MCP servers are themselves stdio subprocesses; a
+project script wrapping one is legitimate and exactly the pattern §5 is for.
 
 ---
 
@@ -494,10 +549,16 @@ Two things the persistence *does* change, and their answers:
   in the builtin pack for this, and it is the natural thing to run after a
   turn that wrote one.
 - **A builtin can be shadowed.** Allowed — forking is the point — but never
-  silently: the index labels it, and builtin files themselves are never
-  overwritten (the model writes to the *project* dir; the builtin dir ships
-  read-only inside the binary's resource tree and is materialized to a cache
-  path on first use).
+  silently: the index labels it. The model writes to the *project* dir; the
+  builtin dir is managed by the binary, which rewrites its files on a content
+  change and prunes what it no longer ships.
+
+**The script bridge is the one part that DOES add reach**, and it is the reason
+everything above is stated as narrowly as it is. Its answers, in full at §13:
+it is off by default; what it exposes is an allowlist, not a filter over the
+registry; the default set is read/observe only, with no write tool and no agent
+dispatch; and an argument crossing it is coerced but never `read-string`-ed, so
+it cannot become code.
 
 ---
 
@@ -571,21 +632,37 @@ and the point of shipping this is that the next hundred will be.
 
 | key | default | meaning |
 |---|---|---|
-| `:code-langs` | `#{:clojure :bash :python :javascript}` | languages the code channel executes; script-agent pins `#{:bash :python}` |
-| `:enable-script-library` | `true` | gate for `:exec/script-library` |
-| `:script-lib-dirs` | project → user → builtin | ordered; earlier shadows later |
-| `:script-index-limit` | `60` | max scripts rendered in the prompt |
+| `:code-langs` | `[:clojure :bash :python :javascript]` | languages the code channel EXECUTES; a fence in any other is refused as a value. script-agent pins `[:bash :python]`. Rides `:exec/code-channel` |
+| `:enable-script-library` | `true` | gate for `:exec/script-library`. Applies only to agents whose `:code-langs` exclude `:clojure` — see `script-library-mode` |
+| `:script-lib-dirs` | `[]` (derive) | override the roots, highest precedence first; builtin is always appended and cannot be removed |
+| `:script-index-limit` | `60` | max scripts rendered in either prompt rendering |
+| `:enable-script-bridge` | **`false`** | gate for `:exec/script-bridge` (requires `:exec/script-library`). The one knob that adds reach |
+| `:script-bridge-tools` | `[:memory$recall :memory$status :task$detail :task$cancel :task$wait]` | the `by-tool` allowlist. Not a filter over the registry; empty means the bridge answers nothing |
+
+Feature flags: `:exec/script-library` and `:exec/script-bridge`, both in the
+`:exec` family, both `:session` lifecycle. `:code-langs` rides
+`:exec/code-channel` rather than a flag of its own — the languages are one
+choice with one answer, and four independent booleans would make
+`#{:clojure :javascript}` as expressible as the two combinations anyone wants.
 
 Env vars follow the existing precedence (env > per-agent > session >
-`.brainyard/config.edn` > schema default): `BY_CODE_LANGS`,
-`BY_SCRIPT_LIB_DIRS`, `BY_SCRIPT_INDEX_LIMIT`.
+`.brainyard/config.edn` > schema default): `BY_CODE_LANGS` (comma- or
+space-separated), `BY_SCRIPT_LIB_DIRS`, `BY_SCRIPT_INDEX_LIMIT`,
+`BY_ENABLE_SCRIPT_LIBRARY`, `BY_ENABLE_SCRIPT_BRIDGE`.
+
+**A caveat worth knowing when configuring an agent programmatically:** passing
+`:config-extra` to `setup-agent-by-id` REPLACES the defagent's own, it does not
+merge. Enabling the bridge that way silently drops script-agent's
+`:tool-channel? false` and `:code-langs`, turning it back into a full CoAct
+agent. Use an env var or `.brainyard/config.edn`, which layer correctly. (This
+is pre-existing `setup-agent` behaviour, not specific to this design.)
 
 ---
 
 ## 11. Testing
 
-`components/agent/test/ai/brainyard/agent/script_agent_test.clj` — 15 tests,
-131 assertions, no LLM. `run-single-block` is driven directly, which is enough
+`components/agent/test/ai/brainyard/agent/script_agent_test.clj` — 22 tests,
+202 assertions, no LLM. `run-single-block` is driven directly, which is enough
 because the language gate sits in it, above every executing arm.
 
 1. **Registration** — the defagent is in `!tool-defs`, and its `:config-extra`
@@ -664,18 +741,43 @@ Following the convention the three front-door agents established:
    pipeline is wrong about cost.
 4. Add to `docs/core/agent.md`'s roster table.
 
+**All four done, and the routing was verified rather than assumed** — four
+turns through router-agent on `bedrock/claude-sonnet-5`, read from the routing
+log:
+
+| question | routed to | |
+|---|---|---|
+| "print line counts for docs/design .md, top 5" | `code-compose` | correct — one-off |
+| "I check this **every week**… one command next time" | **script-agent** `:light` | wrote the script |
+| "where is auto-background detach implemented?" | `explore-agent` | no over-attraction |
+| "run my weekly check" (new process) | **script-agent** | reused the saved script |
+
+The lesson from the first row is §5.3's: entry X only fires on a recurrence
+signal, so without the `:brief` index a one-off script-shaped question is
+answered by re-deriving work the library already holds.
+
 ---
 
 ## 13. Phasing
 
-**P0 — the agent.** `:code-langs` gate (6.1–6.3), script-only prompt sections
-(6.4), no-sandbox init (6.5), library index + PATH injection, the four builtins.
-No new commands, no IPC. This is complete and useful on its own: bash and
-python already cover file I/O, search, HTTP, git, and process control.
+All three phases shipped, in order, and the ordering is the part worth keeping:
+each phase answered a question the next one needed.
 
-**P1 — ergonomics.** `by scripts` CLI, `::script-invoked` telemetry, the reuse
-report. Ship only after P0 has run enough turns to say whether the library is
-actually being reused.
+**P0 — the agent. Shipped.** The `:code-langs` gate (§6.1–6.3), script-only
+prompt sections (§6.4), the substrate gate (§6.6), no-sandbox init (§6.5),
+library index + PATH injection, four builtins. No new commands, no IPC. Complete
+on its own: bash and python already cover file I/O, search, HTTP, git and
+process control.
+
+Verified live on `bedrock/amazon.nova-lite-v1:0` — three turns, the third a
+separate process discovering a script the second one authored and reusing it by
+bare name for a different directory, with the right answer.
+
+**P1 — ergonomics. Shipped.** `::script-block` telemetry (§9) and
+`by scripts list` / `by scripts reuse`. What P0 could not answer without it was
+the only question that matters — whether the library is reused or re-typed —
+and running P0 first is what produced the measurement that justified §5.3's
+`:brief` rendering.
 
 **P2 — the bridge. Shipped, and OFF by default.** The agent binds its own
 AF_UNIX socket (`components/ask-channel`'s transport, unchanged — `start-listener!`
@@ -728,4 +830,25 @@ renders.
 
 **It was listed last on purpose, and that ordering paid.** Building the bridge
 first would have made script-agent a thin skin over CoAct's roster and answered
-none of the question this design exists to ask.
+none of the question this design exists to ask: how much of a tool registry a
+capable model actually needs when it can write files and run them.
+
+---
+
+## 14. What is not settled
+
+- **The reuse rate is measured over too few blocks to mean anything.** 56% over
+  9 script blocks at the time of writing. The number exists so the next few
+  hundred can be read; nothing should be changed on the strength of nine.
+- **`:brief` changes the router's behaviour without determining it.** On one
+  question it reached for a saved script; on another, with `clj-count` sitting
+  in its index, it hand-rolled `find | wc -l` anyway. Whether that is prompt
+  placement, wording, or simply model variance is exactly what the telemetry is
+  for.
+- **Widening the library to every code agent** — PATH and the full section, not
+  just `:brief` — remains a deliberate later decision. It would add a prompt
+  section to every shipped agent, and there is no measurement yet that says the
+  registry agents want one.
+- **`by scripts doctor` does not exist.** The lint runs only as a script inside
+  an agent's PATH, so there is no way to check the library from a terminal
+  before committing to it.
