@@ -495,3 +495,48 @@
   (fn [f]
     (try (f)
          (finally (swap! tool/!tool-defs dissoc :tool-test$probe reg-id)))))
+
+;; ============================================================================
+;; Author options vs caller options
+;; ============================================================================
+
+(deftest merge-agent-options-layers-the-extras-test
+  (testing "map-shaped extras LAYER; caller wins per key inside them"
+    ;; A defagent author puts identity in :config-extra (a pinned backend, a
+    ;; channel gate); a caller adds a permission-fn or a flag. A shallow merge
+    ;; makes the caller's map replace the author's wholesale, which is silent
+    ;; and reads as working.
+    (is (= {:config-extra {:a 1 :b 9 :c 3}}
+           (tool/merge-agent-options {:config-extra {:a 1 :b 2}}
+                                     {:config-extra {:b 9 :c 3}})))
+    (is (= :caller
+           (get-in (tool/merge-agent-options {:config-extra {:x :author}}
+                                             {:config-extra {:x :caller}})
+                   [:config-extra :x]))))
+
+  (testing "either side absent"
+    (is (= {:config-extra {:a 1}} (tool/merge-agent-options {} {:config-extra {:a 1}})))
+    (is (= {:config-extra {:a 1}} (tool/merge-agent-options {:config-extra {:a 1}} {})))
+    (is (= {} (tool/merge-agent-options {} {}))
+        "an empty extras map is dropped rather than carried as {}"))
+
+  (testing ":st-memory-extra layers too"
+    (is (= {:st-memory-extra {:p 1 :q 2}}
+           (tool/merge-agent-options {:st-memory-extra {:p 1}}
+                                     {:st-memory-extra {:q 2}}))))
+
+  (testing "every OTHER key still replaces — this is not a deep merge"
+    ;; :agent-tools in particular: a caller passing a roster means that roster,
+    ;; and run-coact-derived owns the roster merge separately.
+    (is (= {:agent-tools {:tools [:b]}}
+           (tool/merge-agent-options {:agent-tools {:tools [:a]}}
+                                     {:agent-tools {:tools [:b]}})))
+    (is (= {:instruction "caller"}
+           (tool/merge-agent-options {:instruction "author"} {:instruction "caller"}))))
+
+  (testing "the two entry points agree by construction"
+    ;; They disagreed for as long as both existed: the deftool wrapper (the
+    ;; call-tool path) layered, setup-agent-by-id replaced — so the same agent
+    ;; behaved differently depending on how it was reached.
+    (is (= [:config-extra :st-memory-extra] tool/extra-merge-keys))))
+

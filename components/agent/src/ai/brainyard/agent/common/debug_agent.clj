@@ -493,13 +493,18 @@
   (when (debug-agent? agent)
     ;; Backstop, not the primary write — the defagent already declares
     ;; :clj-backend :nrepl in :config-extra, which lands in this same slot
-    ;; earlier (during setup-agent, before this hook fires). Re-asserting it
-    ;; here costs one swap! and closes the one hole in that route:
-    ;; `setup-agent-by-id` merges caller options over defagent meta SHALLOWLY,
-    ;; so a caller passing its own :config-extra map replaces the author's
-    ;; wholesale — and a debug-agent silently demoted to the SCI sandbox looks
-    ;; like it is working while answering from an image it cannot see. This
-    ;; write is last and unconditional, so it cannot be merged away.
+    ;; earlier (during setup-agent, before this hook fires).
+    ;;
+    ;; The hole this was written to close is now closed at the source:
+    ;; `setup-agent-by-id` used to merge caller options over defagent meta
+    ;; SHALLOWLY, so a caller passing its own :config-extra replaced the
+    ;; author's wholesale — and a debug-agent silently demoted to the SCI
+    ;; sandbox looks like it is working while answering from an image it cannot
+    ;; see. Both entry points now layer the map-shaped extras
+    ;; (`tool/merge-agent-options`). The write is KEPT anyway: it is last and
+    ;; unconditional, it costs one swap!, and :clj-backend is this agent's
+    ;; identity rather than a preference — a backstop whose cause was fixed is
+    ;; still the cheapest guard against the next route that forgets.
     ;;
     (write-config! agent :clj-backend :nrepl)
     ;; The route alone leaves the clobber hole half-open: `resolve-clj-backend`

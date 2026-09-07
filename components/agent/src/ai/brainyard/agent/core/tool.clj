@@ -149,6 +149,34 @@
 ;; Unified Tool Macro
 ;; ============================================================================
 
+
+(def extra-merge-keys
+  "Option keys whose values are MAPS that layer, rather than replace.
+
+   A defagent author puts defaults in `:config-extra` (a pinned `:clj-backend`,
+   a channel gate); a caller adds their own (`:permission-fn`, a session id). A
+   shallow `merge` of the two option maps makes the caller's map replace the
+   author's wholesale, which is silent and reads as working — a debug-agent
+   demoted to the SCI sandbox answers confidently from an image it cannot see."
+  [:config-extra :st-memory-extra])
+
+(defn merge-agent-options
+  "Merge caller `overrides` over defagent `base` options, layering the
+   `extra-merge-keys` map-wise instead of replacing them. Caller still wins on
+   a key collision INSIDE those maps.
+
+   Shared by the two entry points that combine author metadata with caller
+   options — the `deftool` wrapper (the `call-tool` path) and
+   `agent/setup-agent-by-id` (the direct path `bb tui ask` uses). They used to
+   disagree: the wrapper layered, `setup-agent-by-id` replaced, so the same
+   agent behaved differently depending on how it was reached."
+  [base overrides]
+  (reduce (fn [acc k]
+            (let [m (merge (get base k) (get overrides k))]
+              (if (seq m) (assoc acc k m) acc)))
+          (merge base overrides)
+          extra-merge-keys))
+
 (defmacro deftool
   "Define a tool and register it in the global !tool-defs registry.
 
@@ -206,19 +234,11 @@
            ;; Auto-injected metadata is renamed to :_deftool$<key> so it
            ;; survives the merge without colliding with caller args.
            merge-opts# ~merge-opts
-           ;; Map-shaped "extras" must DEEP-merge so a caller adding their
-           ;; own entries (e.g. a caller passing :config-extra {:permission-fn
-           ;; …}) does not clobber defaults the defagent author put in the
-           ;; same key (e.g. :config-extra {:enable-memory-capture true}).
-           ;; Without this, the caller's :config-extra silently replaces
-           ;; the author's. Caller still wins on key collisions.
-           merge-extras# (fn [base# overrides#]
-                           (reduce (fn [acc# k#]
-                                     (let [m# (merge (get base# k#)
-                                                     (get overrides# k#))]
-                                       (if (seq m#) (assoc acc# k# m#) acc#)))
-                                   (merge base# overrides#)
-                                   [:config-extra :st-memory-extra]))
+           ;; Map-shaped "extras" DEEP-merge so a caller adding their own
+           ;; entries (e.g. :config-extra {:permission-fn …}) does not clobber
+           ;; defaults the defagent author put in the same key. Shared with
+           ;; `setup-agent-by-id` — see `merge-agent-options`.
+           merge-extras# merge-agent-options
            ;; The `(fn? tool-fn)` check is deferred into the wrap-fn body
            ;; (rather than evaluated as part of this top-level `let`) so
            ;; cross-namespace Var references like `coact/run-coact-derived`

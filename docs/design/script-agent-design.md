@@ -650,12 +650,15 @@ Env vars follow the existing precedence (env > per-agent > session >
 space-separated), `BY_SCRIPT_LIB_DIRS`, `BY_SCRIPT_INDEX_LIMIT`,
 `BY_ENABLE_SCRIPT_LIBRARY`, `BY_ENABLE_SCRIPT_BRIDGE`.
 
-**A caveat worth knowing when configuring an agent programmatically:** passing
-`:config-extra` to `setup-agent-by-id` REPLACES the defagent's own, it does not
-merge. Enabling the bridge that way silently drops script-agent's
-`:tool-channel? false` and `:code-langs`, turning it back into a full CoAct
-agent. Use an env var or `.brainyard/config.edn`, which layer correctly. (This
-is pre-existing `setup-agent` behaviour, not specific to this design.)
+**Configuring an agent programmatically layers correctly**, but only since this
+work fixed it. `setup-agent-by-id` used to merge caller options over defagent
+metadata SHALLOWLY, so `:config-extra {:enable-script-bridge true}` replaced
+script-agent's own `:config-extra` wholesale and silently restored
+`:tool-channel?` and the full `:code-langs` — a script-only agent turned back
+into CoAct without a word. The `deftool` wrapper (the `call-tool` path) had
+layered these two keys since it was written; `setup-agent-by-id` simply never
+got it, so the same agent behaved differently depending on how it was reached.
+Both now share `tool/merge-agent-options`.
 
 ---
 

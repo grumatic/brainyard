@@ -305,6 +305,21 @@
         (is (true? ((resolve-private 'script-library-active?) snap))
             "the library is what replaces the roster")))
 
+    (testing "a caller's :config-extra does not disarm the pinned channel config"
+      ;; The regression that motivated fixing `setup-agent-by-id`'s merge:
+      ;; enabling the bridge this way used to REPLACE script-agent's own
+      ;; :config-extra, silently restoring :tool-channel? and the full
+      ;; :code-langs — a script-only agent quietly turned back into CoAct.
+      (let [b (agent/setup-agent-by-id
+               :script-agent {:agent-session {:user-id "test" :session-id "script-cfg"}
+                              :config-extra {:enable-script-bridge true}})
+            s (config/get-config-snapshot b)]
+        (is (= script-langs ((resolve-private 'resolve-code-langs) s))
+            "the author's :code-langs must survive a caller adding one key")
+        (is (false? (get s :tool-channel?)))
+        (is (true?  (get s :enable-script-bridge)) "…and the caller's key applies")
+        (is (= :full ((resolve-private 'script-library-mode) s)))))
+
     (testing "an agent WITH a clojure fence gets no library"
       ;; Both halves — PATH and prompt section — must answer the same way, and
       ;; for a registry agent that answer is no.

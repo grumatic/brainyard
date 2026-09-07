@@ -1254,8 +1254,9 @@
      :id               - override instance-id (must be unique)
      :agent-session    - {:user-id :session-id} (required) — the agent-session
      :max-iterations   - override default
-     :config-extra     - map merged into :config
-     :st-memory-extra  - map merged into :st-memory-init
+     :config-extra     - map LAYERED over the defagent's own :config-extra
+                         (caller wins per key); see `tool/merge-agent-options`
+     :st-memory-extra  - map layered the same way over :st-memory-init
      :session-store    - custom session store"
   [agent-id & {:keys [id] :as options}]
   (let [def-entry (tool/get-tool-defs :id agent-id)
@@ -1263,7 +1264,17 @@
             (throw (ex-info (str "Agent not found in registry: " agent-id)
                             {:agent-id agent-id})))
         instance-id (or id (generate-instance-id agent-id))
-        merged (merge (:meta def-entry) options {:id instance-id})]
+        ;; `merge-agent-options`, not `merge`: the map-shaped extras LAYER.
+        ;; A plain merge made a caller's :config-extra replace the defagent
+        ;; author's wholesale — so `setup-agent-by-id` with
+        ;; `:config-extra {:enable-script-bridge true}` silently dropped
+        ;; script-agent's `:tool-channel? false` and `:code-langs`, turning it
+        ;; back into a full CoAct agent. The `deftool` wrapper (the `call-tool`
+        ;; path) has layered these two keys for exactly this reason since it
+        ;; was written; this entry point simply never got it, so the same agent
+        ;; behaved differently depending on how it was reached.
+        merged (assoc (tool/merge-agent-options (:meta def-entry) options)
+                      :id instance-id)]
     (apply setup-agent (mapcat identity merged))))
 
 (defn- close-agent-quietly!
