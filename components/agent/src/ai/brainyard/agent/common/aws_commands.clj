@@ -117,7 +117,7 @@
       ;; child inherits only the real one — so an AWS_PROFILE set in `.env`
       ;; (which `.env.example` documents as the easy path) configured `by`'s
       ;; own Bedrock calls and then silently did not reach `aws` here.
-      (util/apply-policy! env-map (config/env-policy))
+      (util/apply-policy! env-map (config/env-policies))
       (when env
         (doseq [[k v] env]
           (.put env-map k v)))

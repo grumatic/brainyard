@@ -131,3 +131,47 @@
   ;; global policy rather than throwing on a nil scope.
   (binding [proto/*current-agent* nil]
     (is (= "ok" (sh-out "echo ok")))))
+
+;; ============================================================================
+;; Phase 4 — a sub-agent inherits its ancestry's restrictions
+;; ============================================================================
+
+(defn- sub-agent-of
+  "A stub child whose `runtime/get-parent-agent` answers `parent`."
+  [parent m]
+  (let [child {:!state (atom {:st-memory-init (atom {:config m})
+                              :runtime {:parent-agent parent}})}]
+    child))
+
+(deftest an-ancestors-deny-reaches-a-sub-agents-child-process
+  ;; The hole: `get-config` has no parent→child inheritance, so an agent that
+  ;; denied itself a credential could dispatch a specialist that saw it anyway
+  ;; — and that specialist runs shells.
+  (with-dotenv-var "BY_TEST_PROC_INHERIT" "sk-secret"
+    (fn []
+      (let [parent (agent-with {:env-deny ["BY_TEST_PROC_INHERIT"]})
+            child  (sub-agent-of parent {})]
+        (binding [proto/*current-agent* parent]
+          (is (= "[]" (sh-out "echo \"[$BY_TEST_PROC_INHERIT]\""))
+              "the parent's own children are denied"))
+        (binding [proto/*current-agent* child]
+          (is (= "[]" (sh-out "echo \"[$BY_TEST_PROC_INHERIT]\""))
+              "and so are its sub-agent's"))
+        (binding [proto/*current-agent* (agent-with {})]
+          (is (= "[sk-secret]" (sh-out "echo \"[$BY_TEST_PROC_INHERIT]\""))
+              "while an unrelated agent is untouched"))))))
+
+(deftest a-sub-agent-cannot-re-add-what-an-ancestor-denied
+  (with-dotenv-var "BY_TEST_PROC_SNEAK" "sk-secret"
+    (fn []
+      (let [parent (agent-with {:env-deny ["BY_TEST_PROC_SNEAK"]})
+            sneaky (sub-agent-of parent {:env-vars {"BY_TEST_PROC_SNEAK" "re-added"}})]
+        (binding [proto/*current-agent* sneaky]
+          (is (= "[]" (sh-out "echo \"[$BY_TEST_PROC_SNEAK]\""))))))))
+
+(deftest an-ancestors-allowlist-still-leaves-the-child-a-path
+  (let [parent (agent-with {:env-allow ["NOTHING_MATCHES"]})
+        child  (sub-agent-of parent {})]
+    (binding [proto/*current-agent* child]
+      (is (not= "" (sh-out "echo $PATH")))
+      (is (= "ok" (sh-out "echo ok"))))))

@@ -1,13 +1,15 @@
 # Environment Scoping — One Resolver, Three Scopes, and the Difference Between a Knob and a Secret
 
-> **Status: PHASES 0–3 SHIPPED.** §1 is measured against the tree as it was;
+> **Status: PHASES 0–4 SHIPPED, less tool scope.** §1 is measured against the tree as it was;
 > §3 is the design; §7 phases it and marks what has landed. Phases 0–2 added no
 > config key and no scoping, and closed every defect §1.2 measured plus the
 > child-process asymmetry behind it (§3.1a, §3.6a, §3.5a). Phase 3 is the
 > feature as asked: `:env-allow` / `:env-deny` / `:env-vars` at global and agent
-> scope (§3.3a). All three ship inert. Phase 4 (tool scope, `--web`/`--sandbox`
-> children, dispatch-time scoping) remains a proposal, as does open question 5
-> in §5.
+> scope (§3.3a). All three ship inert. Phase 4 (§3.3b) made an ancestor's
+> restriction bind its descendants — the hole that made a deny escapable by
+> delegating — and found two of its own items needed no code. Tool scope stays
+> deferred on §5's question 2; question 5, whether the code-eval channel should
+> have a gate of its own, remains open.
 >
 > **Problem in one line:** brainyard has three unrelated things called
 > "environment" — `BY_*` config knobs, third-party credentials, and the
@@ -408,6 +410,76 @@ non-secret value that is accepted.
 two agents, same spawn site, different environments. Feature ledger moves to 49
 capability features / 110 knobs / 187 config keys.
 
+### 3.3b Phase 4, as built — and two items that turned out not to need building
+
+**Dispatch-time scoping already worked.** Because Phase 3's keys are
+`config-schema` keys, both routes land on the child's per-agent layer with no
+dispatch change: a top-level `:env-deny` in the dispatch args, and
+`:config-extra {:env-deny …}` from a defagent author. Measured — `config-source`
+reports `:agent` for both. §3.4's "no new plumbing" claim delivered §7's Phase 4
+item for free, so there was nothing to write except the tests that say so.
+
+**A sub-agent could escape its parent's restriction, and that was the real
+work.** `get-config` has no parent→child inheritance, by design: a sub-agent's
+config layer is its own, and for most keys that is right. For a RESTRICTION it
+is a hole. Measured before the fix: an agent with `:env-deny ["AWS_*"]`
+dispatched a specialist whose resolved policy was `{:allow nil :deny [] :vars {}}`
+— the credential reached the specialist's shell. A deny a delegation can undo is
+not a deny; the same sentence `:tool-deny-tools` settled about
+`:tool-allow-tools`.
+
+`config/env-policies` now walks the ancestry (`runtime/get-parent-agent`, via a
+`requiring-resolve` delay, the shape `core.tool` already uses) and returns the
+chain root-first; `util/apply-policy!` takes a sequence. **Union of denies and
+intersection of allows fall out of applying each level in turn** — neither has
+to be computed, and an allow intersection is not computable from globs in the
+general case anyway. A root agent yields one policy, which is exactly Phase 3,
+so nothing without ancestry changes. The walk is depth-bounded at 32 so a
+malformed cycle truncates a policy rather than hanging a spawn.
+
+**Additions are grouped before removals, across the whole chain.** Interleaving
+per level would let a descendant's `:env-vars` re-add a name its ancestor had
+just removed — measured, and the reason the ordering is what it is. The
+same-level `:env-vars`-exempt-from-`:env-allow` convenience from §3.3a is
+deliberately NOT inherited: an operator writing both in one place should not
+say it twice, but an ancestor never saw the descendant's declaration, so its
+allowlist still binds.
+
+**A malformed policy now throws instead of permitting.** Every field of a
+non-map destructures to nil, which reads as "no opinion" and yields an
+unfiltered child — the wrong-direction failure for a restriction, and the same
+reason both tool-permission gates take `:on-error :throw`. Not hypothetical: a
+stale `export-symbols` value-copy in a REPL handed `apply-policy!` a vector
+while it still destructured a map, and the only symptom was a deny that quietly
+stopped denying. That is how it would fail in production too, so it is now an
+`ex-info`, pinned by a test.
+
+**`--web` and `--sandbox` are deliberately unchanged**, which is the answer §4
+said "deserves its own argument". Two measurements settle it. The re-exec'd
+child inherits the parent's real environment including `BY_ENV_FILE` (verified
+with a stand-in child: `BY_ENV_FILE` and `BY_SANDBOX_CHILD` both arrive), and a
+real `by` child runs `load-from-dotenv!` unconditionally at `-dispatch` — so it
+reloads the same `.env` itself and needs nothing pushed into it. Pushing it
+would in fact be worse, converting `.env` values into REAL environment variables
+for that child, which its own loader then refuses to override.
+
+Applying the restriction policy to it is the substantive question, and the
+answer is no: a re-exec'd `by` is **the same program with the same rights**, not
+a subordinate. `--web` under a global `:env-deny ["AWS_*"]` would become less
+privileged than a plain `by` — a shared browser session that silently cannot
+reach the model — while the parent, whose own environment cannot be rewritten,
+keeps the credential anyway. The asymmetry would buy nothing and break the
+feature.
+
+**Tool scope stays deferred** on §5's question 2, unchanged: the same effect is
+reachable by giving the tool to a scoped agent, and a key nobody needs is a key
+that has to be explained forever.
+
+**Tests:** `util/…/env_test.clj` 30 tests / 66 assertions;
+`agent/…/core/proc_test.clj` 14 tests, including an ancestor's deny reaching a
+sub-agent's real child process, a descendant failing to re-add it, and an
+ancestor's allowlist still leaving the child a `PATH`.
+
 ### 3.4 The three scopes, and how each is declared
 
 | scope | declared in | holds |
@@ -716,7 +788,7 @@ the next.
 | **1** ✅ | Route `schema-env-value` through it; reconcile `dotenv.clj`'s control flags; fix `resolve-project-dir`. **Shipped — see §3.6a.** | §1.2(a)(b)(c)(d) all close. `BY_*` knobs in `.env` work everywhere. |
 | **2** ✅ | `env/child-env` + `proc/shell-pb` applies it + MCP, the `aws` CLI and ACP's forward-env. Still no config keys. **Shipped — see §3.5a.** | A `.env` `GH_TOKEN` reaches `gh` on the direct-binary path. |
 | **3** ✅ | `:env-allow` / `:env-deny` / `:env-vars` at global + agent scope. **Shipped — see §3.3a.** | The feature as asked. |
-| **4** | Tool scope (pending Q2); `--web` / `--sandbox` `:child-env`; dispatch-time scoping for sub-agents, mirroring the work tier. | |
+| **4** ◐ | Sub-agent policy inheritance. Dispatch-time scoping already worked; `--web`/`--sandbox` investigated and deliberately unchanged; tool scope deferred on Q2. **Shipped — see §3.3b.** | An ancestor's restriction binds its descendants. |
 
 Phases 0–2 are strictly bug-fixing and consolidation — they add no surface and
 close four measured defects. If review rejects the scoping model in §3.3

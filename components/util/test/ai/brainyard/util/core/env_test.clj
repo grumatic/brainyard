@@ -279,3 +279,66 @@
           (is (= "from-dotenv"
                  (get (into {} (env/apply-policy! (pb-env {"PATH" "/bin"}) {}))
                       "BY_TEST_POLICY_TOKEN"))))))))
+
+;; ============================================================================
+;; apply-policy! over a CHAIN — Phase 4
+;;
+;; `get-config` has no parent→child inheritance, so a sub-agent's config layer
+;; is its own. For most keys that is right; for a RESTRICTION it is a hole, and
+;; a measured one — an agent denying itself a credential could dispatch a
+;; specialist that saw it anyway, and that specialist runs shells. So spawn
+;; sites pass the whole ancestry and every level is applied.
+;; ============================================================================
+
+(deftest a-chain-unions-denies
+  (is (= {"PATH" "/bin"}
+         (policied {"PATH" "/bin" "AWS_KEY" "a" "GH_TOKEN" "g"}
+                   [{:deny ["AWS_*"]} {:deny ["GH_*"]}]))))
+
+(deftest an-ancestor-deny-cannot-be-undone-by-a-descendant
+  ;; The hole this closes. A deny a delegation can undo is not a deny — the
+  ;; same sentence `:tool-deny-tools` settled about `:tool-allow-tools`.
+  (is (= {} (policied {"SECRET" "sk"}
+                      [{:deny ["SECRET"]} {:vars {"SECRET" "re-added"}}])))
+  (testing "nor by a descendant's allow admitting it"
+    (is (= {} (policied {"SECRET" "sk"}
+                        [{:deny ["SECRET"]} {:allow ["SECRET"]}])))))
+
+(deftest a-chain-intersects-allows
+  ;; Applying each level in turn gives intersection without computing one.
+  (let [out (policied {"A" "1" "B" "2" "C" "3" "PATH" "/bin"}
+                      [{:allow ["A" "B"]} {:allow ["B" "C"]}])]
+    (is (= "2" (get out "B")) "only the name both levels admit survives")
+    (is (not (contains? out "A")))
+    (is (not (contains? out "C")))
+    (is (= "/bin" (get out "PATH")) "the infrastructure floor still applies")))
+
+(deftest an-ancestor-allow-binds-a-descendants-env-vars
+  ;; The same-level exemption is deliberate and deliberately NOT inherited: the
+  ;; operator who wrote allow and vars in one place should not say it twice,
+  ;; but an ancestor never saw the descendant's declaration.
+  (is (not (contains? (policied {} [{:allow ["NOTHING"]} {:vars {"X" "v"}}]) "X")))
+  (testing "while the same policy's own vars are admitted past its own allow"
+    (is (= "v" (get (policied {} [{:allow ["NOTHING"] :vars {"X" "v"}}]) "X")))))
+
+(deftest nearest-scope-wins-a-vars-collision
+  (is (= "child" (get (policied {} [{:vars {"E" "parent"}} {:vars {"E" "child"}}]) "E"))))
+
+(deftest a-single-map-still-works-and-nil-is-inert
+  (let [seed {"PATH" "/bin" "X" "1"}]
+    (is (= seed (policied seed nil)))
+    (is (= seed (policied seed [])))
+    (is (= {"PATH" "/bin"} (policied seed {:deny ["X"]}))
+        "the Phase 3 single-map form is unchanged")))
+
+(deftest a-malformed-policy-throws-rather-than-silently-permitting
+  ;; Every field of a malformed policy destructures to nil, which reads as
+  ;; "no opinion" and yields an UNFILTERED child — the wrong-direction failure
+  ;; for a restriction, and the same reason both tool-permission gates take
+  ;; `:on-error :throw`. Found for real: a stale value-copy in a REPL handed
+  ;; this a vector while it still destructured a map, and the only symptom was
+  ;; a deny that quietly stopped denying.
+  (is (thrown? clojure.lang.ExceptionInfo
+               (env/apply-policy! (pb-env {"SECRET" "sk"}) "not-a-policy")))
+  (is (thrown? clojure.lang.ExceptionInfo
+               (env/apply-policy! (pb-env {"SECRET" "sk"}) [{:deny ["SECRET"]} 42]))))

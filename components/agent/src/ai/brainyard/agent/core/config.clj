@@ -1934,23 +1934,59 @@
        :deny-by-default :deny-by-default
        :ask-each-time))))
 
+(def ^:private !get-parent-agent
+  "requiring-resolve delay for `runtime/get-parent-agent` — the same shape
+   `core.tool` uses, and for the same reason: a static require here would be a
+   load cycle waiting to happen in a namespace this low."
+  (delay (requiring-resolve 'ai.brainyard.agent.core.runtime/get-parent-agent)))
+
 (defn env-policy
-  "Resolve the environment-scoping policy for `agent` — `{:allow :deny :vars}`,
-   the shape `util/apply-policy!` consumes.
+  "The environment-scoping policy declared FOR `agent` — `{:allow :deny :vars}`.
 
    Each key travels the normal precedence chain, so a per-agent override
-   (`:config-extra`) scopes one specialist and a `config.edn` entry scopes
-   everything. All three ship inert, so the default policy leaves a child's
-   environment exactly as the `.env` layer alone would.
+   (`:config-extra`, or a schema key passed at dispatch) scopes one specialist
+   and a `config.edn` entry scopes everything. All three ship inert.
 
-   Accepts the same agent-or-st forms as `get-config`; nil resolves through
-   `proto/*current-agent*`, which is what lets a spawn site deep inside a tool
-   call pick up the calling agent's policy without growing a parameter."
+   This is one LEVEL. Spawn sites want `env-policies`, which composes the
+   ancestry — see there for why."
   ([] (env-policy nil))
   ([agent-or-st]
    {:allow (get-config agent-or-st :env-allow)
     :deny  (get-config agent-or-st :env-deny)
     :vars  (get-config agent-or-st :env-vars)}))
+
+(def ^:private max-policy-depth
+  "Bound on the ancestry walk. `:max-agent-call-depth` already bounds real
+   nesting far below this; the cap exists so a malformed cycle degrades to a
+   truncated policy instead of hanging a spawn."
+  32)
+
+(defn env-policies
+  "The policy chain for `agent`, ROOT FIRST — what `util/apply-policy!` consumes.
+
+   `get-config` has no parent→child inheritance, by design: a sub-agent's
+   config layer is its own. For most keys that is right. For a RESTRICTION it
+   is a hole, and a measured one — an agent with `:env-deny [\"AWS_*\"]` could
+   dispatch a specialist that saw the credentials anyway, and that specialist
+   can run a shell. A deny a delegation can undo is not a deny; the same
+   sentence `:tool-deny-tools` settled about `:tool-allow-tools`.
+
+   So the chain is walked and every level applied. Union of denies and
+   intersection of allows fall out of applying each in turn, without either
+   having to be computed — and `:env-vars` still resolves nearest-scope-wins,
+   because additions are applied before any removal.
+
+   A root agent yields one policy, which is exactly what Phase 3 did, so
+   nothing that has no ancestry changes."
+  ([] (env-policies nil))
+  ([agent-or-st]
+   (let [a (resolve-agent agent-or-st)]
+     (loop [cur a, acc (), n 0]
+       (if (or (nil? cur) (>= n max-policy-depth))
+         (vec acc)
+         (recur (try (@!get-parent-agent (:!state cur)) (catch Throwable _ nil))
+                (conj acc (env-policy cur))
+                (inc n)))))))
 
 (defn- write-persisted-key!
   "Write a single `[:agent :config k]` leaf to `.brainyard/config.edn` at

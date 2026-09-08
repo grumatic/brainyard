@@ -133,7 +133,7 @@
    is the most specific thing anyone said. All three inputs ship inert, so this
    is a no-op in a `bb` task or a test rather than a source of surprise."
   ^ProcessBuilder [^ProcessBuilder pb]
-  (util/apply-policy! (.environment pb) (config/env-policy))
+  (util/apply-policy! (.environment pb) (config/env-policies))
   pb)
 
 (defn harden-env!

@@ -291,7 +291,7 @@
           ;; simply expects `PGPASSWORD` in its environment got nothing — the
           ;; same variable, present or absent depending on which way the server
           ;; happened to ask for it.
-          _ (util/apply-policy! (.environment process-builder) (config/env-policy))
+          _ (util/apply-policy! (.environment process-builder) (config/env-policies))
           _ (when env
               (let [env-map (.environment process-builder)]
                 (doseq [[k v] env]

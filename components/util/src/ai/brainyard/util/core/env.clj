@@ -198,40 +198,69 @@
   "Shape `env-map` — a `ProcessBuilder`'s environment — into what a child in
    this scope should see. Mutates and returns it.
 
-   `policy` is `{:allow [globs] :deny [globs] :vars {name value}}`; all three
-   optional, and `nil`/empty means `no opinion`, so the default policy leaves
-   the map exactly as `.env` alone would have. That inertness is the same
-   discipline the tool permission gate ships with: a key that arrives switched
-   on is a key that arrives breaking something.
+   `policies` is one policy map or a SEQUENCE of them ordered ROOT FIRST, each
+   `{:allow [globs] :deny [globs] :vars {name value}}` with every key optional.
+   `nil`/empty means no opinion, so the default policy leaves the map exactly as
+   `.env` alone would — the same inert-by-default discipline the tool permission
+   gate ships with.
 
-   Order, and every step of it is a decision:
+   A sequence is how a sub-agent inherits: an agent dispatched by a restricted
+   parent must be at least as restricted, or the restriction is escapable by
+   delegating. Applying every level gives union-of-denies and
+   intersection-of-allows without having to compute either.
 
-     1. the `.env` layer, for names the inherited environment has no non-blank
-        value for — what `child-env` alone did before scoping existed
-     2. `:env-vars`, the explicit values this scope declares
-     3. `:env-deny` REMOVES, unconditionally — after 1 and 2, so a deny cannot
-        be undone by declaring the same name somewhere else. A deny another key
-        can talk round is not a deny; the same rule `:tool-deny-tools` settled.
-     4. `:env-allow`, when non-nil, removes everything it does not admit —
-        except the names `:env-vars` declared (the operator just named them
-        explicitly; making them list each one twice is bureaucracy) and
-        `infrastructure-vars`.
+   Order, and the grouping is the decision:
 
-   Deny before allow matters in the other direction too: allow runs last, so a
-   name surviving both is one the operator admitted and did not deny."
-  [^java.util.Map env-map {:keys [allow deny vars]}]
-  (let [explicit (into #{} (map #(some-> % name)) (keys vars))]
+     1. the `.env` layer
+     2. ADDITIONS — every level's `:env-vars`, root first, so the nearest scope
+        wins a collision
+     3. REMOVALS — every level's `:env-deny`, then every level's `:env-allow`
+
+   Additions are grouped BEFORE removals rather than interleaved per level,
+   which is what makes an ancestor's restriction binding: interleaved, a child's
+   `:env-vars` would re-add a name its parent had just removed, and a deny a
+   delegation can undo is not a deny.
+
+   Within step 3 an `:env-allow` admits a name when its own globs match, when
+   the name is in `infrastructure-vars`, or when THAT SAME policy declared it in
+   `:env-vars` — same level only. The operator who wrote both in one place
+   should not have to say it twice; an ancestor's allowlist still binds, because
+   it never saw the descendant's declaration."
+  [^java.util.Map env-map policies]
+  (let [ps (cond
+             (nil? policies)        []
+             (map? policies)        [policies]
+             (sequential? policies) (vec (remove nil? policies))
+             :else
+             ;; Fail LOUD, against the reflex to be permissive about shapes.
+             ;; Every field of a malformed policy destructures to nil, which
+             ;; reads as "no opinion" and silently produces an UNFILTERED
+             ;; child — the wrong-direction failure for a restriction, and the
+             ;; same reason both tool-permission gates take `:on-error :throw`.
+             ;; It is not hypothetical: a stale `export-symbols` value-copy in
+             ;; a REPL handed this function a vector while it still
+             ;; destructured a map, and the only symptom was a deny that
+             ;; quietly stopped denying.
+             (throw (ex-info "env policy must be a map or a sequence of maps"
+                             {:type :env/invalid-policy
+                              :got  (type policies)})))]
+    (when-let [bad (first (remove map? ps))]
+      (throw (ex-info "env policy chain contains a non-map entry"
+                      {:type :env/invalid-policy :got (type bad)})))
     ;; 1. the .env layer
     (doseq [[k v] (child-env)]
       (.put env-map ^String k ^String v))
-    ;; 2. explicit values
-    (doseq [[k v] vars]
+    ;; 2. additions, root first so the nearest scope wins
+    (doseq [p ps, [k v] (:vars p)]
       (when-let [n (some-> k name not-empty)]
         (.put env-map ^String n ^String (str v))))
-    ;; 3 + 4. removals, computed over a snapshot so we never mutate while
-    ;; iterating the map's own key set.
-    (doseq [k (vec (.keySet env-map))]
-      (when (or (denied? deny k)
-                (not (allowed? allow explicit k)))
-        (.remove env-map k)))
+    ;; 3. removals, over a snapshot so we never mutate while iterating the
+    ;; map's own key set
+    (doseq [p ps]
+      (let [explicit (into #{} (keep #(some-> % name)) (keys (:vars p)))
+            {:keys [allow deny]} p]
+        (doseq [k (vec (.keySet env-map))]
+          (when (or (denied? deny k)
+                    (not (allowed? allow explicit k)))
+            (.remove env-map k)))))
     env-map))
