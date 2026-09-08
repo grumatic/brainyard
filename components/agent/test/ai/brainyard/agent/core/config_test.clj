@@ -393,6 +393,68 @@
          (cfg/get-config nil :max-iterations))))
 
 ;; ============================================================================
+;; :env-fn reads through the resolver, so `.env` reaches the ENV layer
+;;
+;; Phase 1 of docs/design/environment-scoping-design.md. Measured against the
+;; pre-change tree, 5 of these assertions FAILED: all 69 `:env-fn` entries
+;; called `System/getenv` alone, and a `.env` key is a JVM system PROPERTY (the
+;; JVM environment is immutable, so the loader cannot do otherwise). A `BY_*`
+;; knob set in `.env` therefore did nothing on any launch path that skipped the
+;; shell wrapper — the entire dev loop — and `~/.brainyard/.env` could not
+;; carry one on ANY path, though the docs say it can.
+;;
+;; The blank case is the exception: it PASSED before, for the wrong reason (the
+;; property was not read at all, so nothing could coerce it). It is a guard
+;; against a hazard Phase 1 itself introduces — now that properties ARE read, a
+;; blank one reaching `(= "true" v)` would produce a hard false at the
+;; highest-precedence layer.
+;;
+;; The environment cannot be written from a test; the property table can, and
+;; it is the half that was broken.
+;; ============================================================================
+
+(defn- with-prop [k v f]
+  (let [prior (System/getProperty k)]
+    (try (System/setProperty k v) (f)
+         (finally (if prior (System/setProperty k prior) (System/clearProperty k))))))
+
+(deftest env-fn-sees-a-dotenv-supplied-property
+  (testing "a boolean knob"
+    (is (= cfg/env-unset (cfg/schema-env-value :nrepl-enabled?))
+        "precondition: BY_NREPL_ENABLED is not set in this JVM's environment")
+    (with-prop "BY_NREPL_ENABLED" "true"
+      #(is (true? (cfg/schema-env-value :nrepl-enabled?))))
+    (with-prop "BY_NREPL_ENABLED" "false"
+      #(is (false? (cfg/schema-env-value :nrepl-enabled?))
+           "and false must survive as false, not collapse to unset")))
+  (testing "a string knob"
+    (with-prop "BY_RECALL_MODE" "conditional"
+      #(is (= "conditional" (cfg/schema-env-value :recall-mode)))))
+  (testing "a keyword knob"
+    (with-prop "BY_DISPLAY_FORMAT" "verbose"
+      #(is (= :verbose (cfg/schema-env-value :display-format))))))
+
+(deftest a-blank-env-knob-falls-through-instead-of-coercing
+  ;; `#(if-some [v (System/getenv "BY_X")] (= "true" v) ::env-unset)` turned an
+  ;; exported-but-empty `BY_X=` into a hard FALSE at the highest-precedence
+  ;; layer — silently overriding config.edn with a value nobody set. Blank is
+  ;; unset now, so the persisted layers get their say.
+  (with-prop "BY_NREPL_ENABLED" "   "
+    #(is (= cfg/env-unset (cfg/schema-env-value :nrepl-enabled?)))))
+
+(deftest project-dir-override-reads-through-the-resolver
+  ;; resolve-working-dir had the property bridge; resolve-project-dir, ten
+  ;; lines away, did not — so `-C`'s env twin worked from `.env` and
+  ;; BY_PROJECT_DIR did not, for no reason anyone chose.
+  (let [tmp (str (System/getProperty "java.io.tmpdir")
+                 "/by-cfg-projdir-" (System/nanoTime))]
+    (.mkdirs (java.io.File. tmp))
+    (try
+      (with-prop "BY_PROJECT_DIR" tmp
+        #(is (= tmp (cfg/resolve-project-dir (System/getProperty "user.dir")))))
+      (finally (.delete (java.io.File. tmp))))))
+
+;; ============================================================================
 ;; get-config — ENV layer (highest precedence)
 ;; ============================================================================
 ;; A set env var is simulated by redefining `schema-env-value` (the real env

@@ -3666,11 +3666,18 @@
   ;; Bridge project-local `.env` into JVM properties so the native `by`
   ;; binary picks up keys without the `bb` shell wrapper. Real env vars take
   ;; precedence; see dotenv.clj for resolution order.
-  (let [{:keys [paths loaded-count]} (dotenv/load-from-dotenv!)]
+  (let [{:keys [paths loaded-count env-file-missing]} (dotenv/load-from-dotenv!)]
+    ;; Diagnostic banner → stderr, so stdout stays clean for piping
+    ;; (`by ask`, `--json`, etc.). (Was a no-op `*err* *err*` binding that
+    ;; left it on stdout.)
+    (when env-file-missing
+      ;; Said out loud because the fallback is silent otherwise, and a typo'd
+      ;; BY_ENV_FILE that quietly loads a DIFFERENT .env is worse than one
+      ;; that loads nothing — the user believes they pinned a file.
+      (binding [*out* *err*]
+        (println (format "[dotenv] BY_ENV_FILE=%s does not exist; falling back to .env discovery"
+                         env-file-missing))))
     (when (pos? loaded-count)
-      ;; Diagnostic banner → stderr, so stdout stays clean for piping
-      ;; (`by ask`, `--json`, etc.). (Was a no-op `*err* *err*` binding that
-      ;; left it on stdout.)
       (binding [*out* *err*]
         (println (format "[dotenv] loaded %d key(s) from %s"
                          loaded-count

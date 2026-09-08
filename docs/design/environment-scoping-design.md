@@ -1,10 +1,11 @@
 # Environment Scoping — One Resolver, Three Scopes, and the Difference Between a Knob and a Secret
 
-> **Status: PHASE 0 SHIPPED; §3.3 onward is still a PROPOSAL.** §1 is measured
-> against the tree; §3 is the design; §7 phases it and marks what has landed.
-> Phase 0 built the resolver and collapsed the private copies — it added no
-> config key and no scoping, and closed two live defects on its own. Its
-> as-built map is §3.1a.
+> **Status: PHASES 0 AND 1 SHIPPED; §3.3 onward is still a PROPOSAL.** §1 is
+> measured against the tree as it was; §3 is the design; §7 phases it and marks
+> what has landed. Phase 0 built the resolver and collapsed the private copies
+> (§3.1a); Phase 1 routed the 69 `:env-fn` entries through it and reconciled the
+> two `.env` loaders' control flags (§3.6a). Neither added a config key or any
+> scoping; between them they closed every defect §1.2 measured.
 >
 > **Problem in one line:** brainyard has three unrelated things called
 > "environment" — `BY_*` config knobs, third-party credentials, and the
@@ -424,6 +425,55 @@ Note (1) has a precedence consequence worth stating: it does **not** move `.env`
 above the process env, because `env/resolve` keeps that order (§3.2). It only
 makes `.env` visible to a layer that could not see it before.
 
+### 3.6a Phase 1, as built
+
+All four defects in §1.2 are closed. The work was smaller than the list of
+symptoms suggested, because three of the four shared one cause.
+
+**63 reads in `core/config.clj` now go through `env/resolve-var`** — every
+`:env-fn` body plus `resolve-project-dir` and the early `BY_PROFILE` read in
+`load-global-config!`. One token per site; the only non-mechanical part is the
+schema docstring, which now states the rule (`:env-fn` reads with
+`env/resolve-var`, never `System/getenv`) so the next key added inherits it.
+That single change closes §1.2(a) — `BY_*` knobs from `.env` on a non-wrapper
+launch — and §1.2(c) — `~/.brainyard/.env`, which the wrapper never reads and
+which therefore only ever existed as properties — and §1.2(d) for
+`resolve-project-dir`, whose neighbour ten lines away already had the bridge.
+
+**`dotenv.clj` honors `BY_NO_DOTENV` and `BY_ENV_FILE`** (§1.2(b)). Both are
+read from the environment or a `-D` property, never from a `.env` — which is
+what keeps them non-circular: the property table is written at the very end of
+`load-from-dotenv!`, so a `.env` cannot switch off its own loader. A
+`BY_ENV_FILE` naming a file that does not exist falls back to the walk, matching
+`by-wrapper.sh`, but now *says so* on stderr: a typo'd path that silently loads
+a different `.env` is worse than one that loads nothing, because the user
+believes they pinned a file.
+
+**One hazard Phase 1 introduces, and closes in the same change.** Now that
+properties are read, a blank one reaches the coercion:
+`#(if-some [v …] (= "true" v) ::env-unset)` would turn an exported-but-empty
+`BY_X=` into a hard **false** at the highest-precedence layer, silently
+overriding `config.edn` with a value nobody set. `resolve-var`'s blank-is-unset
+rule means it falls through instead. Pinned by
+`a-blank-env-knob-falls-through-instead-of-coercing`, which is the one test here
+that passed *before* the change — for the wrong reason (the property was not
+read at all), so it is a guard rather than a regression test.
+
+**Verified, not assumed.** Reverting `config.clj` to the pre-change tree and
+re-running the suite failed **5 of the new assertions**; restored, all pass. And
+end-to-end, against the same command the original §1.2(a) measurement used:
+
+```
+$ … sessions list                                    → 13 sessions
+$ BY_ENV_FILE=<pinned .env setting BY_PROJECT_DIR>   → [dotenv] loaded 1 key(s) from …/pinned.env
+  … sessions list                                      No persisted sessions.
+```
+
+which exercises both halves at once — the pinned file is honored, and the
+`BY_PROJECT_DIR` it supplies takes effect from a property.
+
+**Tests:** `agent/test/…/core/config_test.clj` — 3 new deftests, 11 assertions.
+
 ---
 
 ## 4. What this deliberately does not fix
@@ -524,7 +574,7 @@ the next.
 | phase | content | value on its own |
 |---|---|---|
 | **0** ✅ | `env/resolve` + collapse the `env-or-prop` copies. No new config keys. **Shipped — see §3.1a.** | `/login` and the `/model` picker stop lying about `.env`-supplied keys. |
-| **1** | Route `schema-env-value` through it; reconcile `dotenv.clj`'s control flags; fix `resolve-project-dir`. | §1.2(a)(b)(c)(d) all close. `BY_*` knobs in `.env` work everywhere. |
+| **1** ✅ | Route `schema-env-value` through it; reconcile `dotenv.clj`'s control flags; fix `resolve-project-dir`. **Shipped — see §3.6a.** | §1.2(a)(b)(c)(d) all close. `BY_*` knobs in `.env` work everywhere. |
 | **2** | `env/child-env` + `shell-pb`'s env argument + wire the five shell sites and MCP. Still no new config keys — the map is just "the resolver's view", so children finally see `.env`. | A `.env` `GH_TOKEN` reaches `gh` on the direct-binary path. MCP inherits ACP's marker stripping. |
 | **3** | `:env-allow` / `:env-deny` / `:env-vars` at global + agent scope. | The feature as asked. |
 | **4** | Tool scope (pending Q2); `--web` / `--sandbox` `:child-env`; dispatch-time scoping for sub-agents, mirroring the work tier. | |

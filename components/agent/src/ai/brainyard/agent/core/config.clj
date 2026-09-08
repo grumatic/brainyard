@@ -84,7 +84,22 @@
    (a 0-arity callable invoked lazily by `get-config` as the final fallback).
    Use `:default-fn` for runtime-resolved values that depend on env vars,
    system properties, or other components — `(clj-llm/get-default-lm)`,
-   `(System/getenv ...)`, etc."
+   `(env/resolve-var ...)`, etc.
+
+   An entry may also declare `:env-fn`, a 0-arity callable returning the
+   env-derived value or the `env-unset` sentinel. **Read the variable with
+   `env/resolve-var`, never `System/getenv`.** A `.env` key is a JVM system
+   PROPERTY, not an environment variable — the JVM environment is immutable, so
+   the loader cannot do otherwise (see `dotenv.clj`). Every one of these read
+   `System/getenv` alone until Phase 1 of
+   docs/design/environment-scoping-design.md, which meant a `BY_*` knob set in
+   `.env` silently did nothing on any launch path that did not go through the
+   shell wrapper — the whole dev loop, and `~/.brainyard/.env` on every path.
+
+   `env/resolve-var` also treats blank as unset, so an exported-but-empty
+   `BY_X=` now falls through to the persisted layers instead of being coerced
+   (`(= \"true\" \"\")` → false, silently overriding config.edn with a value
+   nobody set)."
   {:max-output-tokens       {:type "integer" :default 0
                              :doc "Cap on LLM response tokens per call (0 = provider default)."}
    :show-llm-streaming      {:type "boolean" :default false
@@ -198,7 +213,7 @@
    :user-tool-timeout-ms       {:type "integer" :default 180000
                                 :doc "Hard evaluation budget (ms) for a USER-AUTHORED tool body (tool-agent$create), enforced by the SCI sandbox. This is a runaway backstop, not the operative limit: the operative limit is :fast-eval-timeout-ms, at which tool/call-tool-with-fast-eval adopts the still-running call into a background task. The backstop must therefore sit ABOVE that, and user-tools raises it to max(this, :fast-eval-timeout-ms, :auto-background-timeout-ms) at the read site so a mis-set value cannot preempt the layer that is supposed to decide."}
    :nrepl-eval-timeout-ms      {:type "integer"
-                                :env-fn #(if-some [v (System/getenv "BY_NREPL_EVAL_TIMEOUT_MS")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_NREPL_EVAL_TIMEOUT_MS")]
                                            (or (parse-long v) ::env-unset) ::env-unset)
                                 :default 300000
                                 :doc "Round-trip ceiling (ms) for ONE nREPL eval — the response timeout on the client socket (only when :clj-backend is :nrepl). Default 5 minutes. This is NOT a promotion threshold like :fast-eval-timeout-ms or :auto-background-timeout-ms, and it is not derivable from them: those decide when we stop WAITING in the foreground, after which the eval keeps running; this bounds the eval itself, so it must sit ABOVE both (the default clears :auto-background-timeout-ms's 180000 with room, and a value below it would expire the eval before the block ever detaches). It matters more than a socket timeout normally would, because an nREPL eval cannot be cancelled — future-cancel cannot reach a thread blocked in a socket read, and nREPL's interrupt op is accepted but measured not to stop an eval (nREPL 1.3.0). This ceiling is therefore the ONLY hard bound on a runaway block, which is why the default is minutes rather than the hour it was hardcoded at: until it expires, a wedged eval holds a thread and a connection and the session cannot be reclaimed. Raise it for genuinely long work driven through debug-agent (a full test suite, a build). Env: BY_NREPL_EVAL_TIMEOUT_MS."}
@@ -248,22 +263,22 @@
                                 :doc "Auto-start the L2 memory-capture pipeline on agent creation (subscribes to ask/tool-use/code-eval/exception hooks, feeds the S1 parser into L2); auto-stops when the last sharing agent closes. Read once at agent start — changing it mid-session takes effect only after restarting `by`."}
    ;; Context-graph memory overlay (CR-MEM-20, docs/design/context-graph-memory-design.md).
    :enable-effect-bt           {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_EFFECT_BT")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_EFFECT_BT")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Run the agent's behavior tree through the EFFECT engine (p/tick-task) instead of the synchronous one. ON by default since the effect engine became the primary path; set BY_ENABLE_EFFECT_BT=false to fall back to the synchronous engine, which remains fully supported. When on, a turn is a missionary Task and `cancel-run` stops it structurally — the cooperative :cancelled? flag and the thread interrupt are not used on that path. Identical results and traces are asserted against the synchronous engine (docs/design/functional-effect-system.md §16). Read per turn, so it can be flipped mid-session. Env: BY_ENABLE_EFFECT_BT."}
    :enable-graph-memory        {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_GRAPH_MEMORY")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_GRAPH_MEMORY")]
                                            (= "true" v) ::env-unset)
                                 :default false
                                 :doc "Context-graph memory overlay: maintain a typed entity/relationship graph (graph_nodes/graph_edges) as an extra RRF recall signal over the L1/L2/L3 FTS store. Off by default; non-regressing (empty graph ⇒ recall == pure FTS). Read once when the memory manager is built — changing it mid-session takes effect only after restarting `by`. Env: BY_ENABLE_GRAPH_MEMORY."}
    :graph-embed-model          {:type "string"
-                                :env-fn #(if-some [v (System/getenv "BY_GRAPH_EMBED_MODEL")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_GRAPH_EMBED_MODEL")]
                                            v ::env-unset)
                                 :default "static"
                                 :doc "Semantic-similarity embedder for the context graph (only when :enable-graph-memory). Default \"static\" = the self-contained in-binary Model2Vec embedder (no server), or a \"provider/model\" string (e.g. ollama/nomic-embed-text). Set to empty/blank to disable the vector signal. The embed-fn is built at memory-manager startup — changing it needs a `by` restart (then run memory$reembed). Env: BY_GRAPH_EMBED_MODEL."}
    :graph-extract-model        {:type "string"
-                                :env-fn #(if-some [v (System/getenv "BY_GRAPH_EXTRACT_MODEL")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_GRAPH_EXTRACT_MODEL")]
                                            v ::env-unset)
                                 :default nil
                                 :doc "Chat LM that extracts entities/relationships from episodes and writes community summaries for the context graph. nil → graph stays storage-only (manual edge API). The extract-fn is built at memory-manager startup — changing it needs a `by` restart. Env: BY_GRAPH_EXTRACT_MODEL."}
@@ -282,55 +297,55 @@
    :graph-max-edges            {:type "integer" :default 200
                                 :doc "Total-size cap: max valid (non-invalidated) edges retained in the context graph per user (only when :enable-graph-memory). Over budget, the lowest-retention edges are evicted (ranked by confidence, then recency — lowest-confidence, stalest first) down to 90% of the cap. 0 disables the cap. Baked into the extractor at start-capture! — needs a `by` restart."}
    :graph-prune-orphans?       {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_GRAPH_PRUNE_ORPHANS")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_GRAPH_PRUNE_ORPHANS")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "After each graph extraction, hard-delete orphan nodes — nodes with no edge row at all (only when :enable-graph-memory). Removes extracted entities the model never wired into a relation, plus any node left edgeless by node/edge budget eviction, keeping the graph edge-connected. A node whose only edge was superseded is RETAINED (it keeps an invalidated edge row + as-of history). Trade-off: an unrelated node with a summary still feeds vector (:vec) recall, so pruning drops that semantic signal; set false to keep such nodes (they are then only evicted when :graph-max-nodes is exceeded). Baked into the extractor at start-capture! — needs a `by` restart. Env: BY_GRAPH_PRUNE_ORPHANS."}
    :enable-memory-consolidation {:type "boolean"
-                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_MEMORY_CONSOLIDATION")]
+                                 :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_MEMORY_CONSOLIDATION")]
                                             (= "true" v) ::env-unset)
                                  :default false
                                  :doc "Batch L2→L3 memory consolidation: an ask/post hook runs the pipeline's reducer every :memory-consolidate-every-n-turns turns (community consolidation when :enable-graph-memory is on, else heuristic). IMPLIED by :enable-graph-memory — when graph memory is on, consolidation runs even if this is false (the extractor builds communities that consolidation harvests into L3). Set this true to also run the heuristic reducer with graph memory off. Replaces the retired per-turn essence loop. Env: BY_ENABLE_MEMORY_CONSOLIDATION."}
    :memory-consolidate-every-n-turns {:type "integer" :default 5
                                       :doc "Cadence for the batch consolidation hook: run the reducer once every N completed turns (higher = cheaper/coarser). Ignored when :enable-memory-consolidation is false."}
    :show-memory-activity       {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_SHOW_MEMORY_ACTIVITY")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_SHOW_MEMORY_ACTIVITY")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Surface background memory milestones in the TUI scrollback as muted `🧠 memory · …` lines (L2→L3 consolidation, graph extraction) so the user can see memory working. Read at event time by the TUI's dedicated mulog publisher — toggleable live. Off ⇒ memory activity stays silent (still logged). Env: BY_SHOW_MEMORY_ACTIVITY."}
    ;; Self-improvement loop (R1 — docs/design/self-improve-design.md).
    :enable-skill-distillation  {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_SKILL_DISTILLATION")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_SKILL_DISTILLATION")]
                                            (= "true" v) ::env-unset)
                                 :default false
                                 :doc "Self-improvement: an ask/post hook scores each finished turn for a novel reusable procedure and, past :skill-distill-threshold, stages a SKILL.md proposal under .brainyard/skills/proposals/ (never writes a live skill). Root agents; off by default. Env: BY_ENABLE_SKILL_DISTILLATION."}
    :skill-distill-mode         {:type "keyword"
-                                :env-fn #(if-let [v (not-empty (System/getenv "BY_SKILL_DISTILL_MODE"))]
+                                :env-fn #(if-let [v (not-empty (env/resolve-var "BY_SKILL_DISTILL_MODE"))]
                                            (keyword v) ::env-unset)
                                 :default :at-cadence
                                 :doc "When skill distillation scores turns (only when :enable-skill-distillation). :at-cadence (default) — the free pre-filter runs every turn but qualifying turns are ACCUMULATED, and every :skill-distill-every-n-turns turns (plus a session-end flush) the whole window is judged in ONE sub-LM call; a procedure spanning several turns is visible, and cost is per-window not per-turn. :per-turn — score each qualifying turn on its own as it finishes (one sub-LM call per qualifying turn; a cross-turn procedure is never seen whole). Env: BY_SKILL_DISTILL_MODE."}
    :skill-distill-every-n-turns {:type "integer"
-                                 :env-fn #(if-some [v (System/getenv "BY_SKILL_DISTILL_EVERY_N_TURNS")]
+                                 :env-fn #(if-some [v (env/resolve-var "BY_SKILL_DISTILL_EVERY_N_TURNS")]
                                             (or (parse-long v) ::env-unset) ::env-unset)
                                  :default 12
                                  :doc "Turns between skill-distillation batches when :skill-distill-mode is :at-cadence. Counts every turn (not just qualifying ones) so batch timing is predictable; a batch with no accumulated candidates is skipped without an LLM call. Deliberately separate from :memory-consolidate-every-n-turns — distillation must keep working when memory consolidation is disabled, and the two cadences are worth tuning independently. Env: BY_SKILL_DISTILL_EVERY_N_TURNS."}
    :skill-distill-threshold    {:type "number"
-                                :env-fn #(if-some [v (System/getenv "BY_SKILL_DISTILL_THRESHOLD")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_SKILL_DISTILL_THRESHOLD")]
                                            (or (parse-double v) ::env-unset) ::env-unset)
                                 :default 0.7
                                 :doc "Minimum skill-distillation score (0.0..1.0) for a turn to stage a skill proposal (higher = fewer, higher-confidence proposals). Env: BY_SKILL_DISTILL_THRESHOLD."}
    :enable-self-improve-nudges {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_SELF_IMPROVE_NUDGES")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_SELF_IMPROVE_NUDGES")]
                                            (= "true" v) ::env-unset)
                                 :default false
                                 :doc "Surface a one-line per-turn notice (iteration :notices) when skill proposals await review under .brainyard/skills/proposals/, so the user need not run skill-proposal$list. Root agents; off by default. Env: BY_ENABLE_SELF_IMPROVE_NUDGES."}
    :enable-skill-refinement    {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_SKILL_REFINEMENT")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_SKILL_REFINEMENT")]
                                            (= "true" v) ::env-unset)
                                 :default false
                                 :doc "Self-improvement (R1 Phase 2): a tool-use/post hook watches skill$<name> failures and, when the SKILL.md is at fault, stages a :refinement proposal (updated SKILL.md) for review. Off by default. Env: BY_ENABLE_SKILL_REFINEMENT."}
    :feature-profile            {:type "keyword"
-                                :env-fn #(if-some [v (System/getenv "BY_PROFILE")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_PROFILE")]
                                            (keyword v) ::env-unset)
                                 :default :standard
                                 :doc "Baseline posture for feature gates: minimal (capture+recall only; no background LLM work), standard (the schema defaults), full (graph memory, self-improvement and mid-turn recall on). Applied BELOW .brainyard/config.edn, so it can never override a value you set explicitly. See core.config/feature-profiles. Env: BY_PROFILE."}
@@ -346,47 +361,47 @@
    ;; schema type. `ui` has no family switch — turning off "the UI" is not a
    ;; coherent operation. See docs/design/feature-flags-design.md §9 Q1.
    :enable-memory              {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_MEMORY")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_MEMORY")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Master switch for the memory family (capture, recall, consolidation, graph, project memory). Set false to disable all of them at once without losing their individual settings. Env: BY_ENABLE_MEMORY."}
    :enable-self-improve        {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_SELF_IMPROVE")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_SELF_IMPROVE")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Master switch for the self-improve family (skill distillation, refinement, nudges). Set false to disable all of them at once. Env: BY_ENABLE_SELF_IMPROVE."}
    :enable-automation          {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_AUTOMATION")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_AUTOMATION")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Master switch for the automation family (scheduler, reactions, FSM, user hooks, gateway). Set false to stop everything that can act without a user turn. Env: BY_ENABLE_AUTOMATION."}
    :enable-context             {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_CONTEXT")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_CONTEXT")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Master switch for the context family (budgeting, compaction, live artifacts, console activity). Env: BY_ENABLE_CONTEXT."}
    :enable-exec                {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_EXEC")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_EXEC")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Master switch for the exec family (code channel, sandbox persistence, nREPL, task notification, iteration hold, artifact GC). Env: BY_ENABLE_EXEC."}
    :enable-agents              {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_AGENTS")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_AGENTS")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Master switch for the agents family (subagent calls, ACP backends). Set false for a single-agent posture. Env: BY_ENABLE_AGENTS."}
    :enable-reasoning           {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_REASONING")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_REASONING")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Master switch for the reasoning family's gated features (the answer-refinement pass). The agent loop itself is an ungated grouping and is unaffected. Env: BY_ENABLE_REASONING."}
    :enable-tools               {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_TOOLS")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_TOOLS")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Master switch for the tools family's gated features (tool result cache, ask channel). MCP and OAuth are ungated groupings and are unaffected. Env: BY_ENABLE_TOOLS."}
    :enable-analytics           {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_ANALYTICS")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_ANALYTICS")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Master switch for the analytics family (trajectory recording; scoring follows it via :requires). NOTE: this name was a live key once before, retired with the async analytics path — a config.edn still carrying `:enable-analytics false` from that era will now disable the analytics family. The intent maps closely (both mean less analytics), but it is a resurrection, not a fresh key. Env: BY_ENABLE_ANALYTICS."}
@@ -399,75 +414,75 @@
    ;; explicit call, so gating it off by default would refuse someone who starts
    ;; it today. It is a kill-switch like the rest.)
    :enable-memory-recall       {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_MEMORY_RECALL")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_MEMORY_RECALL")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Recall prior episodes into the prompt (FTS, plus the graph/vector signals when :enable-graph-memory is on). Set false to keep capturing memory but stop injecting it. Env: BY_ENABLE_MEMORY_RECALL."}
    :enable-compaction          {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_COMPACTION")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_COMPACTION")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Compact conversation history across turns when the context budget tightens, at :compaction-target-ratio. Requires :enable-context-budget, which it used to ride entirely. Applies to the automatic compactor only — an explicit /compact always runs. Env: BY_ENABLE_COMPACTION."}
    :enable-live-artifacts      {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_LIVE_ARTIFACTS")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_LIVE_ARTIFACTS")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Inject the `## Live Artifacts` prompt section: reference files from :reference-artifact-paths plus the dynamic artifact$* registry. Set false to drop the section entirely. Env: BY_ENABLE_LIVE_ARTIFACTS."}
    :enable-catalog-refresh     {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_CATALOG_REFRESH")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_CATALOG_REFRESH")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Let the model catalog refresh itself from each configured provider's model-list endpoint (ids only; curation stays in the baked catalog). Off means the shipped catalog is used verbatim and no provider is contacted. Env: BY_ENABLE_CATALOG_REFRESH."}
    :catalog-refresh-ttl-hours  {:type "integer" :default 24
                                 :doc "How stale a provider's cached model list may get before a background refresh. Local servers (Ollama) derive a much shorter TTL from this — their model set changes whenever the user pulls one — so no second knob is needed."}
    :enable-artifact-gc         {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_ARTIFACT_GC")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_ARTIFACT_GC")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Allow the retention sweeps over task output, coact scratch and the sandbox cache (task$sweep and friends). Set false to keep every artifact on disk. Env: BY_ENABLE_ARTIFACT_GC."}
    :enable-acp                 {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_ACP")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_ACP")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Allow external agents driven over the Agent Client Protocol (acp$* commands, acp-agent). Requires :enable-subagent-calls. Env: BY_ENABLE_ACP."}
    :enable-gateway             {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_GATEWAY")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_GATEWAY")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Allow the messaging gateway (gateway$* commands and start-gateway!) to serve inbound platform messages. Starting it is still an explicit action; this is the kill-switch. Env: BY_ENABLE_GATEWAY."}
 
    :enable-scheduler           {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_SCHEDULER")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_SCHEDULER")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "First-class scheduler (R2): a daemon ticker fires due jobs from <project>/.brainyard/schedule/ in-process each session, and drives FSM timed/eventless transitions. On by default (no-op with no schedules/watches); set false to stop the ticker. schedule$run-now/run-due work manually regardless. Env: BY_ENABLE_SCHEDULER."}
    :scheduler-tick-ms          {:type "integer"
-                                :env-fn #(if-some [v (System/getenv "BY_SCHEDULER_TICK_MS")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_SCHEDULER_TICK_MS")]
                                            (or (parse-long v) ::env-unset) ::env-unset)
                                 :default 60000
                                 :doc "Scheduler ticker interval (ms): lower = finer cron resolution, more wakeups. Env: BY_SCHEDULER_TICK_MS."}
    :enable-reactions           {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_REACTIONS")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_REACTIONS")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Event reactor (docs/design/event-bus-and-reactor.md §3.3): install per-session hooks that run an action (:turn/:run/:artifact/:emit) when a matching event fires, from rules under <project>/.brainyard/reactions/. On by default (no-op with no rules; a matching rule can inject turns / spend LLM); set false to disable. reaction$* commands manage rules regardless. Env: BY_ENABLE_REACTIONS."}
    :max-reaction-fires-per-session {:type "integer"
-                                    :env-fn #(if-some [v (System/getenv "BY_MAX_REACTION_FIRES")]
+                                    :env-fn #(if-some [v (env/resolve-var "BY_MAX_REACTION_FIRES")]
                                                (or (parse-long v) ::env-unset) ::env-unset)
                                     :default 50
                                     :doc "Per-session backstop on how many reaction actions may fire (bounds a runaway event→reaction cascade). Env: BY_MAX_REACTION_FIRES."}
    :enable-fsm                 {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_FSM")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_FSM")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "User-defined state machines (docs/design/state-machine-design.md): install per-session bus handlers that advance machines under <project>/.brainyard/fsm/ on matching events. On by default (no-op with no machines; a transition can inject turns / fire events); set false to disable. fsm$* commands manage definitions regardless. Env: BY_ENABLE_FSM."}
    :fsm-allow-code             {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_FSM_ALLOW_CODE")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_FSM_ALLOW_CODE")]
                                            (= "true" v) ::env-unset)
                                 :default false
                                 :doc "Allow SCI code-guards (:guard-code / :guard-fn) and code-actions (:as :eval) in state machines, evaluated in a restricted sandbox (state-machine-design.md §4). Off by default (fail-closed): code-guards deny and code-actions no-op until enabled. Env: BY_FSM_ALLOW_CODE."}
    :gateway-pair-code-ttl-ms   {:type "integer"
-                                :env-fn #(if-some [v (System/getenv "BY_GATEWAY_PAIR_CODE_TTL_MS")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_GATEWAY_PAIR_CODE_TTL_MS")]
                                            (or (parse-long v) ::env-unset) ::env-unset)
                                 :default 600000
                                 :doc "Messaging gateway (R3): lifetime (ms) of a one-time pairing code minted by gateway$pair-code (default 10 min). Env: BY_GATEWAY_PAIR_CODE_TTL_MS."}
@@ -528,7 +543,7 @@
    :recall-limit               {:type "integer" :default 10
                                 :doc "Max recalled memory hits injected into a turn's context."}
    :recall-mode                {:type "string" :default "always"
-                                :env-fn #(or (System/getenv "BY_RECALL_MODE") ::env-unset)
+                                :env-fn #(or (env/resolve-var "BY_RECALL_MODE") ::env-unset)
                                 :doc "How recalled memory reaches the prompt. \"always\" (default) injects every hit the store returns — the pre-existing behavior. \"conditional\" keeps the recall QUERY (local SQLite, effectively free) but injects only hits matching at least :recall-min-terms of the question's keywords, and omits the block entirely when nothing qualifies. The cost recall imposes is prompt TOKENS, not query time, so gating the injection — not the query — is what actually saves anything. Gates L2/L3 only: L1 entries are session overlays that were deliberately written, not retrieval results, so question-overlap is not a meaningful test for them. Env: BY_RECALL_MODE."}
    :recall-min-terms           {:type "integer" :default 1
                                 :doc "\"conditional\" :recall-mode only — how many of the question's DISTINCT keywords (via memory/extract-keywords, the same extractor that builds the query) must appear in an L2/L3 hit for it to be injected. Applies ONLY to the lexically-retrieved layers; :vec and :graph hits are never gated (see gated-layers in context_actions). Deliberately an integer rather than a fraction: a fraction encodes a different rule at every question length (0.34 demands 2 matches on a 3-keyword question but 3 on a 6-keyword one) and drops relevant hits by rounding. Clamped down to the keyword count, so a 1-keyword question requires 1; a question yielding NO keywords disables the gate for that turn rather than emptying the block. Default 1 = drop only hits sharing NOTHING with the query that retrieved them, which for an FTS row means it matched on stemming or another field — noise by construction. Measured over 12 questions against a 1501-episode corpus: 1 saves 36% of recalled-memory tokens, 2 saves 69%, 3 saves 78% — but 2 and 3 both EMPTY the block on a question whose only relevant hit shared one term, and an over-gated turn buys tokens with extra iterations, which is the bad trade. Raise it if your corpus is noisier than that."}
@@ -541,7 +556,7 @@
    :acp-backend                {:type "keyword" :default :claude-code
                                 :doc "ACP (agent-client-protocol) backend implementation. Defaults to :claude-code, which drives the local Claude CLI via npx @agentclientprotocol/claude-agent-acp and needs no API key. :stub is a TEST FIXTURE, not a fallback — it shells out to `clj -M -m ai.brainyard.acp-stub-agent.core` under <workspace>/projects/acp-stub-agent, located by walking up for workspace.edn, so it only runs inside a brainyard source checkout and throws \"workspace.edn not found\" anywhere else. Also :gemini, :codex."}
    :acp-client-fs              {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ACP_CLIENT_FS")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ACP_CLIENT_FS")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Advertise the client filesystem capability to ACP backends. When true (default), backends route file reads/writes back through brainyard (mediated writes + diff rendering in the TUI). When false, the backend does its own direct disk I/O (no diffs). Does NOT affect the permission prompt (session/request_permission is gated either way) or OS sandboxing (--sandbox contains the subprocess regardless) — only who performs the write and whether diffs render. Env: BY_ACP_CLIENT_FS."}
@@ -550,14 +565,14 @@
    :acp-timeout-ms             {:type "integer" :default 3600000
                                 :doc "How long ONE ACP turn may take (ms) — total wall clock from session/prompt to the backend's final response, not an idle timeout, so streamed updates do not extend it. On expiry the turn is cut off, a session/cancel is sent, and the answer says so. Default one hour: a coding backend legitimately works for a long time, and the previous ten minutes cut real turns off mid-flight."}
    :enable-a2a                 {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_A2A")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_A2A")]
                                            (contains? #{"1" "true"} v) ::env-unset)
                                 :default false
                                 :doc "Enable the Agent2Agent (A2A) protocol — both consuming remote peers (a2a$connect, then agent-registry$ask) and serving local agents over `by a2a serve`. OFF by default: an inbound A2A endpoint executes prompts against this workspace with tools and disk access, so it is opt-in. Env: BY_ENABLE_A2A."}
    :a2a-peers                  {:type "object"  :default {}
                                 :doc "Remote A2A peers to connect at session start, as {peer-name {:url \"https://…\" :auth <token-or-map> :timeout-ms N}}. Peer names must match ^[a-z][a-z0-9-]*$ — they become part of the tool id a2a$<peer>$<skill>. Seeding is best-effort: an unreachable peer is logged and skipped, never fatal."}
    :a2a-timeout-ms             {:type "integer" :default 600000
-                                :env-fn #(if-some [v (System/getenv "BY_A2A_TIMEOUT_MS")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_A2A_TIMEOUT_MS")]
                                            (or (parse-long v) ::env-unset) ::env-unset)
                                 :doc "A2A request timeout (ms) for a blocking call. Does NOT bound an SSE subscription — streaming uses its own much larger cap, because the JDK counts a request timeout against the whole exchange and would kill a healthy long-lived stream."}
    :a2a-dialect                {:type "keyword" :default :auto
@@ -567,31 +582,31 @@
    :a2a-max-peers-per-session  {:type "integer" :default 8
                                 :doc "Per-session cap on connected A2A peers."}
    :a2a-serve-host             {:type "string"
-                                :env-fn #(or (System/getenv "BY_A2A_SERVE_HOST") ::env-unset)
+                                :env-fn #(or (env/resolve-var "BY_A2A_SERVE_HOST") ::env-unset)
                                 :default "127.0.0.1"
                                 :doc "Bind address for `by a2a serve`. Defaults to LOOPBACK: an exposed A2A endpoint runs prompts against this workspace, so reaching beyond the host must be a deliberate act (and should be paired with --sandbox). Env: BY_A2A_SERVE_HOST."}
    :a2a-serve-port             {:type "integer"
-                                :env-fn #(if-some [v (System/getenv "BY_A2A_SERVE_PORT")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_A2A_SERVE_PORT")]
                                            (or (parse-long v) ::env-unset) ::env-unset)
                                 :default 41241
                                 :doc "Port for `by a2a serve`. Env: BY_A2A_SERVE_PORT."}
    :a2a-serve-token            {:type "string"
-                                :env-fn #(or (System/getenv "BY_A2A_SERVE_TOKEN") ::env-unset)
+                                :env-fn #(or (env/resolve-var "BY_A2A_SERVE_TOKEN") ::env-unset)
                                 :default nil
                                 :doc "Bearer token required by `by a2a serve`. With none set the server REFUSES TO START rather than binding unauthenticated. Env: BY_A2A_SERVE_TOKEN."}
    :a2a-expose-skills          {:type "array"
-                                :env-fn #(if-let [v (not-empty (System/getenv "BY_A2A_EXPOSE_SKILLS"))]
+                                :env-fn #(if-let [v (not-empty (env/resolve-var "BY_A2A_EXPOSE_SKILLS"))]
                                            (or (parse-string-list v) ::env-unset)
                                            ::env-unset)
                                 :default []
                                 :doc "Allow-list of local agent ids exposed as A2A skills by `by a2a serve` (e.g. [\"explore-agent\"]). EMPTY BY DEFAULT — nothing is reachable until named. There is deliberately no deny-list mode: an allow-list that defaults to 'everything except…' is how an internal agent leaks. Env BY_A2A_EXPOSE_SKILLS accepts a comma-separated list (explore-agent,plan-agent) or an EDN vector."}
    :a2a-max-contexts           {:type "integer"
-                                :env-fn #(if-some [v (System/getenv "BY_A2A_MAX_CONTEXTS")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_A2A_MAX_CONTEXTS")]
                                            (or (parse-long v) ::env-unset) ::env-unset)
                                 :default 8
                                 :doc "Cap on live A2A conversations (`contextId`s) the server keeps warm, so a follow-up on the same contextId continues the same agent instead of starting over. SET TO 0 TO DISABLE REUSE — every turn then gets a fresh instance that is closed when it ends, which is the safest posture and was the only behaviour before this key existed. The cap is the anti-accumulation bound: a remote caller invents contextIds freely, so past it the least-recently-used idle context is evicted and its instance closed. Kept low by default because a context can hold an external subprocess (an exposed acp-agent is one Claude Code process per context), not just memory. Env: BY_A2A_MAX_CONTEXTS."}
    :a2a-context-ttl-ms         {:type "integer"
-                                :env-fn #(if-some [v (System/getenv "BY_A2A_CONTEXT_TTL_MS")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_A2A_CONTEXT_TTL_MS")]
                                            (or (parse-long v) ::env-unset) ::env-unset)
                                 :default 1800000
                                 :doc "How long an idle A2A context is kept warm before it is swept and its agent instance closed (ms, default 30 min). Idle is measured from the END of its last turn, so a long-running turn never expires under itself. Only meaningful when :a2a-max-contexts is above 0. Env: BY_A2A_CONTEXT_TTL_MS."}
@@ -625,17 +640,17 @@
    :permission-timeout-ms      {:type "integer" :default 60000
                                 :doc "How long a permission prompt waits for an answer (ms) before it is treated as dismissed — deny for a tool gate, `cancelled` for an ACP request. 60s was already the interactive layer's built-in fallback; naming it makes the one timeout configurable for every prompt, ACP included (which used to carry its own :acp-permission-timeout-ms)."}
    :display-format             {:type "keyword"
-                                :env-fn #(if-let [v (not-empty (System/getenv "BY_DISPLAY_FORMAT"))]
+                                :env-fn #(if-let [v (not-empty (env/resolve-var "BY_DISPLAY_FORMAT"))]
                                            (keyword v) ::env-unset)
                                 :default :normal
                                 :doc "TUI display detail level (source of truth for the /display-format command and the -v flag): :quiet (think bullets + box-less answer) | :normal (iterations+tools+answer) | :verbose (+ BT traces). Env: BY_DISPLAY_FORMAT."}
    :enable-mouse               {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_MOUSE")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_MOUSE")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Enable TUI mouse reporting (DECSET ?1000h + SGR ?1006h): click a tab in the tab strip to switch sessions, click a collapsed/expanded block marker in scrollback to toggle it. On by default. The cost is that while reporting is on the terminal hands click-drag to the application, so selecting text needs the terminal's bypass modifier — Shift almost everywhere, Option in the xterm.js/--web path. Set false to restore plain-drag selection; the wheel then falls back to ?1007h alternate-scroll, which synthesises arrow keys. Fullscreen only — inline mode and `by ask` never emit mouse sequences, having no row model to resolve a click against. Env: BY_MOUSE."}
    :grapheme-width             {:type "keyword"
-                                :env-fn #(if-let [v (not-empty (System/getenv "BY_GRAPHEME_WIDTH"))]
+                                :env-fn #(if-let [v (not-empty (env/resolve-var "BY_GRAPHEME_WIDTH"))]
                                            (keyword v) ::env-unset)
                                 :default :auto
                                 :doc "How the TUI measures the width of emoji/CJK graphemes: :auto (default) resolves once per terminal and caches the answer in <user-config-dir>/terminal-caps.edn | :off counts per codepoint, matching a terminal without 2027 | :on forces grapheme clustering with no probe. The regimes differ by up to 6 columns on one glyph (a ZWJ family emoji is 8 columns per-codepoint, 2 clustered), so the wrong one drifts every right-hand edge — and 2027 is default-ON in Windows Terminal, WezTerm, Ghostty, Contour and foot, which is why :auto is the default. Every failure mode (no tty, no reply, unparseable reply, exception) resolves to per-codepoint, so :auto can only ever be as wrong as :off. Inside tmux :auto skips DECRQM, which tmux never answers, and measures tmux directly instead — 3.6a clusters every kind (ZWJ family, flag, skin tone, keycap all 2 columns), so the old assumption that tmux counts per codepoint was wrong; the cached answer is re-measured after a tmux upgrade. Env: BY_GRAPHEME_WIDTH."}
@@ -652,27 +667,27 @@
                                 :default []
                                 :doc "Allowlist of MCP tools that skip the fail-closed permission gate (auto-approved). Each entry is a `server/tool` glob — `*` matches any run of chars (e.g. \"linear/*\", \"slack/post_message\", \"*/*_read\"). Side-effecting MCP tools NOT matched here (and lacking readOnlyHint) prompt for approval via the same UI as write-file/bash. See mcp/permission.clj."}
    :nrepl-enabled?             {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_NREPL_ENABLED")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_NREPL_ENABLED")]
                                            (= "true" v) ::env-unset)
                                 :default false
                                 :doc "Enable the in-process nREPL server backing code$eval :backend :nrepl. Off by default; nREPL is the full-trust backend (no scope/confirmation) — use the SCI sandbox for isolated eval. Env BY_NREPL_ENABLED wins over a persisted false."}
    :nrepl-port                 {:type "integer"
-                                :env-fn #(if-some [v (System/getenv "BY_NREPL_PORT")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_NREPL_PORT")]
                                            (or (parse-long v) ::env-unset) ::env-unset)
                                 :default 0
                                 :doc "Port for the in-process nREPL server (0 = ephemeral). Env: BY_NREPL_PORT."}
    :nrepl-host                 {:type "string"
-                                :env-fn #(if-let [v (not-empty (System/getenv "BY_NREPL_HOST"))]
+                                :env-fn #(if-let [v (not-empty (env/resolve-var "BY_NREPL_HOST"))]
                                            v ::env-unset)
                                 :default "127.0.0.1"
                                 :doc "nREPL endpoint HOST for the :nrepl Clojure backend (default loopback). Set to a trusted remote host for off-laptop execution (R4). Env: BY_NREPL_HOST."}
    :code-langs                 {:type "vector"
-                                :env-fn #(if-let [v (not-empty (System/getenv "BY_CODE_LANGS"))]
+                                :env-fn #(if-let [v (not-empty (env/resolve-var "BY_CODE_LANGS"))]
                                            (mapv keyword (str/split v #"[,\s]+")) ::env-unset)
                                 :default [:clojure :bash :python :javascript]
                                 :doc "Languages the CoAct code channel will EXECUTE. A fence in any other language is refused as a value (an :error eval-entry), not run. This is a CONTRACT, not advice: the disabled languages are also dropped from the `code-blocks` output description and from the prompt's execution-model/format sections, so the schema can never advertise a fence the runtime will reject — the same discipline :code-channel?/:tool-channel? apply to whole channels. script-agent pins [:bash :python]. Env: BY_CODE_LANGS (comma- or space-separated)."}
    :enable-script-bridge       {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_SCRIPT_BRIDGE")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_SCRIPT_BRIDGE")]
                                            (= "true" v) ::env-unset)
                                 :default false
                                 :doc "The script bridge (P2): the agent binds its own AF_UNIX socket, exports it as BY_TOOL_SOCK into every block, and ships a `by-tool` executable so a bash/python script can call a CURATED set of registered tools — memory recall, task inspection — that a script-only agent otherwise cannot reach at all. OFF by default because this is the one part of the script-agent design that adds REACH rather than persistence: everything else a script does, a bash fence could already do. What is reachable is :script-bridge-tools, never the whole registry. Env: BY_ENABLE_SCRIPT_BRIDGE=true."}
@@ -681,7 +696,7 @@
                                           :list-tools :get-tool-info]
                                 :doc "Tools reachable through `by-tool` when :enable-script-bridge is on. Entries are literal names or GLOB patterns — \"mcp$*\", \"skill$*\", \"user$*\", \"user$tool$*\", \"user$agent$*\", or \"*\" for the whole registry; * spans $, so user$* covers user$tool$create. A pattern authorizes a NAME, so a tool registered mid-session (a user$tool$* the agent just authored) is reachable at once. The default is the read/observe half of what a script-only agent gives up (§7 of docs/design/script-agent-design.md) plus list-tools/get-tool-info, since knowing what exists is not reach. This is a blast-radius and legibility control, NOT a security boundary — the agent has a bash fence and already runs arbitrary code. Prefer \"*\" over allowlisting the call-tool tool: identical reach, but ::bridge-call keeps naming the tool actually invoked instead of logging \"call-tool\" for everything. Empty means the bridge answers nothing. `by-tool --list` ({:op :list}) resolves the patterns against the registry, so the effective set is discoverable rather than found by a failing call."}
    :enable-script-library      {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_SCRIPT_LIBRARY")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_SCRIPT_LIBRARY")]
                                            (not= "false" v) ::env-unset)
                                 :default true
                                 :doc "The script library: <project>/.brainyard/scripts/bin (+ the user and builtin scopes) are prepended to PATH for every bash/python block, and rendered as the `## Scripts` prompt section. Applies only to agents whose :code-langs EXCLUDE :clojure — an agent with a clojure fence already reaches capabilities through the tool registry, and a second competing answer helps nobody (see coact-agent/script-library-active?). Off means no PATH injection and no section, so a bash fence behaves exactly as it did before the library existed. Env: BY_ENABLE_SCRIPT_LIBRARY=false."}
@@ -692,17 +707,17 @@
    :clj-backend                {:type "keyword" :default :sandbox
                                 :doc "Clojure code-execution backend for ```clojure blocks in CoAct: :sandbox (SCI, safe default) or :nrepl (live JVM via clj-nrepl; debug-agent, needs server). Per-agent override; not persisted."}
    :exec-backend               {:type "keyword"
-                                :env-fn #(if-let [v (not-empty (System/getenv "BY_EXEC_BACKEND"))]
+                                :env-fn #(if-let [v (not-empty (env/resolve-var "BY_EXEC_BACKEND"))]
                                            (keyword v) ::env-unset)
                                 :default :local
                                 :doc "Execution backend (R4) — WHERE shell + Clojure run: :local (this machine; ProcessBuilder + the :clj-backend strategy). Env: BY_EXEC_BACKEND."}
    :ask-channel-enabled?       {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ASK_CHANNEL")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ASK_CHANNEL")]
                                            (not= "0" v) ::env-unset)
                                 :default true
                                 :doc "Side ask channel: each TUI session opens a per-session AF_UNIX socket (ask.sock) so `by ask --attach <id>` can inject a question into the live turn queue. On by default. Env BY_ASK_CHANNEL=0 disables."}
    :ask-timeout-ms             {:type "integer"
-                                :env-fn #(if-some [v (System/getenv "BY_ASK_TIMEOUT_MS")]
+                                :env-fn #(if-some [v (env/resolve-var "BY_ASK_TIMEOUT_MS")]
                                            (or (parse-long v) ::env-unset) ::env-unset)
                                 :default 120000
                                 :doc "Server-side cap (ms) on a single side-ask turn. Env: BY_ASK_TIMEOUT_MS."}
@@ -721,7 +736,7 @@
    ;; :auto: :full only when a container is detected (env-detect), else it
    ;; stays :restricted — so a bare host is never silently relaxed.
    :sandbox-interop            {:type "keyword"
-                                :env-fn #(if-let [v (not-empty (System/getenv "BY_SANDBOX_INTEROP"))]
+                                :env-fn #(if-let [v (not-empty (env/resolve-var "BY_SANDBOX_INTEROP"))]
                                            (keyword v) ::env-unset)
                                 :default :auto
                                 :doc "SCI code-sandbox Java-interop level: :restricted (a whitelist of pure classes — Math, numeric boxes, Thread, java.time; every other class, System and ClassLoader included, does not resolve), :full (arbitrary interop, container-only), or :auto (default; :full when a container is detected, else :restricted). Env: BY_SANDBOX_INTEROP."}})
@@ -968,7 +983,7 @@
    they land under `<cwd>/.brainyard/<agent>/` instead of silently leaking
    into the user's home dir."
   [working-dir]
-  (or (System/getenv "BY_PROJECT_DIR")
+  (or (env/resolve-var "BY_PROJECT_DIR")
       (find-git-root working-dir)
       working-dir))
 
@@ -1539,7 +1554,7 @@
          ;; two sources that can be known this early: BY_PROFILE, else the
          ;; persisted value, else the schema default. Read getenv directly —
          ;; `schema-env-value` is defined further down this file.
-         profile   (or (some-> (System/getenv "BY_PROFILE") str/trim not-empty keyword)
+         profile   (or (some-> (env/resolve-var "BY_PROFILE") str/trim not-empty keyword)
                        (some-> (:feature-profile persisted) name keyword)
                        (:feature-profile default-config))
          ;; BETWEEN defaults and persisted: a profile raises or lowers the
