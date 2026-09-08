@@ -5,6 +5,8 @@
 (ns ai.brainyard.agent.config-helpers-test
   "Unit tests for the agent.common.config helpers (Step A surface)."
   (:require [ai.brainyard.agent.common.config :as c]
+            [ai.brainyard.agent.core.config :as core-config]
+            [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :as tool]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
@@ -156,6 +158,130 @@
   (seed-config! *tmp-project* base-config)
   (let [r (tool/invoke-tool :config$revert :steps 1 :project-dir *tmp-project*)]
     (is (some? (:error r)))))
+
+;; ============================================================================
+;; config$reload — re-read the file into a running process
+;;
+;; `!global-config` is a process-global cache, so each of these restores it on
+;; the way out; a test that left it pointed at its temp dir would silently
+;; change what every later test in this JVM resolves.
+;; ============================================================================
+
+(defn- with-global-config-restored [f]
+  (let [orig @core-config/!global-config]
+    (try (f) (finally (reset! core-config/!global-config orig)))))
+
+(defn- reload! []
+  (tool/invoke-tool :config$reload :project-dir *tmp-project*))
+
+(deftest config$reload-picks-up-a-hand-edit
+  ;; The gap this command closes: a file changed by any route other than
+  ;; config$apply leaves the process on its startup values forever.
+  (with-global-config-restored
+    (fn []
+      (seed-config! *tmp-project* base-config)
+      (reload!)
+      (is (= 100 (core-config/get-config :max-iterations)))
+      ;; hand-edit behind the process's back
+      (seed-config! *tmp-project*
+                    (assoc-in base-config [:agent :config :max-iterations] 7))
+      (is (= 100 (core-config/get-config :max-iterations))
+          "unchanged until something re-reads — that IS the bug")
+      (let [r (reload!)]
+        (is (true? (:ok? r)))
+        (is (= :project (:scope r)))
+        (is (= [{:key :max-iterations :from 100 :to 7}]
+               (filterv #(= :max-iterations (:key %)) (:changed r))))
+        (is (= 7 (core-config/get-config :max-iterations)))))))
+
+(deftest config$reload-reports-shadowed-rather-than-claiming-applied
+  ;; A per-agent override outranks the file, so a key that moved in the file
+  ;; changed NOTHING. Reporting it under :changed would be a lie the user then
+  ;; acts on.
+  (with-global-config-restored
+    (fn []
+      (let [fake {:!state (atom {:st-memory-init
+                                 (atom {:config {:max-iterations 500}})})}]
+        (seed-config! *tmp-project* base-config)
+        (binding [proto/*current-agent* fake]
+          (reload!)
+          (seed-config! *tmp-project*
+                        (-> base-config
+                            (assoc-in [:agent :config :max-iterations] 7)
+                            (assoc-in [:agent :config :recall-limit] 3)))
+          (let [r (reload!)
+                shadow (first (filter #(= :max-iterations (:key %)) (:shadowed r)))]
+            (is (empty? (filter #(= :max-iterations (:key %)) (:changed r))))
+            (is (= {:key :max-iterations :from 100 :to 7
+                    :layer :agent :effective 500}
+                   shadow))
+            (is (some? (:shadowed-note r)))
+            ;; a key with no override still lands in :changed
+            (is (= [{:key :recall-limit :from 10 :to 3}]
+                   (filterv #(= :recall-limit (:key %)) (:changed r))))))))))
+
+(deftest config$reload-flags-startup-read-keys
+  (with-global-config-restored
+    (fn []
+      (seed-config! *tmp-project* base-config)
+      (reload!)
+      (seed-config! *tmp-project*
+                    (assoc-in base-config [:agent :config :enable-graph-memory] true))
+      (let [r (reload!)]
+        (is (contains? (set (:requires-restart r)) :enable-graph-memory))
+        (is (some? (:restart-note r)))))))
+
+(deftest config$reload-surfaces-file-shape-defects
+  ;; Both are silently ignored by load-global-config! and only ever logged;
+  ;; someone hand-editing the file needs them back as an answer.
+  (with-global-config-restored
+    (fn []
+      (seed-config! *tmp-project*
+                    (-> base-config
+                        (assoc-in [:agent :config :bogus-retired-key] 1)
+                        (assoc :max-iterations 99)))
+      (let [r (reload!)]
+        (is (= [:bogus-retired-key] (:unknown-keys r)))
+        (is (= [:max-iterations] (:misplaced-keys r)))
+        (is (some? (:unknown-note r)))
+        (is (some? (:misplaced-note r)))))))
+
+(deftest config$reload-is-a-no-op-when-nothing-moved
+  (with-global-config-restored
+    (fn []
+      (seed-config! *tmp-project* base-config)
+      (reload!)
+      (let [r (reload!)]
+        (is (= [] (:changed r)))
+        (is (= [] (:shadowed r)))
+        (is (= "File re-read; no effective value changed." (:hint r)))))))
+
+(deftest config$revert-drops-the-cached-global-config
+  ;; A revert that restores the FILE and leaves the process on the values it
+  ;; was reverting away from is not a revert.
+  (with-global-config-restored
+    (fn []
+      (seed-config! *tmp-project* base-config)
+      (reload!)
+      (tool/invoke-tool :config$snapshot :reason "baseline" :project-dir *tmp-project*)
+      (tool/invoke-tool :config$apply
+                        :proposed {:agent {:config {:max-iterations 7}}}
+                        :reason "raise"
+                        :confirm? true
+                        :project-dir *tmp-project*)
+      (reload!)
+      (is (= 7 (core-config/get-config :max-iterations)))
+      (let [r (tool/invoke-tool :config$revert :steps 1 :project-dir *tmp-project*)]
+        (is (true? (:ok? r)))
+        (is (true? (:reloaded? r)))
+        ;; The cache is DROPPED, not merely stale — the next read re-reads the
+        ;; restored file rather than serving the reverted-away value.
+        (is (nil? @core-config/!global-config)))
+      ;; A dropped cache means the NEXT read already sees the restored file —
+      ;; so the reload has nothing left to change, which is the point.
+      (let [r (reload!)]
+        (is (= [] (filterv #(= :max-iterations (:key %)) (:changed r))))
+        (is (= 100 (core-config/get-config :max-iterations)))))))
 
 ;; ============================================================================
 ;; Slug

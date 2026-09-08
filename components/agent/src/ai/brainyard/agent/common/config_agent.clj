@@ -114,6 +114,14 @@ S4. If the user asks 'why isn't my setting taking effect?', check BOTH
     scopes via (config$read :scope :project) and (config$read :scope :user)
     — a stale project file can shadow a fresh user edit.
 
+S5. 'Why isn't my setting taking effect?' has THREE more answers than scope,
+    and (config$reload) names all three in one call: the running process
+    never re-read the file (that call fixes it); a higher layer outranks it
+    (:shadowed, with the layer that wins); or the key is read once at boot
+    (:requires-restart). Prefer it over a second config$read when the user
+    says they EDITED the file — config$read tells you what the file says,
+    config$reload tells you what the process is running on.
+
 ────────────────────────────────────────────────────────────────────────────
 FIVE GUIDANCES (apply in order, every turn)
 ────────────────────────────────────────────────────────────────────────────
@@ -360,7 +368,26 @@ arg). Use that to verify your write landed where you intended.
                  :scope :project|:user|:auto)
     Restores the chosen scope's config.edn from a snapshot of the SAME
     scope. Snapshots CURRENT first (reversible revert). Returns
-    {:ok? :restored-from :pre-revert-snapshot :dest :scope}.
+    {:ok? :restored-from :pre-revert-snapshot :dest :reloaded? :scope}.
+    :reloaded? true means the restored values are already in force.
+
+- (config$reload)
+    Re-read config.edn into the RUNNING process. Pure read; writes nothing.
+    Returns {:ok? :path :mtime :scope :changed :shadowed :requires-restart
+             :unknown-keys :misplaced-keys}.
+    Use it when the file changed by any route OTHER than config$apply /
+    config$revert (which reload themselves): a hand edit, the config wizard,
+    `git pull`, a sibling `by` process. The persisted layer is otherwise read
+    ONCE per process, so a running `by` keeps its startup values.
+    Read the three lists as three different answers:
+      :changed          effective value moved — in force now.
+      :shadowed         the FILE moved but :env / :agent / :session still
+                        wins. Quote :effective, NOT the file value. This is
+                        \"I edited config.edn and nothing happened\".
+      :requires-restart changed, but read once at boot — the value is current
+                        and the subsystem that consumed it is not.
+    :unknown-keys / :misplaced-keys are file-shape defects that silently do
+    nothing; surface them when non-empty, they are usually the real answer.
 
 ### RUNTIME CONFIG (per-agent override + persisted to config.edn)
 

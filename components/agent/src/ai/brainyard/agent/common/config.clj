@@ -11,6 +11,7 @@
    here too — added in Step B. `agent.core.config` (read-edn-config /
    write-edn-config!) is intentionally unchanged."
   (:require [ai.brainyard.agent.core.config :as core-config]
+            [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :as tool :refer [defcommand]]
             [ai.brainyard.mulog.interface :as mulog]
@@ -718,7 +719,9 @@
 (defcommand config$revert
   "Restore a prior snapshot at the requested scope. Snapshots the CURRENT
    file first (so revert is itself reversible), then copies the chosen
-   snapshot over config.edn.
+   snapshot over config.edn and drops the cached global config so the restored
+   values are in force immediately (`:reloaded? true`) — startup-read keys
+   still need a `by` restart, which `config$reload` will name.
 
    Scope is per-file: a `:project` revert restores the project's config.edn
    from a project-scope snapshot; `:user` operates entirely on user-scope."
@@ -753,6 +756,12 @@
                                            " to revert into.")
                                       {:type :no-target})))
                     (io/copy (io/file src-path) dest)
+                    ;; Drop the cached `!global-config` for the same reason
+                    ;; `config$apply` does: the file on disk is no longer the
+                    ;; file this process read, and nothing else re-reads it.
+                    ;; Without this a revert restores the FILE and leaves the
+                    ;; running agent on the values it was reverting away from.
+                    (core-config/invalidate-global-config!)
                     (mulog/log ::config.revert
                                :restored-from src-path
                                :pre-revert-snapshot (:path pre)
@@ -761,6 +770,7 @@
                      :restored-from        src-path
                      :pre-revert-snapshot  (:path pre)
                      :dest                 (.getPath dest)
+                     :reloaded?            true
                      :scope                resolved-scope
                      :requested-scope      (:requested scope*)})
                   (catch Throwable t
@@ -777,6 +787,7 @@
                   [:restored-from {:optional true} :string]
                   [:pre-revert-snapshot {:optional true} :string]
                   [:dest {:optional true} :string]
+                  [:reloaded? {:optional true} [:boolean {:desc "Cached global config dropped; the restored file is now in force"}]]
                   [:scope {:optional true} :keyword]
                   [:requested-scope {:optional true} :keyword]
                   [:error {:optional true} :string]])
@@ -1228,6 +1239,153 @@
                   [:actual {:optional true} :int]])
 
 ;; ============================================================================
+;; config$reload — re-read config.edn into the running process
+;;
+;; `!global-config` is loaded lazily ONCE per process and invalidated only by a
+;; write made through `config$apply`. Every OTHER route to a changed file — a
+;; hand edit, `git pull`, the config wizard, `config$revert`, a sibling `by`
+;; process — leaves this process running on the values it read at startup, with
+;; nothing anywhere saying so. This is the explicit re-read.
+;;
+;; It reports EFFECTIVE changes rather than file changes, because they are not
+;; the same set. A set env var, a per-agent override and a session override all
+;; outrank the file, so a key can move in the reloaded file and change nothing;
+;; claiming those as applied is the failure this command exists to prevent.
+;; They are reported separately as `:shadowed`, naming the layer that won.
+;; ============================================================================
+
+(defcommand config$reload
+  "Re-read `.brainyard/config.edn` (`:auto` scope) into the running process and
+   report what actually changed. Pure read of the file: writes nothing,
+   snapshots nothing.
+
+   Use it after the file changed by any route OTHER than `config$apply` — a
+   hand edit, the config wizard, `git pull`, `config$revert` — because the
+   persisted layer is otherwise read once per process and a running `by` keeps
+   the values it started with.
+
+   Three things the response separates, because they mean different things:
+
+     :changed          the EFFECTIVE value moved — this is now in force.
+     :shadowed         the FILE moved but a higher layer (:env, :agent,
+                       :session) still wins, so nothing changed. `:layer`
+                       names the winner and `:effective` the value still in
+                       force. This is why \"I edited config.edn and nothing
+                       happened\" happens.
+     :requires-restart changed keys that are read ONCE at startup (the memory
+                       manager, the capture pipeline, the LM client). The value
+                       is current; the subsystem that consumed it will not read
+                       it again until `by` restarts.
+
+   Also surfaces the two file-shape diagnostics that are otherwise only log
+   lines: `:unknown-keys` (under `[:agent :config]` but not in config-schema —
+   retired or misspelled, silently ignored) and `:misplaced-keys` (schema keys
+   at the TOP level of the file, where nothing reads them)."
+  (fn [& {:keys [project-dir]}]
+    (try
+      (let [dirs   (resolve-dirs project-dir)
+            ag     proto/*current-agent*
+            info   (config-file-info dirs :auto)
+            ;; Load first when nothing has read config yet, so `before` is the
+            ;; state this process is actually running on rather than an empty
+            ;; cache — which would report every key in the file as changed.
+            _      (when (nil? @core-config/!global-config)
+                     (core-config/load-global-config! dirs))
+            before @core-config/!global-config
+            ;; Effective values BEFORE the swap, over every schema key: a file
+            ;; value only reaches behaviour through the precedence chain, and
+            ;; the chain is what this command reports on. Safe to sample whole:
+            ;; the three `:default-fn` keys (:lm-config :dirs :allowed-dirs) all
+            ;; resolve to a stable value from an atom / an idempotent mkdir.
+            ks     core-config/config-keys
+            eff-of #(into {} (map (fn [k] [k (core-config/get-config ag k)])) ks)
+            before-eff (eff-of)
+            after      (core-config/load-global-config! dirs)
+            after-eff  (eff-of)
+            entry  (fn [k]
+                     {:key  k
+                      :from (core-config/redact-config-value k (get before-eff k))
+                      :to   (core-config/redact-config-value k (get after-eff k))})
+            changed   (vec (for [k (sort ks)
+                                 :when (not= (get before-eff k) (get after-eff k))]
+                             (entry k)))
+            changed?  (into #{} (map :key) changed)
+            ;; A key the FILE moved but the chain did not: something above the
+            ;; global layer is answering for it.
+            shadowed  (vec (for [k (sort ks)
+                                 :when (and (not (changed? k))
+                                            (not= (get before k) (get after k)))]
+                             {:key       k
+                              :from      (core-config/redact-config-value k (get before k))
+                              :to        (core-config/redact-config-value k (get after k))
+                              :layer     (core-config/config-source ag k)
+                              :effective (core-config/redact-config-value
+                                          k (get after-eff k))}))
+            restart   (filterv #(feature/requires-restart-key? (:key %)) changed)
+            ;; The same two diagnostics `load-global-config!` only logs.
+            ;; Returned here because someone reloading a file they just
+            ;; hand-edited needs to see a typo, not a silent no-op.
+            migrated  (:config (core-config/migrate-legacy-edn-shape
+                                (core-config/read-edn-config dirs :auto)))
+            declared  (get-in migrated [:agent :config] {})
+            unknown   (vec (sort (remove core-config/config-keys (keys declared))))
+            misplaced (vec (core-config/misplaced-top-level-keys migrated))]
+        (mulog/log ::config.reload
+                   :path (:path info)
+                   :changed (mapv :key changed)
+                   :shadowed (mapv :key shadowed)
+                   :requires-restart (mapv :key restart))
+        (cond-> {:ok?              true
+                 :scope            (:scope (scope-summary dirs :auto))
+                 :changed          changed
+                 :shadowed         shadowed
+                 :requires-restart (mapv :key restart)
+                 :unknown-keys     unknown
+                 :misplaced-keys   misplaced}
+          info        (assoc :path (:path info) :mtime (:mtime info))
+          (nil? info) (assoc :hint (str "No config.edn on disk at either scope — schema "
+                                        "defaults (plus :feature-profile) are in effect."))
+          (and info (empty? changed) (empty? shadowed))
+          (assoc :hint "File re-read; no effective value changed.")
+          (seq shadowed)
+          (assoc :shadowed-note
+                 (str "These moved in the file but a higher precedence layer still wins "
+                      "(env var > per-agent override > session > file). Report the "
+                      ":effective value, not the file value."))
+          (seq restart)
+          (assoc :restart-note
+                 (str "Read once at startup. The value is current but the subsystem that "
+                      "consumed it will not re-read until `by` restarts."))
+          (seq unknown)
+          (assoc :unknown-note
+                 (str "Under [:agent :config] but not in config-schema — retired or "
+                      "misspelled, and ignored. Someone believes these took effect."))
+          (seq misplaced)
+          (assoc :misplaced-note
+                 (str "config-schema keys at the TOP level of the file; only "
+                      "[:agent :config] is read. Move them there."))))
+      (catch Throwable t
+        {:ok? false :error (.getMessage t)})))
+  :input-schema  [:map
+                  [:project-dir {:optional true} [:string {:desc "Override project dir (tests)"}]]]
+  :output-schema [:map
+                  [:ok? :boolean]
+                  [:path {:optional true} [:string {:desc "config.edn actually re-read"}]]
+                  [:mtime {:optional true} [:int {:desc "Last-modified epoch ms of that file"}]]
+                  [:scope {:optional true} [:keyword {:desc "Resolved scope (:project or :user)"}]]
+                  [:changed {:optional true} [:vector {:desc "Effective changes now in force: {:key :from :to}"} :map]]
+                  [:shadowed {:optional true} [:vector {:desc "File moved but outranked: {:key :from :to :layer :effective}"} :map]]
+                  [:requires-restart {:optional true} [:vector {:desc "Changed keys read once at startup"} :keyword]]
+                  [:unknown-keys {:optional true} [:vector {:desc "Keys under [:agent :config] not in config-schema"} :keyword]]
+                  [:misplaced-keys {:optional true} [:vector {:desc "Schema keys at the top level, where nothing reads them"} :keyword]]
+                  [:shadowed-note {:optional true} :string]
+                  [:restart-note {:optional true} :string]
+                  [:unknown-note {:optional true} :string]
+                  [:misplaced-note {:optional true} :string]
+                  [:hint {:optional true} :string]
+                  [:error {:optional true} :string]])
+
+;; ============================================================================
 ;; env-detect$rescan + bootstrap$re-run-rung (soft deps via requiring-resolve)
 ;;
 ;; Both target namespaces live outside the `agent` component (env-detect is a
@@ -1337,6 +1495,7 @@
    #'config$list-snapshots
    #'config$revert
    #'config$apply
+   #'config$reload
    #'config$frontmatter
    #'config$write
    #'config$index-append
