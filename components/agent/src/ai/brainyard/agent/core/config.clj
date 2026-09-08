@@ -30,6 +30,7 @@
             [ai.brainyard.agent.core.tool :as tool]
             [ai.brainyard.clj-llm.interface :as clj-llm]
             [ai.brainyard.mulog.interface :as mulog]
+            [ai.brainyard.util.interface :as env]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.pprint :as pprint]
@@ -952,8 +953,7 @@
    should `.brainyard/` artifacts live?' see `project-dir` instead."
   []
   (or @!working-dir-override
-      (valid-dir-canonical (or (System/getenv "BY_WORKING_DIR")
-                               (System/getProperty "BY_WORKING_DIR")))
+      (valid-dir-canonical (env/resolve-var "BY_WORKING_DIR"))
       (System/getProperty "user.dir")))
 
 (defn resolve-project-dir

@@ -15,7 +15,8 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [ai.brainyard.clj-http-native.interface :as http]
-            [ai.brainyard.clj-oauth.interface :as oauth])
+            [ai.brainyard.clj-oauth.interface :as oauth]
+            [ai.brainyard.util.interface :as util])
   (:import [java.io BufferedReader InputStreamReader OutputStreamWriter]
            [java.util.concurrent.atomic AtomicLong]))
 
@@ -225,8 +226,12 @@
   [s]
   (str/replace (str s) env-ref-pattern
                (fn [[whole var-name]]
-                 (or (System/getenv var-name)
-                     (System/getProperty var-name)
+                 ;; `:blank-as-unset? false` — this is the one reader in the
+                 ;; tree that must tell an UNSET variable (leave the literal,
+                 ;; below) from one set to the empty string (substitute
+                 ;; nothing). Collapsing the two would turn a deliberately
+                 ;; empty value into a `${VAR}` literal in a server's argv.
+                 (or (util/resolve-var var-name {:blank-as-unset? false})
                      (do (mulog/warn ::unresolved-env-ref :var var-name)
                          whole)))))
 

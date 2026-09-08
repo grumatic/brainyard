@@ -6,6 +6,7 @@
   "Multi-provider LM configuration, model catalogs, and provider detection."
   (:require [ai.brainyard.clj-llm.core.catalog :as catalog]
             [ai.brainyard.clj-llm.core.usage :as usage]
+            [ai.brainyard.util.interface :as util]
             [clojure.string :as str]))
 
 ;; ============================================================================
@@ -708,15 +709,17 @@
 
 (defn- env-or-prop
   "Read `env-var` from the process environment, falling back to the JVM system
-   property of the same name. The property fallback is what lets the dotenv
-   loader surface a value without mutating the (immutable) JVM env map — see
-   projects/agent-tui-app/.../dotenv.clj. Blank is treated as unset: an exported
-   -but-empty `ANTHROPIC_API_KEY=` is a common shell accident, and letting it
-   resolve would mask the token that should have been used next in the chain."
+   property of the same name — `util/resolve-var`, which now owns both that
+   lookup and the blank-is-unset rule this namespace argued for and four other
+   layers each re-implemented. Kept as a local alias so the call sites below
+   read as they did.
+
+   The rule, for the record, since this is where it was first written down: an
+   exported-but-empty `ANTHROPIC_API_KEY=` is a common shell accident, and
+   letting it resolve would mask the token that should have been used next in
+   the chain."
   [env-var]
-  (when env-var
-    (let [v (or (System/getenv env-var) (System/getProperty env-var))]
-      (when-not (str/blank? v) v))))
+  (util/resolve-var env-var))
 
 (defn- merge-base-url-path
   "Resolve a `:base-url-env` override against the provider's static base URL.

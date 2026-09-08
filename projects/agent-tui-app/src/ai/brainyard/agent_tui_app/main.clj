@@ -24,6 +24,7 @@
    [ai.brainyard.agent-tui-persist.interface :as persist]
    [ai.brainyard.ask-channel.interface :as ask-channel]
    [ai.brainyard.web-share.interface :as web-share]
+   [ai.brainyard.util.interface :as util]
    [ai.brainyard.os-sandbox.interface :as os-sandbox]
    [ai.brainyard.clj-llm.interface :as clj-llm]
    ;; Effect — statically required, not requiring-resolve'd, for the same
@@ -811,9 +812,11 @@
 
 (defn- env*
   "Read an env var, falling back to a JVM system property (the dotenv loader
-   bridges `.env` keys into properties; see dotenv.clj)."
+   bridges `.env` keys into properties; see dotenv.clj) — `util/resolve-var`,
+   which owns that lookup for the whole tree. Both wrappers below already
+   rejected a blank, so its blank-is-unset rule changes nothing here."
   [k]
-  (or (System/getenv k) (System/getProperty k)))
+  (util/resolve-var k))
 
 (defn- env-truthy? [k]
   (contains? #{"1" "true" "yes" "on"} (some-> (env* k) str/trim str/lower-case)))

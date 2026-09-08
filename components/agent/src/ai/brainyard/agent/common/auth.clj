@@ -27,7 +27,8 @@
             [clojure.java.shell :as shell]
             [clojure.string :as str]
             [ai.brainyard.clj-llm.interface :as clj-llm]
-            [ai.brainyard.clj-oauth.interface :as oauth]))
+            [ai.brainyard.clj-oauth.interface :as oauth]
+            [ai.brainyard.util.interface :as util]))
 
 ;; =============================================================================
 ;; Target registry
@@ -59,8 +60,12 @@
   (let [k (some-> id str str/trim str/lower-case not-empty)]
     (some (fn [t] (when (= k (name (:id t))) t)) auth-targets)))
 
-;; Injectable env reader so tests can redef it without touching System/getenv.
-(defn- getenv [k] (System/getenv k))
+;; Injectable env reader so tests can redef it without touching the resolver.
+;; Delegates to `util/resolve-var`, which also consults the JVM property table
+;; where `.env` values live — this read used to be `System/getenv` alone, so a
+;; key supplied by `.env` on a non-wrapper launch reported :not-signed-in while
+;; clj-llm authenticated with that same key successfully.
+(defn- getenv [k] (util/resolve-var k))
 
 (defn- which
   "Absolute path of `cmd` on PATH, or nil. Kept local so /login stays free of a

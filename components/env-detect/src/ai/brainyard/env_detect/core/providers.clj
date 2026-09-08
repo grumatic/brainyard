@@ -4,7 +4,8 @@
 
 (ns ai.brainyard.env-detect.core.providers
   "Detect available LLM providers by checking env vars, network, and PATH."
-  (:require [clojure.string :as str])
+  (:require [clojure.string :as str]
+            [ai.brainyard.util.interface :as util])
   (:import [java.net HttpURLConnection URL]))
 
 ;; Hardcoded provider → accepted env vars (mirrors clj-llm providers registry).
@@ -42,11 +43,12 @@
     (str (subs key-str 0 6) "...****" (subs key-str (- (count key-str) 4)))))
 
 (defn- env-or-prop
-  "Look up `name` in process env, falling back to JVM System Properties.
-   The fallback lets a dotenv loader (see agent-tui-app/dotenv.clj) make
-   keys visible without mutating the immutable JVM env map."
+  "Look up `name` in process env, falling back to JVM System Properties —
+   `util/resolve-var`, which owns that lookup for the whole tree. Blank now
+   counts as unset here too, which is what `detect-api-key-providers` was
+   already checking for itself one line down."
   [name]
-  (or (System/getenv name) (System/getProperty name)))
+  (util/resolve-var name))
 
 (defn detect-api-key-providers
   "Check env vars for all API-key-based providers.
@@ -57,9 +59,7 @@
    the primary, which is the one the setup guidance should name."
   []
   (mapv (fn [[provider env-vars]]
-          (let [found   (some (fn [v] (let [val (env-or-prop v)]
-                                        (when-not (str/blank? val) [v val])))
-                              env-vars)
+          (let [found   (util/resolve-first env-vars)
                 key-val (second found)]
             {:provider   provider
              :available? (some? key-val)

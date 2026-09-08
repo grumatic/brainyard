@@ -1,7 +1,10 @@
 # Environment Scoping — One Resolver, Three Scopes, and the Difference Between a Knob and a Secret
 
-> **Status: PROPOSAL.** Nothing here is built. §1 is measured against the
-> current tree; §3 is the design; §7 phases it.
+> **Status: PHASE 0 SHIPPED; §3.3 onward is still a PROPOSAL.** §1 is measured
+> against the tree; §3 is the design; §7 phases it and marks what has landed.
+> Phase 0 built the resolver and collapsed the private copies — it added no
+> config key and no scoping, and closed two live defects on its own. Its
+> as-built map is §3.1a.
 >
 > **Problem in one line:** brainyard has three unrelated things called
 > "environment" — `BY_*` config knobs, third-party credentials, and the
@@ -111,7 +114,8 @@ so it is inert on *both* paths, despite being documented in `CLAUDE.md:98` and
 `core/config.clj` (65, nearly all inside `:env-fn`s), `clj_llm/core/providers.clj`
 (11), `env_detect/core/sandbox.clj` (10), `main.clj` (8).
 
-Seven independent, private, near-identical copies of the property bridge exist:
+**Six** independent, private, near-identical copies of the property bridge
+exist, plus two more of the same expression written inline:
 
 | | file:line | blank ⇒ nil? |
 |---|---|---|
@@ -123,7 +127,7 @@ Seven independent, private, near-identical copies of the property bridge exist:
 | inline | `clj_sandbox/core/sandbox.clj:366` | property-only |
 | inline | `config.clj:955-956` | no |
 
-Seven call sites converging on one shape is the same argument that justified
+Eight sites converging on one shape is the same argument that justified
 extracting `glob-match?` for the tool permission gate. Three further readers
 (`auth.clj:66`, `agent_tui/mode.clj:36`, `agent_tui/clipboard.clj:53`) already
 define an *injectable* `getenv` for testability — they want a seam and each
@@ -226,7 +230,7 @@ A new namespace with exactly two public entry points and no state of its own:
 (env/child-env agent tool-name)          ;; => {"NAME" "VALUE", …} for a spawn
 ```
 
-`env/resolve` replaces the seven copies in §1.3. `env/child-env` is what every
+`env/resolve` replaces the copies in §1.3. `env/child-env` is what every
 `ProcessBuilder` site applies. Both are pure functions of (scope, config, process
 env, property table) — nothing is cached, because a `.env` reload
 (`config$reload`'s sibling problem) must be observable.
@@ -234,6 +238,60 @@ env, property table) — nothing is cached, because a `.env` reload
 The scope arguments are both optional and both nilable: `(env/resolve nil nil k)`
 is the global lookup and is exactly today's `env-or-prop`, which is what makes
 the migration in §3.6 a no-op at every call site that has no agent in hand.
+
+### 3.1a Phase 0, as built
+
+`ai.brainyard.util.core.env`, exported through `util/interface`. It lives in
+`util` because it depends on nothing and every layer needs it; `clj-llm` and
+`env-detect` each gained a `util` dep to reach it — `env-detect`'s first brick
+dependency, which does not disturb the standalone-ness that actually matters
+there (the deliberate absence of a compile-time dep on `clj-llm`).
+
+| | |
+|---|---|
+| `resolve-var` | `[k]` / `[k opts]`. Env, then the property table. `k` may be a string, keyword or symbol — used by NAME, so `(str :CLICKHOUSE_HOST)` can no longer produce a variable called `":CLICKHOUSE_HOST"`. |
+| `resolve-first` | `[ks]` → `[k value]`. The PAIR, because every caller has to say *which* variable supplied the credential. |
+| `resolve-any?` | `[ks]` → boolean. |
+
+**Migrated:** `clj-llm/core/providers.clj` (`env-or-prop`, kept as a local alias
+so its call sites read unchanged), `env-detect/core/providers.clj` (`env-or-prop`,
+and `detect-api-key-providers` now calls `resolve-first` instead of hand-rolling
+the same scan), `agent/core/config.clj` (`resolve-working-dir`),
+`agent/mcp/client.clj` (`expand-env-refs`), `agent-tui/helpers.clj`
+(`credential`, plus the inline `BY_USER_ID` and `BY_CACHE_TTL` pairs),
+`main.clj` (`env*`), `agent/common/auth.clj` (`getenv` — kept as a private
+delegating fn because six tests redef it), and the two `/model` picker filters
+in `agent-tui/commands.clj` and `autocomplete.clj`.
+
+**Not migrated, and not a copy:** `clj-sandbox/core/sandbox.clj:366` reads
+System Properties *only*, deliberately — `sys-info-properties` is a closed list,
+and in `by` the property table is the credential store. The original count of
+seven included it in error.
+
+**Two defects closed, verified live in a REPL:**
+
+```
+auth/auth-status, key supplied only by .env
+  before →  :not-signed-in        after →  :signed-in
+  and a blank value still reads :not-signed-in
+```
+
+`/login` reported not-signed-in, and the `/model` picker hid every model of the
+provider, for a credential `clj-llm` was authenticating with successfully — the
+two readers disagreed because one consulted the property table and the other
+did not.
+
+**One deliberate behaviour change, which the proposal above did not predict.**
+Every private copy read `(or (getenv k) (getProperty k))` and blank-checked the
+RESULT, so a blank environment variable *shadowed* a non-blank property:
+`export GH_TOKEN=` in a shell profile silently and permanently defeated the
+`GH_TOKEN` in `.env`, with nothing anywhere saying why. `resolve-var` checks
+each source for blankness independently, so a blank falls through instead. That
+is the same accident blank-as-unset already existed to forgive, one link earlier
+in the chain; forgiving it at one link and not the other was an artifact of
+where the check happened to sit. Pinned by `a-blank-value-does-not-answer-for-a-set-one`.
+
+**Tests:** `components/util/test/…/core/env_test.clj` — 8 tests, 24 assertions.
 
 ### 3.2 Precedence — the new layers go above the process env, and `.env` does not move
 
@@ -358,7 +416,7 @@ Each is small and each is a prerequisite for the resolver being trustworthy.
    two loaders agree on their own control flags.
 3. **`resolve-project-dir` gains the property bridge** its neighbour already has
    (§1.2(d)).
-4. **The seven `env-or-prop` copies collapse** into `env/resolve` (§1.3), which
+4. **The `env-or-prop` copies collapse** into `env/resolve` (§1.3), which
    is what turns `/login` and the `/model` picker honest about `.env`-supplied
    keys.
 
@@ -428,7 +486,7 @@ the child NOT inherit" deserves its own argument.
 
 - **Inertness, asserted end-to-end.** With no key set, `env/child-env` must
   produce a map byte-identical to what each of the seven spawn sites builds
-  today, and `env/resolve` must agree with each of the seven `env-or-prop`
+  today, and `env/resolve` must agree with each of the `env-or-prop`
   copies it replaces — including the two that differ on blank-⇒-nil
   (`clj_llm/core/providers.clj:709-719` and `helpers.clj:78-80` treat `""` as
   unset; `main.clj:812-816` does not). Pick one semantics deliberately and pin
@@ -465,7 +523,7 @@ the next.
 
 | phase | content | value on its own |
 |---|---|---|
-| **0** | `env/resolve` + collapse the seven `env-or-prop` copies. No new config keys. | `/login` and the `/model` picker stop lying about `.env`-supplied keys. |
+| **0** ✅ | `env/resolve` + collapse the `env-or-prop` copies. No new config keys. **Shipped — see §3.1a.** | `/login` and the `/model` picker stop lying about `.env`-supplied keys. |
 | **1** | Route `schema-env-value` through it; reconcile `dotenv.clj`'s control flags; fix `resolve-project-dir`. | §1.2(a)(b)(c)(d) all close. `BY_*` knobs in `.env` work everywhere. |
 | **2** | `env/child-env` + `shell-pb`'s env argument + wire the five shell sites and MCP. Still no new config keys — the map is just "the resolver's view", so children finally see `.env`. | A `.env` `GH_TOKEN` reaches `gh` on the direct-binary path. MCP inherits ACP's marker stripping. |
 | **3** | `:env-allow` / `:env-deny` / `:env-vars` at global + agent scope. | The feature as asked. |

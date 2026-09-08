@@ -24,6 +24,17 @@
                         pretty configure-logging! default-log-config))
 
 ;; ============================================================================
+;; Environment resolution (CLJ only)
+;;
+;; The one place `by` answers "what is the value of environment variable K?" —
+;; process env, then the JVM property table where `.env` values live. See
+;; `ai.brainyard.util.core.env` and docs/design/environment-scoping-design.md.
+;; ============================================================================
+
+#?(:clj (export-symbols ai.brainyard.util.core.env
+                        resolve-var resolve-first resolve-any?))
+
+;; ============================================================================
 ;; Display normalization (CLJ only)
 ;; ============================================================================
 

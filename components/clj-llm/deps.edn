@@ -4,6 +4,9 @@
         ai.brainyard/clj-http-native {:local/root "../clj-http-native"}
         ai.brainyard/clj-oauth {:local/root "../clj-oauth"}
         ai.brainyard/mulog {:local/root "../mulog"}
+        ;; util — `resolve-var`, the one env-then-property lookup. `env-or-prop`
+        ;; used to live here as a private copy; four other layers had their own.
+        ai.brainyard/util {:local/root "../util"}
         ;; Effect — retry/backoff is expressed as an effect value rather than a
         ;; hand-rolled loop/recur. See docs/design/functional-effect-system.md.
         ai.brainyard/effect {:local/root "../effect"}

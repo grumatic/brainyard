@@ -17,6 +17,7 @@
             [ai.brainyard.agent.interface :as agent]
             [ai.brainyard.agent-tui-persist.interface :as persist]
             [ai.brainyard.clj-llm.interface :as clj-llm]
+            [ai.brainyard.util.interface :as util]
             [clojure.string :as str]
             [clojure.java.io :as io])
   (:import [java.io InputStream]))
@@ -95,9 +96,11 @@
                         (no-auth? provider)   true
                         (= :bedrock provider) (clj-llm/aws-credentials-detected?)
                         :else
+                        ;; See the same filter in commands.clj: `.env`
+                        ;; keys are properties, not environment.
                         (let [env-var (get-in provs [provider :api-key-env])]
                           (or (nil? env-var)
-                              (some? (System/getenv env-var))))))]
+                              (some? (util/resolve-var env-var))))))]
     (->> all-models
          (filter has-auth?)
          (take n)

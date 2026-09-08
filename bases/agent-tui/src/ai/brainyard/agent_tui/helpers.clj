@@ -9,6 +9,7 @@
             [ai.brainyard.agent.interface.tui.ansi :as ansi]
             [ai.brainyard.agent.interface :as agent]
             [ai.brainyard.clj-llm.interface :as clj-llm]
+            [ai.brainyard.util.interface :as util]
             [clojure.string :as str])
   (:import [java.util.logging Logger Level]))
 
@@ -51,10 +52,7 @@
   ([] (resolve-user-id nil))
   ([explicit]
    (or (some-> explicit str/trim not-empty)
-       (some-> (or (System/getenv "BY_USER_ID")
-                   (System/getProperty "BY_USER_ID"))
-               str/trim
-               not-empty)
+       (some-> (util/resolve-var "BY_USER_ID") str/trim not-empty)
        (some-> (System/getProperty "user.name") str/trim not-empty)
        user-id-fallback)))
 
@@ -71,13 +69,11 @@
    :anthropic ["ANTHROPIC_API_KEY" "ANTHROPIC_AUTH_TOKEN"]})
 
 (defn- credential
-  "Resolve a credential env var the way the rest of `by` does: real env var
-   first, then a JVM system property (the dotenv loader bridges `.env` keys into
-   properties, not the environment — see dotenv.clj). Returns nil when neither
-   is set to a non-blank value."
+  "Resolve a credential env var the way the rest of `by` does — see
+   `util/resolve-var`, which owns the env-then-property lookup and the
+   blank-is-unset rule this used to implement locally."
   [k]
-  (let [v (or (System/getenv k) (System/getProperty k))]
-    (when-not (str/blank? v) v)))
+  (util/resolve-var k))
 
 (defn missing-provider-key
   "When `provider` requires a credential and NONE of its accepted env vars is
@@ -139,9 +135,7 @@
         ;; Converse cachePoint ttl for Claude models; 2x write premium, paid
         ;; once per stable zone per session). See
         ;; docs/design/prompt-cache-arrangement.md Phase 4.
-        cache-ttl      (let [v (or (System/getenv "BY_CACHE_TTL")
-                                   (System/getProperty "BY_CACHE_TTL"))]
-                         (when-not (str/blank? v) v))]
+        cache-ttl      (util/resolve-var "BY_CACHE_TTL")]
     (when (missing-provider-key provider)
       (throw (ex-info (no-provider-message provider)
                       {:provider provider ::no-provider true})))

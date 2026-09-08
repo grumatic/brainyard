@@ -18,6 +18,7 @@
             [ai.brainyard.agent.interface.tui.ansi :as ansi]
             [ai.brainyard.agent.interface :as agent]
             [ai.brainyard.clj-llm.interface :as clj-llm]
+            [ai.brainyard.util.interface :as util]
             [ai.brainyard.clj-sandbox.interface :as clj-sandbox]
             [ai.brainyard.agent-tui.side-pane-commands :as side-pane-cmd]
             [ai.brainyard.agent-tui-persist.interface :as persist]
@@ -38,10 +39,14 @@
   [n]
   (let [all-models  (clj-llm/get-popular-models)
         provs       clj-llm/providers
+        ;; `util/resolve-var`, not `System/getenv`: a key supplied by
+        ;; `.env` lives in the JVM property table, and reading only the
+        ;; environment hid every model of a provider that was in fact
+        ;; configured — while clj-llm authenticated with that same key.
         has-key?    (fn [{:keys [provider]}]
                       (let [env-var (get-in provs [provider :api-key-env])]
                         (or (nil? env-var)
-                            (some? (System/getenv env-var)))))]
+                            (some? (util/resolve-var env-var)))))]
     (->> all-models
          (filter has-key?)
          (take n)

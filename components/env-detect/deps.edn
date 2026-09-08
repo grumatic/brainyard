@@ -1,4 +1,8 @@
 {:paths ["src" "resources"]
- :deps {}
+ ;; util — `resolve-var`, the one env-then-property lookup (a `.env` key is a
+ ;; JVM system property, not an environment variable). This is env-detect's
+ ;; first brick dependency; the standalone-ness that matters is the deliberate
+ ;; absence of a compile-time dep on clj-llm, which this does not disturb.
+ :deps {ai.brainyard/util {:local/root "../util"}}
  :aliases {:test {:extra-paths ["test"]
                   :extra-deps {}}}}
