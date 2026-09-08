@@ -45,7 +45,11 @@
      default `:log` a gate that crashes PERMITS the call. For a cache or a
      nudge that is right; for a permission gate it is the wrong-direction
      failure. Throwing surfaces the bug as a failed tool call instead of a
-     silently ungated one."
+     silently ungated one.
+
+   `:tool-deny-tools` is a SECOND gate rather than a third branch of the first,
+   because it wants a different priority and a different relationship to
+   `[:permissions :mode]`. See `tool-deny-gate`."
   (:require [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.session :as session]
@@ -193,6 +197,95 @@
                                     :pattern pat
                                     :display tname}}))))
 
+(def ^:private deny-hint
+  (str "This tool is denied by :tool-deny-tools. No permission mode overrides "
+       "it — narrow or remove the matching glob to allow it."))
+
+(defn deny-pattern
+  "The `:tool-deny-tools` glob refusing `tool-name`, or nil.
+
+   Deliberately consults ONE key. `:tool-allow-tools` carves narrow holes in
+   `:tool-approval-patterns` and stops there: a deny that another key can undo
+   is not a deny, and the reason to reach for this over an approval pattern is
+   precisely that no local exemption and no permission mode can talk it round.
+   To allow something, narrow the glob."
+  [agent tool-name]
+  (first-match (or (config/get-config agent :tool-deny-tools) []) tool-name))
+
+(defn deny-matches?
+  "`:match` predicate for the deny gate. Like `gate-matches?`, the empty case —
+   the shipped default — must cost one config read and a `seq`."
+  [{:keys [agent tool-name]}]
+  (let [globs (or (config/get-config agent :tool-deny-tools) [])]
+    (boolean (and (seq globs)
+                  (first-match globs (name (or tool-name "")))))))
+
+(defn tool-deny-gate
+  "`:agent.tool-use/pre` handler for the unconditional deny.
+
+   Three things separate it from `tool-permission-gate`, and each is why this
+   is a second handler rather than a third branch of the first.
+
+   - **It never calls `gate-verdict`,** so it does not consult
+     `[:permissions :mode]`. A deny survives `:auto-approve` — that is the
+     whole reason to write one — and under `:ask-each-time` it does not
+     prompt, because a prompt is an offer to run and a denied tool is not on
+     offer. Prompting for something no answer can permit trains a user to
+     answer without reading.
+
+   - **Priority 95, ABOVE the tool-result cache at 90.** The approval gate sits
+     BELOW that cache on purpose: approving a call about to be served from
+     cache is a prompt paid for nothing, and no side effect happens either way.
+     That reasoning inverts for a deny. `tool-cache-lookup-pre` caches every
+     tool indiscriminately once `:tool-cache-ttl` is positive and returns a
+     `:replace`, which short-circuits the whole walk — so a deny at 85 would be
+     stepped over by a cache hit, and a `read-file` denied to keep a file out
+     of the context would hand back that file's previously-read contents. The
+     only thing a deny must outrank is anything that can SERVE a call; the
+     refusals above it (the loop guard at 100, the memory write-guard at 200)
+     reach the same outcome by another route.
+
+   - **It is still veto-only.** Returning nil on no match is an abstention, so
+     this can only ever add a refusal — the same property every ordering claim
+     in this namespace rests on.
+
+   What it does NOT reach, measured rather than assumed: a **shell code-eval
+   fence**. `:agent.tool-use/pre` fires in `dispatch-with-hooks`, so this gate
+   sees the LLM tool channel, sandbox callables (`(read-file :path …)` inside a
+   code block), the `bash` TOOL, the script bridge and sub-agent dispatch — but
+   a ```bash block is run by the code-eval channel and never dispatches a tool
+   at all. Instrumenting the hook across a live turn where `read-file` was
+   denied recorded ZERO events while the model answered the question with
+   `sed -n '2p'`, having worked out the detour on its own. So a deny raises the
+   cost of a mistake and makes the audit trail legible; it is not a containment
+   boundary, and anything that needs one wants `--sandbox`."
+  [{:keys [agent tool-name]}]
+  (let [tname (name (or tool-name ""))]
+    (when-let [pat (deny-pattern agent tname)]
+      (mulog/log ::tool-denied :tool tname :pattern pat)
+      (deny-replace {:by            ::tool-deny-gate
+                     :display       tname
+                     :reason        (str "denied by :tool-deny-tools pattern " (pr-str pat))
+                     :reason-prefix "Tool permission refused"
+                     :error-prefix  "Tool call refused (denied)"
+                     :hint          deny-hint}))))
+
+(defn install-tool-deny-gate!
+  "Register the unconditional deny on `:agent.tool-use/pre`. Idempotent, and
+   `:on-error :throw` for the same reason the approval gate is: under the house
+   `:log` default a crashing gate returns nil, which reads as an abstention, so
+   the failure permits the call it exists to refuse."
+  []
+  (hooks/register-hook!
+   :agent.tool-use/pre
+   ::tool-deny-gate
+   tool-deny-gate
+   :source   :tool-permission
+   :match    deny-matches?
+   :priority 95
+   :on-error :throw)
+  (mulog/info ::tool-deny-gate-installed))
+
 (defn install-tool-permission-gate!
   "Register the general gate on `:agent.tool-use/pre`. Idempotent —
    `register-hook!` replaces on [event-key handler-id], so a `:reload` cannot
@@ -209,3 +302,4 @@
   (mulog/info ::tool-permission-gate-installed))
 
 (install-tool-permission-gate!)
+(install-tool-deny-gate!)

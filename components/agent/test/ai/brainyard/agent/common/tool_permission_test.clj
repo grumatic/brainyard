@@ -35,6 +35,7 @@
    leave exactly one entry, not N."
   [f]
   (tperm/install-tool-permission-gate!)
+  (tperm/install-tool-deny-gate!)
   (try (f) (finally (hooks/unregister-source! :tperm-test))))
 
 (use-fixtures :each with-gate-installed)
@@ -267,7 +268,7 @@
       ;; This is the ONE direction the 85>80 placement buys: a general deny
       ;; reaching an MCP tool that readOnlyHint would have auto-allowed.
       (hooks/register-hook! :agent.tool-use/pre ::fake-mcp (constantly nil)
-                            :source :tperm-test :priority 80)
+                            :source :tperm-test :priority 84)
       (let [d (with-redefs [config/resolve-permission-mode (constantly :deny-by-default)]
                 (with-cfg cfg (fn [] (fire ev))))]
         (is (= ::tperm/tool-permission-gate (:by d)))))
@@ -276,11 +277,16 @@
       ;; An allow is nil, so the walk continues and the MCP gate still gets its
       ;; say. :mcp-allow-tools remains the only key that bypasses that gate.
       (hooks/unregister-source! :tperm-test)
+      ;; 84, not 80: the REAL mcp-permission-gate sits at 80, and a tie there
+      ;; is broken by registration order — so this asserted against whichever
+      ;; gate happened to be registered first, passing alone and failing in any
+      ;; JVM that also loaded mcp/permission.clj. What is under test is "a gate
+      ;; BELOW 85 still gets its say", and any priority under 85 says that.
       (hooks/register-hook! :agent.tool-use/pre ::fake-mcp
                             (constantly {:result :replace
                                          :replacement {:error "mcp refused"}
                                          :reason "mcp refused"})
-                            :source :tperm-test :priority 80)
+                            :source :tperm-test :priority 84)
       (let [d (with-redefs [config/resolve-permission-mode (constantly :ask-each-time)]
                 (with-cfg {:tool-approval-patterns ["mcp$*"]
                            :tool-allow-tools ["mcp$*"]}
@@ -302,6 +308,108 @@
           (is (= ::fake-cache (:by d)))
           (is (zero? @prompted)
               "approving a call about to be served from cache is a prompt paid for nothing"))))))
+
+;; ============================================================================
+;; :tool-deny-tools — the unconditional deny
+;;
+;; Everything here is about the ways a deny could quietly turn into an approval:
+;; a permission mode talking it round, an allow glob carving a hole in it, or a
+;; cached result being served before it ever runs.
+;; ============================================================================
+
+(defn- deny-ev [tool] {:agent (agent-with (fn [_] {:allowed true})) :tool-name tool})
+
+(deftest deny-gate-is-inert-by-default-test
+  (testing "the shipped default is an empty vector, and the match short-circuits on it"
+    (is (= [] (:default (get config/config-schema :tool-deny-tools))))
+    (with-cfg {:tool-deny-tools []}
+      (fn []
+        (is (false? (tperm/deny-matches? (deny-ev "read-file"))))
+        (is (nil? (tperm/deny-pattern (:agent (deny-ev "read-file")) "read-file")))))))
+
+(deftest deny-survives-every-permission-mode-test
+  ;; The reason to write a deny rather than an approval pattern: no mode can
+  ;; talk it round. :auto-approve is the one that matters — under the approval
+  ;; gate it runs the tool.
+  (doseq [mode [:auto-approve :ask-each-time :deny-by-default]]
+    (testing (str "mode " mode)
+      (let [prompted (atom 0)
+            ag (agent-with (fn [_] (swap! prompted inc) {:allowed true}))
+            d  (with-redefs [config/resolve-permission-mode (constantly mode)]
+                 (with-cfg {:tool-deny-tools ["bash"]}
+                   (fn [] (tperm/tool-deny-gate {:agent ag :tool-name "bash"}))))]
+        (is (= :replace (:result d)) "a deny is a refusal in every mode")
+        (is (= ::tperm/tool-deny-gate (:by d)))
+        (is (some? (:replacement d))
+            "the SHAPE matters: a :replace carrying a readable result, not a bare nil")
+        (is (re-find #"tool-deny-tools" (get-in d [:replacement :error])))
+        (is (zero? @prompted)
+            "a prompt is an offer to run, and a denied tool is not on offer")))))
+
+(deftest deny-is-not-exemptable-by-tool-allow-tools-test
+  ;; :tool-allow-tools carves holes in :tool-approval-patterns ONLY. A deny
+  ;; another key can undo is not a deny.
+  (with-cfg {:tool-deny-tools        ["bash"]
+             :tool-allow-tools       ["bash"]
+             :tool-approval-patterns ["bash"]}
+    (fn []
+      (is (= "bash" (tperm/deny-pattern (:agent (deny-ev "bash")) "bash")))
+      (is (true? (tperm/deny-matches? (deny-ev "bash"))))
+      (testing "while the same allow DOES exempt it from the approval gate"
+        (is (nil? (tperm/approval-pattern (:agent (deny-ev "bash")) "bash")))))))
+
+(deftest deny-outranks-the-tool-cache-test
+  ;; The one ordering difference from the approval gate. `tool-cache-lookup-pre`
+  ;; caches every tool once :tool-cache-ttl is positive and returns a :replace,
+  ;; which short-circuits the walk — so a deny BELOW it would hand back a
+  ;; previously-read result for a tool the operator denied.
+  (testing "the deny gate sits above the cache's priority"
+    (let [pri (->> (hooks/list-hooks :agent.tool-use/pre)
+                   (filter #(= ::tperm/tool-deny-gate (:id %)))
+                   first :priority)]
+      (is (= 95 pri))
+      (is (> pri 90) "above context-actions/tool-cache-lookup")))
+
+  (testing "and a cache hit at 90 does not get to serve a denied call"
+    (hooks/register-hook! :agent.tool-use/pre ::fake-cache
+                          (constantly {:result :replace :replacement {:cached "leaked"}
+                                       :by ::fake-cache :reason "cache hit"})
+                          :source :tperm-test :priority 90)
+    (let [d (with-redefs [config/resolve-permission-mode (constantly :auto-approve)]
+              (with-cfg {:tool-deny-tools ["read-file"]}
+                (fn [] (fire {:agent (agent-with nil) :tool-name "read-file"}))))]
+      (is (= ::tperm/tool-deny-gate (:by d))
+          "the deny must win, or a denied read serves the content it denied")
+      (is (nil? (get-in d [:replacement :cached]))))))
+
+(deftest deny-gate-registration-test
+  (testing "registered once, fail-closed, with a match predicate"
+    (tperm/install-tool-deny-gate!)
+    (let [hs (filter #(= ::tperm/tool-deny-gate (:id %))
+                     (hooks/list-hooks :agent.tool-use/pre))
+          h  (first hs)]
+      (is (= 1 (count hs)) "idempotent: register-hook! replaces on [event id]")
+      (is (= :throw (:on-error h))
+          "under the house :log default a crashing deny returns nil, which reads as an abstention")
+      (is (some? (:match h))))))
+
+(deftest deny-glob-shape-matches-the-other-keys-test
+  (with-cfg {:tool-deny-tools ["mcp$*" "config$apply"]}
+    (fn []
+      (let [ag (:agent (deny-ev "x"))]
+        (is (= "mcp$*"        (tperm/deny-pattern ag "mcp$linear$create_issue")))
+        (is (= "config$apply" (tperm/deny-pattern ag "config$apply")))
+        (is (nil? (tperm/deny-pattern ag "config$read")))
+        (is (nil? (tperm/deny-pattern ag "mcpx"))
+            "$ is quoted, not treated as an end-of-input anchor")))))
+
+(deftest deny-is-still-veto-only-test
+  ;; Every ordering claim in the namespace rests on an allow being an
+  ;; abstention. A deny gate that returned a positive allow would break it.
+  (with-cfg {:tool-deny-tools ["bash"]}
+    (fn []
+      (is (nil? (tperm/tool-deny-gate {:agent (agent-with nil) :tool-name "read-file"}))
+          "no match must abstain (nil), never license the call"))))
 
 ;; ============================================================================
 ;; check-permission is gone

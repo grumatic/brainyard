@@ -532,9 +532,9 @@
    {:title     "Tool permission gate"
     :family    :tools
     :gate      nil
-    :keys      [:tool-approval-patterns :tool-allow-tools]
+    :keys      [:tool-approval-patterns :tool-allow-tools :tool-deny-tools]
     :lifecycle :live
-    :doc       "Human approval for tools matching a glob, via :agent.tool-use/pre. Ungated: the empty pattern list IS the off state, and a separate :enable- boolean would describe what an empty vector already implies."}
+    :doc       "Human approval for tools matching a glob, via :agent.tool-use/pre, plus an unconditional deny that outranks every permission mode. Ungated: the empty pattern lists ARE the off state, and a separate :enable- boolean would describe what an empty vector already implies."}
 
    :tools/mcp
    {:title     "MCP tools"

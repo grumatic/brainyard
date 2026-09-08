@@ -241,6 +241,7 @@ A second hook, `::tool-permission-gate`, registered by the same module:
 |---|---|---|---|
 | `:tool-approval-patterns` | vector | `[]` | globs whose match needs approval |
 | `:tool-allow-tools` | vector | `[]` | globs that bypass approval (checked first) |
+| `:tool-deny-tools` | vector | `[]` | globs refused outright — see §3.2a |
 
 Both use the shared glob matcher, so `mcp$*`, `user$tool$*` and `*` mean the
 same thing they mean in `:script-bridge-tools`. **Ships empty**, so the gate is
@@ -272,6 +273,50 @@ license a call another gate refuses.
 All three orderings belong in a test; the third is the one a future
 refactor will break silently.
 
+### 3.2a The unconditional deny (`:tool-deny-tools`, as-built)
+
+`:tool-approval-patterns` asks a human, so every answer it can get is bounded
+by `[:permissions :mode]` — under `:auto-approve` the answer is always yes.
+That leaves no way to say "this tool does not run in this session, whatever the
+mode says", which is what an operator wants for a destructive or exfiltrating
+tool. `:tool-deny-tools` is that statement.
+
+It is a **separate hook**, `::tool-deny-gate`, rather than a third branch of
+`tool-permission-gate`, because it differs on both axes that define a gate:
+
+- **It never calls `gate-verdict`.** No permission mode overrides a deny, and
+  under `:ask-each-time` it does not prompt — a prompt is an offer to run, and
+  a denied tool is not on offer. Prompting for something no answer can permit
+  trains a user to answer without reading.
+- **Priority 95, ABOVE the tool-result cache at 90** — the one ordering that
+  differs from the approval gate, which sits *below* it on purpose. That
+  reasoning ("a prompt paid for nothing") inverts for a deny:
+  `tool-cache-lookup-pre` caches every tool once `:tool-cache-ttl` is positive
+  and returns a `:replace`, which short-circuits the walk. Measured live by
+  demoting the gate to 85 with a stand-in cache at 90: a denied `read-file`
+  came back with the cached content of an earlier read. At 95 it is refused.
+  The only thing a deny must outrank is anything that can **serve** a call; the
+  refusals above it (loop guard 100, memory write-guard 200) reach the same
+  outcome by another route.
+
+**`:tool-allow-tools` does not exempt from it.** That key carves narrow holes in
+`:tool-approval-patterns` only. A deny another key can undo is not a deny, and
+the reason to reach for this over an approval pattern is precisely that nothing
+local can talk it round. To allow something, narrow the glob.
+
+It remains veto-only: no match abstains, so it can only ever add a refusal —
+the property every ordering claim here rests on.
+
+**What it does not reach, measured rather than assumed.** Instrumenting
+`:agent.tool-use/pre` across a live turn in which `read-file` was denied
+recorded **zero events** while the model answered the question anyway with
+`sed -n '2p'` in a shell fence, having found the detour on its own. The gate's
+chokepoint is `dispatch-with-hooks`, which covers the LLM tool channel, sandbox
+callables (`(read-file :path …)` in a code block — verified firing), the `bash`
+**tool**, the script bridge and sub-agent dispatch. A ```bash **fence** is run
+by the code-eval channel and dispatches no tool at all. This is §4's "not a
+sandbox" stated as a measurement rather than a caution.
+
 ### 3.3 One prompt branch
 
 `make-permission-fn` gains a `:type :tool-use` arm beside `:mcp-tool`,
@@ -302,9 +347,11 @@ silently ungated one.
 
 ## 4. What this deliberately does not fix
 
-**It is not a sandbox.** An agent with a bash fence — script-agent, coact-agent
-— already runs arbitrary code as the user, and `~/.brainyard` is writable under
-the default seatbelt policy. A tool gate raises the cost of a *mistake* and
+**It is not a sandbox**, and §3.2a now says so with a measurement rather than
+an argument: a shell fence reaches the code-eval channel without dispatching a
+tool, so no gate on `:agent.tool-use/pre` ever sees it. An agent with a bash
+fence — script-agent, coact-agent — already runs arbitrary code as the user,
+and `~/.brainyard` is writable under the default seatbelt policy. A tool gate raises the cost of a *mistake* and
 makes the audit trail legible; it does not contain a determined process. The
 honest framing, carried over from `script-agent-design.md` §13: **blast radius
 and legibility, not a security boundary.** Anything stronger belongs in
