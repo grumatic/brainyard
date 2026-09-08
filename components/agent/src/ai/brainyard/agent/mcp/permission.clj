@@ -35,9 +35,9 @@
    result, so the model sees a clear denial and the turn continues (the MCP
    call never executes)."
   (:require
+   [ai.brainyard.agent.common.tool-permission :as tperm]
    [ai.brainyard.agent.core.config :as config]
    [ai.brainyard.agent.core.hooks :as hooks]
-   [ai.brainyard.agent.core.session :as session]
    [ai.brainyard.agent.core.tool :as tool]
    [ai.brainyard.agent.mcp.integration :as mcp-int]
    [clojure.string :as str]
@@ -46,16 +46,6 @@
 ;; ---------------------------------------------------------------------------
 ;; Classification
 ;; ---------------------------------------------------------------------------
-
-(defn- glob-match?
-  "Match a `server/tool` glob (only `*` is special — any run of chars) against
-   a concrete `server/tool` target string."
-  [glob target]
-  (let [parts (str/split (str glob) #"\*" -1)
-        re    (re-pattern (str "^"
-                               (str/join ".*" (map #(java.util.regex.Pattern/quote %) parts))
-                               "$"))]
-    (boolean (re-matches re (str target)))))
 
 (defn- registry-annotations
   "MCP annotations captured on the native binding's registry `:meta` at
@@ -83,7 +73,7 @@
   "True when `server/tool` matches any `:mcp-allow-tools` glob."
   [agent server tool]
   (let [globs (config/get-config agent :mcp-allow-tools)]
-    (boolean (some #(glob-match? % (str server "/" tool)) globs))))
+    (boolean (some #(tperm/glob-match? % (str server "/" tool)) globs))))
 
 (defn- needs-approval?
   "A target needs approval unless it is read-only-hinted or allowlisted."
@@ -125,23 +115,10 @@
 ;; Verdict
 ;; ---------------------------------------------------------------------------
 
-(defn- permission-fn [agent]
-  (some-> (:!session agent) deref (session/get-session-config :permission-fn)))
-
 (defn- target-display [targets]
   (if (= :unknown targets)
     "one or more MCP tools (unrecognized batch)"
     (str/join ", " (map (fn [{:keys [server tool]}] (str server "/" tool)) targets))))
-
-(defn- deny-replace [targets reason]
-  (let [display (target-display targets)]
-    {:result      :replace
-     :by          ::mcp-permission-gate
-     :reason      (str "MCP permission refused: " display " — " reason)
-     :replacement {:error (str "MCP tool call refused (permission): " display ". "
-                               reason ". "
-                               "To allow it: approve interactively, add a matching "
-                               ":mcp-allow-tools glob, or set [:permissions :mode] :auto-approve.")}}))
 
 (defn- mcp-request
   "Build the permission-fn request for an MCP approval prompt. The TUI's
@@ -157,20 +134,24 @@
 (defn- gate-verdict
   "Decide allow (nil) / refuse (:replace) for a set of approval-needing
    targets, honoring [:permissions :mode] (`:auto` resolved via
-   `resolve-permission-mode` — :auto-approve in a container, else prompt)."
+   `resolve-permission-mode` — :auto-approve in a container, else prompt).
+
+   The mode branching, the headless fail-closed rule and the refusal shape are
+   `tperm/gate-verdict`, shared with the general tool gate. What stays here is
+   the part that is actually about MCP: which targets need approval at all
+   (readOnlyHint, :mcp-allow-tools) and how a batch is displayed. The wording
+   is passed in rather than defaulted so it remains byte-identical to what it
+   was before the extraction."
   [agent targets]
-  (case (config/resolve-permission-mode agent)
-    :auto-approve    nil
-    :deny-by-default (deny-replace targets "permission mode is :deny-by-default")
-    ;; :ask-each-time (default) and anything else → prompt, fail-closed headless
-    (if-let [pfn (permission-fn agent)]
-      (let [resp (try (pfn (mcp-request targets))
-                      (catch Exception e
-                        {:denied true :reason (str "permission prompt error: " (ex-message e))}))]
-        (if (:allowed resp)
-          nil
-          (deny-replace targets (or (:reason resp) "denied by user"))))
-      (deny-replace targets "no interactive permission channel (headless)"))))
+  (tperm/gate-verdict
+   agent
+   {:by            ::mcp-permission-gate
+    :display       (target-display targets)
+    :reason-prefix "MCP permission refused"
+    :error-prefix  "MCP tool call refused (permission)"
+    :hint          (str "To allow it: approve interactively, add a matching "
+                        ":mcp-allow-tools glob, or set [:permissions :mode] :auto-approve.")
+    :request       (mcp-request targets)}))
 
 (defn mcp-permission-gate
   "`:agent.tool-use/pre` handler. Returns a `:replace` refusal for an

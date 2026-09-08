@@ -33,10 +33,11 @@
      a script DISCOVERS the set instead of paying an iteration to be refused.
 
      What the allowlist is NOT is a security boundary — this agent has a bash
-     fence, so it already runs arbitrary code as the user, and `call-tool`
-     runs no permission check worth the name (`core/tool`'s `permission-config`
-     is a hardcoded empty map and `:approval-required` is computed and
-     discarded). It is a BLAST-RADIUS and LEGIBILITY control, and that is why
+     fence, so it already runs arbitrary code as the user. A tool reached
+     through the bridge does pass the `:agent.tool-use/pre` gate like any
+     other dispatch (`common/tool_permission.clj`), but that gate is inert
+     until an operator writes a pattern. So this list is a BLAST-RADIUS and
+     LEGIBILITY control, and that is why
      `*` is a supported pattern while the `call-tool` TOOL stays off the
      default: both grant the same reach, but `*` leaves `::bridge-call`
      naming `config$apply`, where routing through `call-tool` makes every
@@ -54,7 +55,8 @@
      and a session dir nested under a deep project path blows that (the same
      trap `ask.sock` hit and had to add a fallback for). Naming the socket
      from a hash into `$TMPDIR` means there is no long case to fall back from."
-  (:require [ai.brainyard.agent.core.config :as config]
+  (:require [ai.brainyard.agent.common.tool-permission :as tperm]
+            [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :as tool]
@@ -127,28 +129,6 @@
       ;; named map — so record it rather than dropping it silently.
       :else (recur (rest all) (update acc :_positional (fnil conj []) a)))))
 
-(defn- glob->re
-  "`user$*` → `^\\Quser$\\E.*$`.
-
-   The literal segments are `Pattern/quote`d rather than escaped by hand, and
-   that is the whole reason this is not `tool/glob->regex`: EVERY registered
-   tool name contains `$`, which inside a regex is an end-of-input ANCHOR. The
-   naive `(str/replace pat \"*\" \".*\")` compiles `mcp$*` to `^mcp$.*$` —
-   a pattern that matches the empty-ish string and NOTHING that starts with
-   `mcp$`. It would fail open or closed depending on the tool, silently.
-
-   `*` spans `$` deliberately, so `user$*` covers `user$tool$create` and the
-   nested `user$tool$*` / `user$agent$*` forms are refinements rather than
-   additions."
-  [pat]
-  (re-pattern (str "^"
-                   (->> (str/split pat #"\*" -1)
-                        (map #(java.util.regex.Pattern/quote %))
-                        (str/join ".*"))
-                   "$")))
-
-(def ^:private glob->re* (memoize glob->re))
-
 (defn allow-patterns
   "The configured entries as pattern STRINGS. Keywords and strings both, since
    `:memory$recall` and `\"mcp$*\"` are the two natural ways to write one and a
@@ -167,7 +147,7 @@
    the list asked for that, and it is not an invitation to fall back to the
    registry."
   [cfg-snap ^String tool-name]
-  (boolean (some #(re-matches (glob->re* %) tool-name)
+  (boolean (some #(tperm/glob-match? % tool-name)
                  (allow-patterns cfg-snap))))
 
 (defn registry-tool-names
@@ -183,9 +163,8 @@
    Separate from `allowed?` so the display path can be tested without a
    registry, and so the gate never pays a registry read."
   [patterns candidates]
-  (let [res (mapv glob->re* patterns)]
-    (into [] (comp (filter (fn [c] (some #(re-matches % c) res))) (distinct))
-          (sort candidates))))
+  (into [] (comp (filter (fn [c] (some #(tperm/glob-match? % c) patterns))) (distinct))
+        (sort candidates)))
 
 (defn allowed-tools
   "The reachable set RESOLVED against the registry, as sorted name strings —

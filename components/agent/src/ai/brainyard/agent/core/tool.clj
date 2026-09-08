@@ -361,7 +361,7 @@
 ;; ============================================================================
 
 ;; Forward declarations for functions defined later in this file
-(declare tool-visible? resolve-agent-ref def->tool check-permission
+(declare tool-visible? resolve-agent-ref def->tool
          coerce-tool-args llm-args-transformer)
 
 ;; Lazy-resolved refs for deps that would create circular requires
@@ -743,8 +743,14 @@
 
    `tool-args` is normalized first (accepts the LLM standard
    `[{:name k :value v} ...]` form, the compact `[{k v}]` form, or an
-   already-flat map). Permission is checked before dispatch, and `*current-agent*`
-   is bound when `agent` is provided and not already current.
+   already-flat map). `*current-agent*` is bound when `agent` is provided and not
+   already current.
+
+   Permission is NOT checked here. It is enforced one level down by the
+   `:agent.tool-use/pre` decision hook that `dispatch-with-hooks` fires — see
+   `common/tool_permission.clj`. This docstring used to claim a check happened
+   before dispatch, which was true of a function that could not deny anything;
+   an auditor reading it stopped looking in the right place.
 
    Usage:
      ;; Simple Clojure caller — registry path
@@ -774,12 +780,8 @@
                          bound-fn :json
                          tool-def :malli
                          :else    nil)
-        permission     (check-permission tool-name)
         run (fn []
               (cond
-                (= permission :denied)
-                {:error-message "Tool execution denied by permission configuration."}
-
                 (nil? schema-format)
                 {:error-message (format "%s is not bound as a tool, the available tools: %s"
                                         tool-name (mapv :name tools))}
@@ -1144,23 +1146,19 @@
 ;; Permission Checking
 ;; ============================================================================
 
-(def permission-config {:approval []
-                        :deny []
-                        :allow []})
-
-(defn- match-items [items target]
-  (reduce (fn [acc item]
-            (if (re-find (re-pattern item) target)
-              (reduced true)
-              acc))
-          false items))
-
-(defn check-permission [tool-name]
-  (cond
-    (match-items (:approval permission-config) tool-name) :approval-required
-    (match-items (:deny permission-config) tool-name) :denied
-    (match-items (:allow permission-config) tool-name) :allowed
-    :else :allowed))
+;; `check-permission` lived here: a hardcoded `{:approval [] :deny [] :allow []}`
+;; consulted on every dispatch, whose every branch fell through to `:allowed`.
+;; It could not deny anything, and it was wrong twice in three lines — `re-find`
+;; matched a SUBSTRING (`:deny ["read"]` would have denied `read-file` and
+;; `spread-metrics`) and `re-pattern` on a raw tool name made `$` an
+;; end-of-input ANCHOR, so `:deny ["memory$recall"]` compiled to a pattern
+;; matching nothing. Both bugs are the evidence it was never exercised.
+;;
+;; Tool permission is enforced by the `:agent.tool-use/pre` decision hook,
+;; which `dispatch-with-hooks` fires below — the one chokepoint the LLM tool
+;; channel, the sandbox callables, the script bridge and sub-agent dispatch all
+;; share, and the only place with a prompt channel to ask a human through. See
+;; `common/tool_permission.clj` and `docs/design/tool-permission-gate-design.md`.
 
 ;; ============================================================================
 ;; Tool Use Control (Unified Visibility)
