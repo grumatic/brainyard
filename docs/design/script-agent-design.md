@@ -9,8 +9,8 @@
 > language gate and the registry-substrate gate), `core/config.clj`,
 > `core/feature.clj`, `core/context_budget.clj`, `common/router_agent.clj`,
 > `interface.clj`, and `by scripts` in the app project.
-> **Tests:** `components/agent/test/…/script_agent_test.clj` — 22 tests,
-> 202 assertions.
+> **Tests:** `components/agent/test/…/script_agent_test.clj` — 24 tests,
+> 242 assertions.
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`.
 > **Sibling of:** `react-agent` (the other single-action-channel agent — it
 > pins the *opposite* channel off).
@@ -151,7 +151,8 @@ script-agent         ✗         bash/py            ✓      directory      :ful
 ```
 
 `script-agent` is a **leaf**: it dispatches no sub-agents (§7.3), and the
-script bridge deliberately does not reopen that door. The
+script bridge does not reopen that door by default — only an operator writing
+a pattern that admits an agent-type tool does. The
 router may dispatch *to* it, and should, for anything whose natural expression
 is a shell pipeline or a small python program over local files — data munging,
 log triage, format conversion, repo-wide mechanical edits, build/CI probing.
@@ -637,7 +638,7 @@ and the point of shipping this is that the next hundred will be.
 | `:script-lib-dirs` | `[]` (derive) | override the roots, highest precedence first; builtin is always appended and cannot be removed |
 | `:script-index-limit` | `60` | max scripts rendered in either prompt rendering |
 | `:enable-script-bridge` | **`false`** | gate for `:exec/script-bridge` (requires `:exec/script-library`). The one knob that adds reach |
-| `:script-bridge-tools` | `[:memory$recall :memory$status :task$detail :task$cancel :task$wait]` | the `by-tool` allowlist. Not a filter over the registry; empty means the bridge answers nothing |
+| `:script-bridge-tools` | `[:memory$recall :memory$status :task$detail :task$cancel :task$wait :list-tools :get-tool-info]` | the `by-tool` allowlist — literal names or globs (`mcp$*`, `user$tool$*`, `*`). Empty means the bridge answers nothing |
 
 Feature flags: `:exec/script-library` and `:exec/script-bridge`, both in the
 `:exec` family, both `:session` lifecycle. `:code-langs` rides
@@ -788,6 +789,7 @@ is already "bind a socket, serve `(fn [req] response)`"), exports it as
 `BY_TOOL_SOCK` in the block environment, and ships a `by-tool` executable:
 
 ```bash
+by-tool --list                    # what THIS agent allows, one name per line
 by-tool 'memory$recall' --query "prompt cache zones"
 by-tool 'task$detail' --task-id t-17 --last-n 40
 ```
@@ -800,12 +802,47 @@ capability it has. Five decisions:
   design that adds REACH rather than persistence: everything else a script does,
   a bash fence could already do. A new privilege surface is opt-in or it is a
   surprise.
-- **`:script-bridge-tools` is an allowlist, not a filter.** Default is
-  `memory$recall`, `memory$status`, `task$detail`, `task$cancel`, `task$wait` —
-  the read/observe half of §7.1–7.2. Exposing `call-tool` wholesale would pass
-  the WRITE surface of every agent in the process (`edit-agent`, `write-file`,
-  `mcp$*`) through a door opened for memory recall. §7.3 (sub-agent dispatch)
-  stays closed.
+- **`:script-bridge-tools` is an allowlist of names or GLOBS.** Default is
+  `memory$recall`, `memory$status`, `task$detail`, `task$cancel`, `task$wait`
+  — the read/observe half of §7.1–7.2 — plus `list-tools` and `get-tool-info`,
+  since knowing what exists is not reach. An entry may be a family pattern:
+  `mcp$*`, `skill$*`, `user$*`, `user$tool$*`, `user$agent$*`, or `*` for the
+  whole registry. `*` spans `$`, so `user$*` covers `user$tool$create` and the
+  nested forms are refinements rather than additions. The gate matches a
+  **name**, not a resolved set, so a `user$tool$*` the agent authors
+  mid-session is callable at once — which is the only thing that makes a
+  family pattern worth writing.
+
+  > **The `$`-anchor trap.** Every registered tool name contains `$`, which in
+  > a regex is an end-of-input ANCHOR. The obvious `(str/replace pat "*" ".*")`
+  > compiles `mcp$*` to `^mcp$.*$` — a pattern matching nothing that starts
+  > with `mcp$`. Literal segments are therefore `Pattern/quote`d and only the
+  > `*`s become `.*`. Same class of silent-metachar bug as the OSC-8 width
+  > strip; it would have failed on the very first family pattern anyone wrote.
+
+  **What the allowlist is not is a security boundary.** This agent has a bash
+  fence — it already runs arbitrary code as the user, `~/.brainyard` is
+  writable under the default seatbelt policy, and `core/tool`'s
+  `check-permission` is inert (`permission-config` is a hardcoded empty map and
+  `:approval-required` is computed and discarded). It is a **blast-radius and
+  legibility** control. That is precisely why `*` is a supported *pattern*
+  while the `call-tool` *tool* stays off the default: they grant identical
+  reach, but under `*` the `::bridge-call` line still names `config$apply`,
+  whereas routing everything through `call-tool` makes every line read
+  `:tool "call-tool"` and the audit trail stops saying anything. Widening is
+  an operator's decision to make; blurring is nobody's. §7.3 (sub-agent
+  dispatch) stays closed by default and opens only if someone writes a pattern
+  that admits it.
+
+  Because the set is per agent and an operator can edit it, the
+  allowlist is also **discoverable**: `{:op :list}` / `by-tool --list` reports
+  it from the live config snapshot. Without that, a script's only way to learn
+  the set is a deliberately-failing call — an iteration spent, and an error in
+  the transcript, to ask a question the bridge can just answer. It prints one
+  name per line rather than the EDN frame every other call returns, because the
+  point of a list is to compose with `grep` and shell loops; and `--list` rides
+  the `# desc:` line, since that is the only part of the shim the `## Scripts`
+  section renders.
 - **Its own socket, not the session `ask.sock`** — that one is per-session,
   absent under `by ask`, and carries the *user's* turn queue. This one is per
   agent instance, so `memory$*` resolves the right identity, and a hook on

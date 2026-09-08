@@ -245,21 +245,55 @@ esac
 (def ^:private by-tool-body
   "#!/usr/bin/env python3
 # name: by-tool
-# desc: Call a brainyard tool (memory recall, task inspection). QUOTE the name: by-tool 'memory$recall'
-# usage: by-tool '<tool-name>' [--key value]...      QUOTE the name: $ is a
-#        bash sigil, so by-tool memory$status sends \"memory\".
+# desc: Call a brainyard tool; `by-tool --list` shows which are reachable. QUOTE the name: by-tool 'memory$recall'
+# usage: by-tool '<tool-name>' [--key value]...   |   by-tool --list
+#        QUOTE the name: $ is a bash sigil, so by-tool memory$status
+#        sends \"memory\".
 #
 # Python rather than bash because the transport is an AF_UNIX socket: `nc -U`
 # is not portable (busybox has no -U), while python3 is already required by
 # this agent's own `python` fence. Composing the request here also keeps the
 # quoting in one language instead of sed-escaping model-authored strings.
 import os
+import re
 import socket
 import sys
 
 
 def edn_str(s):
     return '\"' + s.replace(\"\\\\\", \"\\\\\\\\\").replace('\"', '\\\\\"') + '\"'
+
+
+def send_frame(sock, req):
+    \"\"\"Write one EDN frame, read one line back. Returns the response line, or
+    None having already written a diagnosis to stderr.\"\"\"
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(float(os.environ.get(\"BY_TOOL_TIMEOUT\", \"120\")))
+    try:
+        s.connect(sock)
+    except OSError as e:
+        sys.stderr.write(\"by-tool: cannot reach the agent at %s: %s\\n\" % (sock, e))
+        return None
+
+    try:
+        s.sendall((req + \"\\n\").encode(\"utf-8\"))
+        buf = b\"\"
+        while b\"\\n\" not in buf:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+    except OSError as e:
+        sys.stderr.write(\"by-tool: %s\\n\" % e)
+        return None
+    finally:
+        s.close()
+
+    line = buf.split(b\"\\n\", 1)[0].decode(\"utf-8\", \"replace\")
+    if not line:
+        sys.stderr.write(\"by-tool: no response from the agent\\n\")
+        return None
+    return line
 
 
 def main(argv):
@@ -273,40 +307,38 @@ def main(argv):
     if not argv or argv[0] in (\"-h\", \"--help\"):
         sys.stderr.write(
             \"usage: by-tool '<tool-name>' [--key value]...\\n\"
+            \"       by-tool --list        # what this agent allows, one per line\\n\"
             \"  QUOTE the tool name — $ is a variable sigil in bash:\\n\"
             \"  by-tool 'memory$recall' --query 'prompt cache zones'\\n\"
             \"  by-tool 'task$detail' --task-id t-17 --last-n 40\\n\")
         return 2
 
+    if argv[0] in (\"-l\", \"--list\"):
+        line = send_frame(sock, \"{:op :list}\")
+        if line is None:
+            return 4
+        if line.startswith(\"{:status :error\"):
+            sys.stderr.write(line + \"\\n\")
+            return 1
+        # ONE NAME PER LINE, not the EDN frame every other call prints: the
+        # point of --list is to compose with grep and shell loops. Pulled out
+        # by regex rather than parsed — the shim carries no EDN reader, and a
+        # tool name is keyword-shaped so it can contain no quote to confuse it.
+        names = re.findall(r'\"([^\"]*)\"', line)
+        for n in names:
+            print(n)
+        if not names:
+            sys.stderr.write(
+                \"by-tool: the allowlist is empty — this agent's bridge \"
+                \"answers nothing.\\n\")
+        return 0
+
     tool, args = argv[0], argv[1:]
     req = \"{:op :tool :tool %s :argv [%s]}\" % (
         edn_str(tool), \" \".join(edn_str(a) for a in args))
 
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(float(os.environ.get(\"BY_TOOL_TIMEOUT\", \"120\")))
-    try:
-        s.connect(sock)
-    except OSError as e:
-        sys.stderr.write(\"by-tool: cannot reach the agent at %s: %s\\n\" % (sock, e))
-        return 4
-
-    try:
-        s.sendall((req + \"\\n\").encode(\"utf-8\"))
-        buf = b\"\"
-        while b\"\\n\" not in buf:
-            chunk = s.recv(65536)
-            if not chunk:
-                break
-            buf += chunk
-    except OSError as e:
-        sys.stderr.write(\"by-tool: %s\\n\" % e)
-        return 4
-    finally:
-        s.close()
-
-    line = buf.split(b\"\\n\", 1)[0].decode(\"utf-8\", \"replace\")
-    if not line:
-        sys.stderr.write(\"by-tool: no response from the agent\\n\")
+    line = send_frame(sock, req)
+    if line is None:
         return 4
     print(line)
     return 1 if line.startswith(\"{:status :error\") else 0
@@ -646,28 +678,28 @@ if __name__ == \"__main__\":
    override."
   ([roots] (env-prologue roots nil))
   ([roots tool-sock]
-  (let [dir?     (fn [p] (.isDirectory ^File (io/file ^String p)))
-        existing (fn [k] (into [] (comp (map k) (filter dir?)) roots))
-        bins     (existing :bin)
-        libs     (existing :lib)
-        pairs    (->> roots
-                      (filter #(dir? (:bin %)))
-                      (map #(str (name (:scope %)) "=" (:root %))))
-        proj-bin (project-bin roots)]
-    (if (empty? bins)
-      ""
-      (str "PATH=\"" (str/join ":" (map sh-dq bins)) ":$PATH\" "
-           (when (seq libs)
-             (str "PYTHONPATH=\"" (str/join ":" (map sh-dq libs))
-                  "${PYTHONPATH:+:$PYTHONPATH}\" "))
-           "BY_SCRIPT_ROOTS=\"" (str/join ":" (map sh-dq pairs)) "\" "
-           (when proj-bin
-             (str "BY_SCRIPT_PROJECT_BIN=\"" (sh-dq proj-bin) "\" "))
+   (let [dir?     (fn [p] (.isDirectory ^File (io/file ^String p)))
+         existing (fn [k] (into [] (comp (map k) (filter dir?)) roots))
+         bins     (existing :bin)
+         libs     (existing :lib)
+         pairs    (->> roots
+                       (filter #(dir? (:bin %)))
+                       (map #(str (name (:scope %)) "=" (:root %))))
+         proj-bin (project-bin roots)]
+     (if (empty? bins)
+       ""
+       (str "PATH=\"" (str/join ":" (map sh-dq bins)) ":$PATH\" "
+            (when (seq libs)
+              (str "PYTHONPATH=\"" (str/join ":" (map sh-dq libs))
+                   "${PYTHONPATH:+:$PYTHONPATH}\" "))
+            "BY_SCRIPT_ROOTS=\"" (str/join ":" (map sh-dq pairs)) "\" "
+            (when proj-bin
+              (str "BY_SCRIPT_PROJECT_BIN=\"" (sh-dq proj-bin) "\" "))
            ;; The script bridge's socket, when this agent has one. Absent means
            ;; `by-tool` says the bridge is off rather than hanging on a path
            ;; nothing is listening at.
-           (when (seq tool-sock)
-             (str "BY_TOOL_SOCK=\"" (sh-dq tool-sock) "\" ")))))))
+            (when (seq tool-sock)
+              (str "BY_TOOL_SOCK=\"" (sh-dq tool-sock) "\" ")))))))
 
 (def ^:private interpreters
   "Tokens that take the real command as their next argument."

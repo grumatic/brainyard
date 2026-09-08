@@ -26,10 +26,22 @@
      it is a surprise.
 
    - **An ALLOWLIST, not the registry.** `:script-bridge-tools` names what is
-     reachable. Exposing `call-tool` wholesale would hand a script the write
-     surface of every agent in the process — `edit-agent`, `write-file`,
-     `mcp$*` — through a door opened for memory recall. The default set is the
-     read/observe half of what §7 said was lost.
+     reachable, as literal names or glob patterns (`mcp$*`, `user$tool$*`,
+     `*`). The default is the read/observe half of what §7 said was lost, plus
+     `list-tools`/`get-tool-info` — knowing what exists is not reach. `{:op
+     :list}` (`by-tool --list`) resolves the patterns against the registry, so
+     a script DISCOVERS the set instead of paying an iteration to be refused.
+
+     What the allowlist is NOT is a security boundary — this agent has a bash
+     fence, so it already runs arbitrary code as the user, and `call-tool`
+     runs no permission check worth the name (`core/tool`'s `permission-config`
+     is a hardcoded empty map and `:approval-required` is computed and
+     discarded). It is a BLAST-RADIUS and LEGIBILITY control, and that is why
+     `*` is a supported pattern while the `call-tool` TOOL stays off the
+     default: both grant the same reach, but `*` leaves `::bridge-call`
+     naming `config$apply`, where routing through `call-tool` makes every
+     line read `:tool \"call-tool\"` and the audit trail stops saying
+     anything. Widening is an operator's call; blurring is nobody's.
 
    - **Its OWN socket, not the session's `ask.sock`.** That one is per-session,
      exists only under the TUI (a `by ask` run has none), and carries the
@@ -115,12 +127,87 @@
       ;; named map — so record it rather than dropping it silently.
       :else (recur (rest all) (update acc :_positional (fnil conj []) a)))))
 
-(defn allowed-tools
-  "The reachable set, as keywords. Empty means the bridge answers nothing,
-   which is what an operator who enabled the gate but cleared the list asked
-   for — not an invitation to fall back to the whole registry."
+(defn- glob->re
+  "`user$*` → `^\\Quser$\\E.*$`.
+
+   The literal segments are `Pattern/quote`d rather than escaped by hand, and
+   that is the whole reason this is not `tool/glob->regex`: EVERY registered
+   tool name contains `$`, which inside a regex is an end-of-input ANCHOR. The
+   naive `(str/replace pat \"*\" \".*\")` compiles `mcp$*` to `^mcp$.*$` —
+   a pattern that matches the empty-ish string and NOTHING that starts with
+   `mcp$`. It would fail open or closed depending on the tool, silently.
+
+   `*` spans `$` deliberately, so `user$*` covers `user$tool$create` and the
+   nested `user$tool$*` / `user$agent$*` forms are refinements rather than
+   additions."
+  [pat]
+  (re-pattern (str "^"
+                   (->> (str/split pat #"\*" -1)
+                        (map #(java.util.regex.Pattern/quote %))
+                        (str/join ".*"))
+                   "$")))
+
+(def ^:private glob->re* (memoize glob->re))
+
+(defn allow-patterns
+  "The configured entries as pattern STRINGS. Keywords and strings both, since
+   `:memory$recall` and `\"mcp$*\"` are the two natural ways to write one and a
+   config file that mixes them should not half-work."
   [cfg-snap]
-  (into #{} (map keyword) (or (get cfg-snap :script-bridge-tools) [])))
+  (into [] (map #(if (keyword? %) (name %) (str %)))
+        (or (get cfg-snap :script-bridge-tools) [])))
+
+(defn allowed?
+  "The GATE. Matches a name against the patterns directly, never against a
+   resolved set — so a tool registered mid-session (a `user$tool$*` the agent
+   just authored) is reachable immediately, which is the only thing that makes
+   a family pattern worth writing.
+
+   Empty patterns deny everything: an operator who enabled the gate and cleared
+   the list asked for that, and it is not an invitation to fall back to the
+   registry."
+  [cfg-snap ^String tool-name]
+  (boolean (some #(re-matches (glob->re* %) tool-name)
+                 (allow-patterns cfg-snap))))
+
+(defn registry-tool-names
+  "Every registered tool name, sorted. Includes ones hidden from agent rosters
+   (`call-tool` is `:visibility :hidden`): `tool-use-control` governs what a
+   PROMPT advertises to an LLM, which is a different question from what an
+   operator's `*` reaches."
+  []
+  (sort (map name (keys (tool/get-tool-defs)))))
+
+(defn match-names
+  "Pure: which of `candidates` any pattern admits, sorted and distinct.
+   Separate from `allowed?` so the display path can be tested without a
+   registry, and so the gate never pays a registry read."
+  [patterns candidates]
+  (let [res (mapv glob->re* patterns)]
+    (into [] (comp (filter (fn [c] (some #(re-matches % c) res))) (distinct))
+          (sort candidates))))
+
+(defn allowed-tools
+  "The reachable set RESOLVED against the registry, as sorted name strings —
+   what `--list` prints and what a denial names. Distinct from `allowed?`,
+   which answers about one name: with `user$*` configured the two can disagree
+   about a tool that is not registered yet, and each is right for its job."
+  [cfg-snap]
+  (match-names (allow-patterns cfg-snap) (registry-tool-names)))
+
+(def ^:private max-listed
+  "How many names an ERROR may carry. `--list` is unbounded — it was asked for.
+   A denial under `*` would otherwise paste 300+ names into a turn."
+  20)
+
+(defn- brief-list
+  [names]
+  (cond
+    (empty? names)               ""
+    (<= (count names) max-listed) (str/join ", " names)
+    :else (str (str/join ", " (take max-listed names))
+               ", …and " (- (count names) max-listed)
+               " more — run `by-tool --list`")))
 
 (defn- shell-ate-the-dollar-hint
   "Every registered tool name contains a `$`, and in an unquoted bash word
@@ -134,16 +221,17 @@
    self-correcting one, which is the difference between costing an iteration
    and costing a turn."
   [requested allow]
-  (let [cands (filter #(str/starts-with? (name %) (str requested "$")) allow)]
+  (let [cands (take 4 (filter #(str/starts-with? % (str requested "$")) allow))]
     (when (and (not (str/includes? requested "$")) (seq cands))
       (str "\n\nNOTE: `$` is a variable sigil in bash and was almost certainly "
            "eaten before by-tool saw it. QUOTE the tool name: "
-           (str/join " or " (map #(str "by-tool '" (name %) "'") (sort cands)))))))
+           (str/join " or " (map #(str "by-tool '" % "'") cands))))))
 
 (defn handle-req
   "Serve one frame. Ops:
 
      {:op :tool  :tool \"memory$recall\" :argv [\"--query\" \"x\"]}
+     {:op :list}
      {:op :ping}
 
    Errors are VALUES with a `:status`, never thrown — the caller is a shell
@@ -155,17 +243,43 @@
       (case (:op req)
         :ping {:status :ok :agent (str (proto/agent-id agent))}
 
+        ;; Discovery is an OP rather than a line in the shim's `--help`, for the
+        ;; same reason the allowlist is config: the set is per agent and an
+        ;; operator can edit it, so anything baked into the shim is a claim
+        ;; about the defaults rather than an answer about THIS agent. Without
+        ;; it a script's only way to learn the set is a deliberately-failing
+        ;; call, which costs an iteration and reads as an error in the
+        ;; transcript.
+        :list {:status :ok
+               :tools  (vec (allowed-tools cfg))}
+
         :tool
-        (let [tname (keyword (str (:tool req)))
-              allow (allowed-tools cfg)]
-          (if-not (contains? allow tname)
+        (let [tname (str (:tool req))]
+          (cond
+            (not (allowed? cfg tname))
             {:status :error
-             :error  (str "tool `" (name tname) "` is not on the script-bridge "
+             :error  (str "tool `" tname "` is not on the script-bridge "
                           "allowlist. Allowed: "
-                          (str/join ", " (sort (map name allow)))
-                          (shell-ate-the-dollar-hint (name tname) allow))}
+                          (brief-list (allowed-tools cfg))
+                          (shell-ate-the-dollar-hint tname (allowed-tools cfg)))}
+
+            ;; A pattern authorizes a NAME, so `*` happily admits `memory` —
+            ;; the shell-mangled form of `memory$status`. Before the wildcard
+            ;; existed the allowlist refused that by accident and the sigil
+            ;; hint fired on the denial; now the same mistake reaches dispatch
+            ;; and would come back as a bare "not registered". So the
+            ;; membership check is its own step, and carries the same hint.
+            (nil? (tool/get-tool-defs :id (keyword tname)))
+            {:status :error
+             :error  (str "tool `" tname "` is not registered."
+                          (shell-ate-the-dollar-hint tname (allowed-tools cfg)))}
+
+            :else
             (let [args (argv->args (:argv req))
-                  r    (tool/call-tool tname args :agent agent)]
+                  r    (tool/call-tool (keyword tname) args :agent agent)]
+              ;; The real tool name, never a `call-tool` indirection: the
+              ;; allowlist doubles as this log's vocabulary, and a wildcard
+              ;; widens what may be called without blurring what WAS.
               (mulog/log ::bridge-call :tool tname :args (keys args))
               (if (and (map? r) (:error-message r))
                 {:status :error :error (:error-message r)}

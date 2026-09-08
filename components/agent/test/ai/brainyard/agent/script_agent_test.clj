@@ -29,6 +29,7 @@
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.context-budget :as cb]
             [ai.brainyard.agent.core.context.section-assembler :as sa]
+            [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :as tool])
   (:import [java.io File]))
 
@@ -609,7 +610,7 @@
 
 (deftest script-bridge-allowlist-and-parsing-test
   (let [bridge (requiring-resolve 'ai.brainyard.agent.common.script-bridge/argv->args)
-        allow  (requiring-resolve 'ai.brainyard.agent.common.script-bridge/allowed-tools)]
+        allow? (requiring-resolve 'ai.brainyard.agent.common.script-bridge/allowed?)]
 
     (testing "argv is parsed SERVER-side into a tool-args map"
       ;; The alternative is the shim composing EDN in bash, which means quoting
@@ -628,12 +629,19 @@
       ;; read-string here would make an argument executable.
       (is (= {:q "(System/exit 1)"} (bridge ["--q" "(System/exit 1)"]))))
 
-    (testing "the allowlist is a set, and an empty one denies everything"
-      (is (= #{:memory$recall :task$detail}
-             (allow {:script-bridge-tools [:memory$recall "task$detail"]})))
-      (is (= #{} (allow {:script-bridge-tools []})))
-      (is (= #{} (allow {}))
+    (testing "keywords and strings are both patterns, and empty denies everything"
+      (is (true?  (allow? {:script-bridge-tools [:memory$recall "task$detail"]} "task$detail")))
+      (is (true?  (allow? {:script-bridge-tools [:memory$recall "task$detail"]} "memory$recall")))
+      (is (false? (allow? {:script-bridge-tools []} "memory$recall")))
+      (is (false? (allow? {} "memory$recall"))
           "no configured list is not an invitation to expose the registry"))
+
+    (testing "a literal entry matches the WHOLE name, never a prefix"
+      (let [c {:script-bridge-tools [:memory$recall]}]
+        (is (true?  (allow? c "memory$recall")))
+        (is (false? (allow? c "memory$recall-all")))
+        (is (false? (allow? c "xmemory$recall")))
+        (is (false? (allow? c "memory$status")))))
 
     (testing "the default allowlist is read/observe only"
       ;; The whole safety argument: this door was opened for memory recall, and
@@ -641,11 +649,122 @@
       (let [d (set (get-in config/config-schema [:script-bridge-tools :default]))]
         (is (contains? d :memory$recall))
         (is (contains? d :task$detail))
-        (doseq [t [:write-file :update-file :edit-agent :bash :mcp$call]]
-          (is (not (contains? d t)) (str t " must not be reachable by default")))))
+        (is (contains? d :list-tools))
+        (is (contains? d :get-tool-info))
+        (doseq [t [:write-file :update-file :edit-agent :bash :mcp$call :call-tool]]
+          (is (not (contains? d t)) (str t " must not be reachable by default")))
+        (is (not-any? #(str/includes? (name %) "*") d)
+            "no wildcard ships in the default — widening is an operator's call")))
 
     (testing "the bridge is OFF by default — it adds reach, unlike the rest"
       (is (false? (get-in config/config-schema [:enable-script-bridge :default]))))))
+
+(deftest script-bridge-glob-patterns-test
+  (let [allow? (requiring-resolve 'ai.brainyard.agent.common.script-bridge/allowed?)
+        match  (requiring-resolve 'ai.brainyard.agent.common.script-bridge/match-names)
+        names  ["memory$recall" "memory$status" "mcp$tools" "mcp$server"
+                "mcp$clickhouse$run_query" "skill$pdf" "user$tool$shout"
+                "user$agent$scout" "list-tools" "call-tool" "write-file"]]
+
+    (testing "$ is an ANCHOR in a regex — the trap a naive glob falls into"
+      ;; (str/replace "mcp$*" "*" ".*") compiles to ^mcp$.*$, which matches
+      ;; NOTHING that starts with mcp$. Every registered tool name contains a
+      ;; $, so this would have failed on the very first family pattern.
+      (is (= ["mcp$clickhouse$run_query" "mcp$server" "mcp$tools"]
+             (match ["mcp$*"] names)))
+      (is (true? (allow? {:script-bridge-tools ["mcp$*"]} "mcp$tools")))
+      (is (false? (allow? {:script-bridge-tools ["mcp$*"]} "memory$recall"))))
+
+    (testing "* spans $, so a family pattern nests"
+      (is (= ["user$agent$scout" "user$tool$shout"] (match ["user$*"] names)))
+      (is (= ["user$tool$shout"]  (match ["user$tool$*"] names)))
+      (is (= ["user$agent$scout"] (match ["user$agent$*"] names)))
+      (is (every? (set (match ["user$*"] names)) (match ["user$tool$*"] names))
+          "user$* must cover user$tool$* — the nested forms are refinements"))
+
+    (testing "\"*\" is the whole registry, including tools hidden from rosters"
+      ;; :tool-use-control governs what a PROMPT advertises to an LLM; an
+      ;; operator's * is a different question, and answering it "all but the
+      ;; hidden ones" would make * mean something nobody wrote down.
+      (is (= (sort names) (match ["*"] names)))
+      (is (true? (allow? {:script-bridge-tools ["*"]} "call-tool"))))
+
+    (testing "patterns union, and a non-matching one contributes nothing"
+      (is (= ["mcp$server" "mcp$tools" "user$tool$shout"]
+             (match ["mcp$tools" "mcp$server" "user$tool$*" "nope$*"] names)))
+      (is (= [] (match ["nope$*"] names)))
+      (is (= [] (match [] names))))
+
+    (testing "the gate matches a NAME, not the resolved set"
+      ;; This is what makes a family pattern worth writing: a user$tool$* the
+      ;; agent authors mid-session must be callable without a config reload.
+      (is (true? (allow? {:script-bridge-tools ["user$tool$*"]}
+                         "user$tool$not-registered-yet"))))
+
+    (testing "a name is never treated as a regex"
+      (is (false? (allow? {:script-bridge-tools ["memory.recall"]} "memory$recall"))
+          ". must be literal, or a typo silently widens the gate"))))
+
+(defrecord StubBridgeAgent [!state]
+  proto/IAgent
+  (agent-id [_] :script-agent/stub))
+
+(deftest script-bridge-list-op-test
+  (let [handle (requiring-resolve 'ai.brainyard.agent.common.script-bridge/handle-req)
+        reg-v  (requiring-resolve 'ai.brainyard.agent.common.script-bridge/registry-tool-names)
+        stub   (->StubBridgeAgent (atom {}))
+        ;; The registry is pinned so the assertions describe the OP rather than
+        ;; whichever bricks a given JVM happened to load.
+        names  ["memory$recall" "memory$status" "task$detail" "task$cancel"
+                "task$wait" "list-tools" "get-tool-info" "write-file"
+                "mcp$tools" "user$tool$shout"]
+        ask    (fn [cfg req]
+                 (with-redefs-fn {reg-v (constantly names)}
+                   #(with-redefs [config/get-config-snapshot (constantly cfg)]
+                      (handle stub req))))]
+
+    (testing ":list reports the allowlist as names, sorted"
+      ;; Discovery has to be an OP, not a line in the shim's --help: the set is
+      ;; per agent and an operator can edit it, so anything baked into the shim
+      ;; answers about the defaults rather than about THIS agent.
+      (is (= {:status :ok :tools ["memory$recall" "task$detail"]}
+             (ask {:script-bridge-tools [:task$detail :memory$recall]}
+                  {:op :list}))))
+
+    (testing ":list answers for the LIVE config, so it tracks an edited set"
+      (is (= ["memory$status"]
+             (:tools (ask {:script-bridge-tools [:memory$status]} {:op :list})))))
+
+    (testing ":list RESOLVES patterns — that is what makes a wildcard usable"
+      ;; Printing the pattern back would answer a question nobody asked: a
+      ;; script wants the names it may call, not the glob an operator typed.
+      (is (= ["mcp$tools" "user$tool$shout"]
+             (:tools (ask {:script-bridge-tools ["mcp$*" "user$*"]} {:op :list}))))
+      (is (= (sort names) (:tools (ask {:script-bridge-tools ["*"]} {:op :list})))))
+
+    (testing "an empty allowlist lists nothing — it does not fall back"
+      (is (= {:status :ok :tools []} (ask {:script-bridge-tools []} {:op :list})))
+      (is (= {:status :ok :tools []} (ask {} {:op :list}))))
+
+    (testing ":list is discovery only — it can never invoke"
+      ;; The whole point of a read-only op is that reaching it costs nothing.
+      ;; If it ever grew an argv it would be a second call path past the gate.
+      (is (= #{:status :tools} (set (keys (ask {:script-bridge-tools ["*"]}
+                                               {:op :list :tool "write-file"
+                                                :argv ["--path" "/tmp/x"]}))))))
+
+    (testing "a denial names the resolved set, and the $-hint still fires"
+      (let [e (:error (ask {:script-bridge-tools ["memory$*"]}
+                           {:op :tool :tool "write-file" :argv []}))]
+        (is (str/includes? e "not on the script-bridge allowlist"))
+        (is (str/includes? e "memory$recall")))
+      (let [e (:error (ask {:script-bridge-tools ["memory$*"]}
+                           {:op :tool :tool "memory" :argv []}))]
+        (is (str/includes? e "variable sigil")
+            "the shell ate the $; the refusal has to say so")))
+
+    (testing "an unknown op is still refused"
+      (is (= :error (:status (ask {} {:op :lst})))))))
 
 (deftest bridge-shim-ships-only-when-enabled-test
   (let [d (tmp-dir! "bridge-pack")]
@@ -669,7 +788,16 @@
             (is (re-find #"(?m)^# desc:.*QUOTE the name" body))
             (is (str/starts-with? body "#!/usr/bin/env python3")
                 "python3, not bash: `nc -U` is not portable and this agent
-                 already requires python3 for its own fence"))))
+                 already requires python3 for its own fence")))
+
+        (testing "--list is advertised where the prompt can see it"
+          ;; The `# desc:` line is the only part of the shim the `## Scripts`
+          ;; section renders, so a discovery flag documented solely in --help
+          ;; is a flag the model never learns about.
+          (let [body (get scripts/bridge-scripts "by-tool")]
+            (is (re-find #"(?m)^# desc:.*--list" body))
+            (is (re-find #"\{:op :list\}" body)
+                "and it must actually send the op the bridge serves"))))
       (finally (delete-tree! d)))))
 
 (deftest builtin-pack-is-well-formed-test
