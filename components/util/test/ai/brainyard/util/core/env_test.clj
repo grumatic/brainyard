@@ -195,3 +195,87 @@
       (with-dotenv ["BY_TEST_REG" nil ""]
         (fn [] (is (= #{"BY_TEST_REG"} (env/dotenv-keys))
                    "nil and empty entries are dropped rather than stored"))))))
+
+;; ============================================================================
+;; apply-policy! — Phase 3 scoping
+;;
+;; Pure map surgery here; `agent/core/proc_test.clj` proves it reaches a real
+;; subprocess. The properties worth pinning are the ones a misconfiguration
+;; would silently invert: that the default does nothing, that a deny cannot be
+;; talked round, and that an allowlist does not cost the child its PATH.
+;; ============================================================================
+
+(defn- pb-env
+  "A fresh java.util.Map seeded with `m`, standing in for (.environment pb)."
+  [m]
+  (let [jm (java.util.HashMap.)]
+    (doseq [[k v] m] (.put jm k v))
+    jm))
+
+(defn- policied [seed policy]
+  (with-dotenv []
+    (fn [] (into {} (env/apply-policy! (pb-env seed) policy)))))
+
+(deftest an-empty-policy-changes-nothing
+  ;; Ships inert: the shape of the default policy must leave the child's
+  ;; environment exactly as the .env layer alone would.
+  (let [seed {"PATH" "/bin" "SECRET" "sk-1" "OTHER" "x"}]
+    (is (= seed (policied seed {})))
+    (is (= seed (policied seed {:allow nil :deny [] :vars {}})))))
+
+(deftest env-deny-removes-unconditionally
+  (is (= {"PATH" "/bin"}
+         (policied {"PATH" "/bin" "AWS_PROFILE" "p" "AWS_REGION" "r"}
+                   {:deny ["AWS_*"]})))
+  (testing "and it outranks :env-vars declaring the same name — a deny another key can talk round is not a deny"
+    (is (= {"PATH" "/bin"}
+           (policied {"PATH" "/bin"} {:deny ["TOKEN"] :vars {"TOKEN" "sk-1"}}))))
+  (testing "and it outranks :env-allow admitting the same name"
+    (is (= {"PATH" "/bin"}
+           (policied {"PATH" "/bin" "TOKEN" "sk-1"}
+                     {:allow ["TOKEN"] :deny ["TOKEN"]})))))
+
+(deftest env-deny-can-remove-an-infrastructure-var
+  ;; The floor is a convenience for :env-allow, not a protected set. A deny is
+  ;; the escape hatch for anyone who really means it.
+  (is (= {} (policied {"PATH" "/bin"} {:deny ["PATH"]}))))
+
+(deftest env-vars-sets-and-overrides
+  (is (= {"PATH" "/bin" "ENDPOINT" "https://staging"}
+         (policied {"PATH" "/bin"} {:vars {"ENDPOINT" "https://staging"}})))
+  (testing "over an inherited value"
+    (is (= {"ENDPOINT" "new"} (policied {"ENDPOINT" "old"} {:vars {"ENDPOINT" "new"}}))))
+  (testing "keyword keys and non-string values are coerced"
+    (is (= {"N" "42"} (policied {} {:vars {:N 42}})))))
+
+(deftest env-allow-narrows-but-keeps-the-infrastructure-floor
+  ;; Without the floor the first `:env-allow ["GITHUB_TOKEN"]` produces a child
+  ;; with no PATH, every shell command failing, and no clue why — a trap, not a
+  ;; policy.
+  (let [out (policied {"PATH" "/bin" "HOME" "/h" "TERM" "xterm"
+                       "GITHUB_TOKEN" "ghp" "UNRELATED" "x"}
+                      {:allow ["GITHUB_TOKEN"]})]
+    (is (= "ghp" (get out "GITHUB_TOKEN")))
+    (is (= "/bin" (get out "PATH")) "PATH survives without being listed")
+    (is (= "/h" (get out "HOME")))
+    (is (= "xterm" (get out "TERM")))
+    (is (not (contains? out "UNRELATED")))))
+
+(deftest env-allow-admits-what-env-vars-declared
+  ;; The operator just named it; making them list it twice is bureaucracy.
+  (is (= "v" (get (policied {} {:allow ["NOTHING"] :vars {"DECLARED" "v"}}) "DECLARED"))))
+
+(deftest an-empty-allow-vector-is-not-an-allowlist
+  ;; nil and [] both mean "no opinion". An empty vector reading as "allow
+  ;; nothing" would make a half-written config strip every variable.
+  (let [seed {"PATH" "/bin" "OTHER" "x"}]
+    (is (= seed (policied seed {:allow []})))))
+
+(deftest the-policy-adds-the-dotenv-layer-too
+  (with-props {"BY_TEST_POLICY_TOKEN" "from-dotenv"}
+    (fn []
+      (with-dotenv ["BY_TEST_POLICY_TOKEN"]
+        (fn []
+          (is (= "from-dotenv"
+                 (get (into {} (env/apply-policy! (pb-env {"PATH" "/bin"}) {}))
+                      "BY_TEST_POLICY_TOKEN"))))))))

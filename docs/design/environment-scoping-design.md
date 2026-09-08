@@ -1,12 +1,13 @@
 # Environment Scoping — One Resolver, Three Scopes, and the Difference Between a Knob and a Secret
 
-> **Status: PHASES 0–2 SHIPPED; §3.3 onward is still a PROPOSAL.** §1 is
-> measured against the tree as it was; §3 is the design; §7 phases it and marks
-> what has landed. Phase 0 built the resolver and collapsed the private copies
-> (§3.1a); Phase 1 routed the 69 `:env-fn` entries through it and reconciled the
-> two `.env` loaders' control flags (§3.6a); Phase 2 gave spawned children the
-> `.env` layer (§3.5a). None added a config key or any scoping — together they
-> closed every defect §1.2 measured plus the child-process asymmetry behind it.
+> **Status: PHASES 0–3 SHIPPED.** §1 is measured against the tree as it was;
+> §3 is the design; §7 phases it and marks what has landed. Phases 0–2 added no
+> config key and no scoping, and closed every defect §1.2 measured plus the
+> child-process asymmetry behind it (§3.1a, §3.6a, §3.5a). Phase 3 is the
+> feature as asked: `:env-allow` / `:env-deny` / `:env-vars` at global and agent
+> scope (§3.3a). All three ship inert. Phase 4 (tool scope, `--web`/`--sandbox`
+> children, dispatch-time scoping) remains a proposal, as does open question 5
+> in §5.
 >
 > **Problem in one line:** brainyard has three unrelated things called
 > "environment" — `BY_*` config knobs, third-party credentials, and the
@@ -343,6 +344,70 @@ can undo is not a deny.
 **All three ship inert.** `:env-allow nil` means no filtering, so an untouched
 install builds exactly the child environment it builds today.
 
+### 3.3a Phase 3, as built
+
+The three keys land as `config-schema` entries, so they inherit the whole
+precedence chain for free and a per-agent `:config-extra` scopes one specialist
+with no new plumbing — §3.4's claim, confirmed. `config/env-policy` resolves
+them into `{:allow :deny :vars}`, and `util/apply-policy!` is the single
+function that shapes a `ProcessBuilder`'s environment map. Four spawn sites call
+it: `proc/apply-env!` (which covers all five shell paths at once), MCP, the
+`aws` CLI, and — via `resolve-var` — ACP's `copy-env`.
+
+**The scope comes from `proto/*current-agent*`, not an argument**, for the same
+reason Phase 2 rejected an argument for the `.env` layer: a scope passed in is a
+scope the next spawn site forgets. That var is already bound around every tool
+dispatch, which is where a shell command comes from; unbound, it resolves the
+global layer, which is the right answer for a spawn belonging to no agent. Both
+cases are tested.
+
+**The glob matcher moved to `util`.** `:env-allow` and `:env-deny` are its fifth
+and sixth callers and sit below the agent component, so they could not reach the
+copy in `common/tool_permission.clj`. It is now `util/core/glob.clj`, with
+`tool-permission` keeping var-capturing aliases so a `with-redefs` in either
+place still works, and its suite passes untouched.
+
+Two decisions §3.3 left open, both settled by asking what a misconfiguration
+does:
+
+- **An `:env-allow` never has to list infrastructure.** `PATH`, `HOME`,
+  `TMPDIR`, `SHELL`, `USER`, `LANG`, `TERM` and friends survive unless
+  explicitly denied. An allowlist is a statement about secrets and
+  configuration, not about whether a process can find `/bin/sh`; without the
+  floor, the first `:env-allow ["GITHUB_TOKEN"]` yields a child with no `PATH`,
+  every shell command failing, and no diagnosis. ACP's `:forward-env` lists
+  `PATH` and `HOME` by hand, which is reasonable for one backend and not
+  reasonable to ask of a key that applies to every child. `:env-deny` still
+  removes them — a deny is unconditional, and that is the escape hatch for
+  anyone who means it.
+- **`:env-vars` names are admitted past `:env-allow`, but not past
+  `:env-deny`.** The operator just named them in the same config; making them
+  list each one twice is bureaucracy. Deny still wins, because a deny another
+  key can talk round is not a deny — the rule `:tool-deny-tools` settled.
+
+Order inside `apply-policy!`, and each step is a decision: the `.env` layer,
+then `:env-vars`, then `:env-deny` REMOVES, then `:env-allow` removes what it
+does not admit. Deny runs before allow so that a name surviving both is one the
+operator admitted and did not deny.
+
+**`nil` and `[]` both mean "no opinion" for `:env-allow`.** An empty vector
+reading as "allow nothing" would make a half-written config strip every
+variable from every child — the loudest possible failure for the quietest
+possible edit.
+
+**Secrets stay out by relying on machinery that already exists**, not new
+machinery: `config$apply`'s `secret-scan` refuses a write whose value looks like
+a credential, and `:env-vars` is a value-bearing key in a file committed at
+`:project` scope. That reliance is now asserted rather than assumed —
+`env-vars-with-a-secret-value-is-refused` drives `sk-…`, `AKIA…` and `ghp_…`
+through `config$apply` and checks for `:stage :secret-detected`, plus a
+non-secret value that is accepted.
+
+**Tests:** `util/…/env_test.clj` 23 tests / 51 assertions; `agent/…/core/proc_test.clj`
+11 tests, which spawn real processes and include the one that matters most —
+two agents, same spawn site, different environments. Feature ledger moves to 49
+capability features / 110 knobs / 187 config keys.
+
 ### 3.4 The three scopes, and how each is declared
 
 | scope | declared in | holds |
@@ -650,7 +715,7 @@ the next.
 | **0** ✅ | `env/resolve` + collapse the `env-or-prop` copies. No new config keys. **Shipped — see §3.1a.** | `/login` and the `/model` picker stop lying about `.env`-supplied keys. |
 | **1** ✅ | Route `schema-env-value` through it; reconcile `dotenv.clj`'s control flags; fix `resolve-project-dir`. **Shipped — see §3.6a.** | §1.2(a)(b)(c)(d) all close. `BY_*` knobs in `.env` work everywhere. |
 | **2** ✅ | `env/child-env` + `proc/shell-pb` applies it + MCP, the `aws` CLI and ACP's forward-env. Still no config keys. **Shipped — see §3.5a.** | A `.env` `GH_TOKEN` reaches `gh` on the direct-binary path. |
-| **3** | `:env-allow` / `:env-deny` / `:env-vars` at global + agent scope. | The feature as asked. |
+| **3** ✅ | `:env-allow` / `:env-deny` / `:env-vars` at global + agent scope. **Shipped — see §3.3a.** | The feature as asked. |
 | **4** | Tool scope (pending Q2); `--web` / `--sandbox` `:child-env`; dispatch-time scoping for sub-agents, mirroring the work tier. | |
 
 Phases 0–2 are strictly bug-fixing and consolidation — they add no surface and

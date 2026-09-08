@@ -49,7 +49,8 @@
    This lives in `util` because it has no dependencies of its own and every
    layer needs it — the app, the base, and four components each grew a private
    copy of these five lines before it existed."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [ai.brainyard.util.core.glob :as glob]))
 
 (defn- not-blank [v] (when-not (str/blank? v) v))
 
@@ -162,3 +163,75 @@
   "True when any of `ks` resolves to a non-blank value."
   [ks]
   (some? (resolve-first ks)))
+
+
+;; ============================================================================
+;; Scoping policy — docs/design/environment-scoping-design.md §3.3
+;; ============================================================================
+
+(def infrastructure-vars
+  "Names an `:env-allow` never has to list.
+
+   An allowlist is a statement about SECRETS AND CONFIGURATION, not about
+   whether a process can find `/bin/sh`. Without this floor the first person to
+   write `:env-allow [\"GITHUB_TOKEN\"]` gets a child with no `PATH`, every
+   shell command failing, and no clue why — a trap, not a policy. ACP's
+   `:forward-env` lists `PATH` and `HOME` by hand for exactly this reason; a
+   key that applies to EVERY child cannot ask that of everyone.
+
+   `:env-deny` still removes them, because a deny is unconditional. That is the
+   escape hatch for anyone who really means it."
+  #{"PATH" "HOME" "TMPDIR" "TMP" "TEMP" "SHELL" "USER" "LOGNAME"
+    "LANG" "LC_ALL" "LC_CTYPE" "TZ" "TERM"})
+
+(defn- denied? [deny k]
+  (boolean (and (seq deny) (glob/first-match deny k))))
+
+(defn- allowed? [allow explicit k]
+  (or (nil? allow)                    ; no allowlist ⇒ no filtering
+      (empty? allow)
+      (contains? explicit k)          ; :env-vars named it; see `apply-policy!`
+      (contains? infrastructure-vars k)
+      (boolean (glob/first-match allow k))))
+
+(defn apply-policy!
+  "Shape `env-map` — a `ProcessBuilder`'s environment — into what a child in
+   this scope should see. Mutates and returns it.
+
+   `policy` is `{:allow [globs] :deny [globs] :vars {name value}}`; all three
+   optional, and `nil`/empty means `no opinion`, so the default policy leaves
+   the map exactly as `.env` alone would have. That inertness is the same
+   discipline the tool permission gate ships with: a key that arrives switched
+   on is a key that arrives breaking something.
+
+   Order, and every step of it is a decision:
+
+     1. the `.env` layer, for names the inherited environment has no non-blank
+        value for — what `child-env` alone did before scoping existed
+     2. `:env-vars`, the explicit values this scope declares
+     3. `:env-deny` REMOVES, unconditionally — after 1 and 2, so a deny cannot
+        be undone by declaring the same name somewhere else. A deny another key
+        can talk round is not a deny; the same rule `:tool-deny-tools` settled.
+     4. `:env-allow`, when non-nil, removes everything it does not admit —
+        except the names `:env-vars` declared (the operator just named them
+        explicitly; making them list each one twice is bureaucracy) and
+        `infrastructure-vars`.
+
+   Deny before allow matters in the other direction too: allow runs last, so a
+   name surviving both is one the operator admitted and did not deny."
+  [^java.util.Map env-map {:keys [allow deny vars]}]
+  (let [explicit (into #{} (map #(some-> % name)) (keys vars))]
+    ;; 1. the .env layer
+    (doseq [[k v] (child-env)]
+      (.put env-map ^String k ^String v))
+    ;; 2. explicit values
+    (doseq [[k v] vars]
+      (when-let [n (some-> k name not-empty)]
+        (.put env-map ^String n ^String (str v))))
+    ;; 3 + 4. removals, computed over a snapshot so we never mutate while
+    ;; iterating the map's own key set.
+    (doseq [k (vec (.keySet env-map))]
+      (when (or (denied? deny k)
+                (not (allowed? allow explicit k)))
+        (.remove env-map k)))
+    env-map))

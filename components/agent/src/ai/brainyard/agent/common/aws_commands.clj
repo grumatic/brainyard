@@ -21,7 +21,8 @@
             [clojure.java.io :as io]
             [clojure.data.json :as json]
             [ai.brainyard.mulog.interface :as mulog]
-            [ai.brainyard.util.interface :as util]))
+            [ai.brainyard.util.interface :as util]
+            [ai.brainyard.agent.core.config :as config]))
 
 ;; ============================================================================
 ;; Helpers
@@ -116,7 +117,7 @@
       ;; child inherits only the real one — so an AWS_PROFILE set in `.env`
       ;; (which `.env.example` documents as the easy path) configured `by`'s
       ;; own Bedrock calls and then silently did not reach `aws` here.
-      (doseq [[k v] (util/child-env)] (.put env-map ^String k ^String v))
+      (util/apply-policy! env-map (config/env-policy))
       (when env
         (doseq [[k v] env]
           (.put env-map k v)))

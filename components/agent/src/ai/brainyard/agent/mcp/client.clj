@@ -16,7 +16,8 @@
             [clojure.string :as str]
             [ai.brainyard.clj-http-native.interface :as http]
             [ai.brainyard.clj-oauth.interface :as oauth]
-            [ai.brainyard.util.interface :as util])
+            [ai.brainyard.util.interface :as util]
+            [ai.brainyard.agent.core.config :as config])
   (:import [java.io BufferedReader InputStreamReader OutputStreamWriter]
            [java.util.concurrent.atomic AtomicLong]))
 
@@ -290,8 +291,7 @@
           ;; simply expects `PGPASSWORD` in its environment got nothing — the
           ;; same variable, present or absent depending on which way the server
           ;; happened to ask for it.
-          _ (let [env-map (.environment process-builder)]
-              (doseq [[k v] (util/child-env)] (.put env-map ^String k ^String v)))
+          _ (util/apply-policy! (.environment process-builder) (config/env-policy))
           _ (when env
               (let [env-map (.environment process-builder)]
                 (doseq [[k v] env]

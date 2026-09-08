@@ -283,6 +283,32 @@
         (is (= [] (filterv #(= :max-iterations (:key %)) (:changed r))))
         (is (= 100 (core-config/get-config :max-iterations)))))))
 
+(deftest env-vars-with-a-secret-value-is-refused
+  ;; :env-vars is the one new key that holds VALUES, and config.edn at :project
+  ;; scope is committed with the repo. The design leans entirely on the
+  ;; pre-existing secret scan to keep it from becoming a way to commit a token,
+  ;; so that reliance is asserted rather than assumed.
+  (seed-config! *tmp-project* base-config)
+  (doseq [[label secret] [["openai" "sk-ABCDEFGHIJKLMNOPQRSTUV"]
+                          ["aws"    "AKIAIOSFODNN7EXAMPLE"]
+                          ["github" "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"]]]
+    (testing label
+      (let [r (tool/invoke-tool :config$apply
+                                :proposed {:agent {:config {:env-vars {"TOKEN" secret}}}}
+                                :reason "set env var"
+                                :confirm? true
+                                :project-dir *tmp-project*)]
+        (is (false? (:ok? r)))
+        (is (= :secret-detected (:stage r)))
+        (is (re-find #"env var" (:hint r))))))
+  (testing "a non-secret value is accepted — the key is for endpoints and flags"
+    (let [r (tool/invoke-tool :config$apply
+                              :proposed {:agent {:config {:env-vars {"ENDPOINT" "https://staging.example.com"}}}}
+                              :reason "point at staging"
+                              :confirm? true
+                              :project-dir *tmp-project*)]
+      (is (true? (:ok? r))))))
+
 ;; ============================================================================
 ;; Slug
 ;; ============================================================================

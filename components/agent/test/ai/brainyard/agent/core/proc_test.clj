@@ -13,6 +13,7 @@
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.string :as str]
             [ai.brainyard.agent.core.proc :as proc]
+            [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.util.interface :as util]))
 
 (defn- sh-out
@@ -81,3 +82,52 @@
   ;; `apply-dotenv!` sits in the same pipeline.
   (testing "the wrapper is identifiable and the command still runs"
     (is (= "hello" (sh-out "echo hello")))))
+
+
+;; ============================================================================
+;; Phase 3 — the policy reaches a real child
+;;
+;; `env_test.clj` proves the map surgery. These prove the surgery is applied to
+;; something that actually runs, and that the scope is picked up from the
+;; calling agent rather than from an argument nobody passes.
+;; ============================================================================
+
+(defn- agent-with
+  "A stub agent carrying `m` on its per-agent config layer."
+  [m]
+  {:!state (atom {:st-memory-init (atom {:config m})})})
+
+(deftest env-deny-reaches-the-child
+  (with-dotenv-var "BY_TEST_PROC_SECRET" "sk-secret"
+    (fn []
+      (is (= "[sk-secret]" (sh-out "echo \"[$BY_TEST_PROC_SECRET]\""))
+          "precondition: the child sees it with no policy")
+      (binding [proto/*current-agent* (agent-with {:env-deny ["BY_TEST_PROC_*"]})]
+        (is (= "[]" (sh-out "echo \"[$BY_TEST_PROC_SECRET]\"")))))))
+
+(deftest env-vars-reaches-the-child
+  (binding [proto/*current-agent* (agent-with {:env-vars {"BY_TEST_PROC_ENDPOINT" "https://staging"}})]
+    (is (= "[https://staging]" (sh-out "echo \"[$BY_TEST_PROC_ENDPOINT]\"")))))
+
+(deftest env-allow-does-not-cost-the-child-its-path
+  ;; The whole reason `infrastructure-vars` exists. If this breaks, every shell
+  ;; command under an allowlist fails with no diagnosis.
+  (binding [proto/*current-agent* (agent-with {:env-allow ["NOTHING_MATCHES"]})]
+    (is (not= "" (sh-out "echo $PATH")))
+    (is (= "ok" (sh-out "echo ok")) "and a command still runs at all")))
+
+(deftest the-scope-comes-from-the-calling-agent
+  ;; Two agents, same spawn site, different environments — the property that
+  ;; makes this scoping rather than a global switch.
+  (with-dotenv-var "BY_TEST_PROC_SCOPED" "shared"
+    (fn []
+      (binding [proto/*current-agent* (agent-with {:env-deny ["BY_TEST_PROC_SCOPED"]})]
+        (is (= "[]" (sh-out "echo \"[$BY_TEST_PROC_SCOPED]\""))))
+      (binding [proto/*current-agent* (agent-with {})]
+        (is (= "[shared]" (sh-out "echo \"[$BY_TEST_PROC_SCOPED]\"")))))))
+
+(deftest with-no-agent-bound-the-global-layer-applies
+  ;; A spawn that belongs to no agent must still work, and must resolve the
+  ;; global policy rather than throwing on a nil scope.
+  (binding [proto/*current-agent* nil]
+    (is (= "ok" (sh-out "echo ok")))))

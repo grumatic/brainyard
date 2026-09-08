@@ -30,8 +30,10 @@
      `sh-argv`         — run the command in its own SESSION, so it has no
                          controlling terminal and `/dev/tty` fails ENXIO.
      `harden-env!`     — make credential prompts FAIL rather than wait.
-     `apply-dotenv!`   — hand the child the `.env` layer, which a
-                         `ProcessBuilder` does not inherit.
+     `apply-env!`      — hand the child the `.env` layer, which a
+                         `ProcessBuilder` does not inherit, then shape it by
+                         the calling agent's `:env-allow` / `:env-deny` /
+                         `:env-vars` policy.
 
    The third one is why this namespace now requires `util` rather than
    depending on nothing at all. That independence was never the point in
@@ -41,7 +43,8 @@
    re-deriving it, and an env layer passed as an ARGUMENT would fail exactly
    that test: the next site to be written would omit it, silently, in the same
    way the five old sites each omitted the askpass hardening."
-  (:require [ai.brainyard.util.interface :as util])
+  (:require [ai.brainyard.util.interface :as util]
+            [ai.brainyard.agent.core.config :as config])
   (:import [java.lang ProcessBuilder]))
 
 (def ^:const new-session-script
@@ -108,22 +111,29 @@
   [command]
   ["/bin/sh" "-c" new-session-script "brainyard-sh" (str command)])
 
-(defn apply-dotenv!
-  "Apply the `.env` layer to `pb`'s environment. Returns `pb`.
+(defn apply-env!
+  "Apply the `.env` layer and the calling agent's environment policy to `pb`'s
+   environment. Returns `pb`.
 
    A child inherits the real ENVIRONMENT and nothing else, so the one thing it
    is missing is what `.env` supplied — which lives in the JVM property table,
    because the JVM environment cannot be written to. That asymmetry is why a
    `.env` `GH_TOKEN` reached `clj-llm` but never reached `gh`.
 
-   Runs AFTER `harden-env!` and BEFORE any caller env, which is the same
-   precedence the rest of the tree uses: hardening is a default, `.env` is the
-   user's configuration, an explicit caller entry is the most specific thing
-   anyone said. `util/child-env` is empty until the loader has run, so this is
-   a no-op in a `bb` task or a test rather than a source of surprise."
+   The policy (`:env-allow` / `:env-deny` / `:env-vars`) comes from
+   `proto/*current-agent*` rather than an argument, and that is the same
+   argument the namespace docstring makes about the hardening: a scope passed
+   in is a scope the next spawn site forgets. The dynamic var is already bound
+   around every tool dispatch, which is where a shell command comes from; with
+   nothing bound it resolves the global layer, which is the right answer for a
+   spawn that belongs to no agent.
+
+   Runs AFTER `harden-env!` and BEFORE any caller env: hardening is a default,
+   `.env` and the policy are the user's configuration, an explicit caller entry
+   is the most specific thing anyone said. All three inputs ship inert, so this
+   is a no-op in a `bb` task or a test rather than a source of surprise."
   ^ProcessBuilder [^ProcessBuilder pb]
-  (let [env (.environment pb)]
-    (doseq [[k v] (util/child-env)] (.put env ^String k ^String v)))
+  (util/apply-policy! (.environment pb) (config/env-policy))
   pb)
 
 (defn harden-env!
@@ -138,13 +148,14 @@
 
 (defn shell-pb
   "A ProcessBuilder for `command`, in its own session, with credential
-   prompts disarmed, the `.env` layer applied, and stdout/stderr merged.
+   prompts disarmed, the environment shaped for the calling agent, and
+   stdout/stderr merged.
 
    The one-call form for the common case. Callers needing more (a working
-   directory, extra env) `doto` the result — `harden-env!` and `apply-dotenv!`
+   directory, extra env) `doto` the result — `harden-env!` and `apply-env!`
    have already run, so their own env entries override both."
   ^ProcessBuilder [command]
   (-> (ProcessBuilder. ^"[Ljava.lang.String;" (into-array String (sh-argv command)))
       (harden-env!)
-      (apply-dotenv!)
+      (apply-env!)
       (doto (.redirectErrorStream true))))

@@ -536,6 +536,14 @@
     :lifecycle :live
     :doc       "Human approval for tools matching a glob, via :agent.tool-use/pre, plus an unconditional deny that outranks every permission mode. Ungated: the empty pattern lists ARE the off state, and a separate :enable- boolean would describe what an empty vector already implies."}
 
+   :tools/environment
+   {:title     "Environment scoping"
+    :family    :tools
+    :gate      nil
+    :keys      [:env-allow :env-deny :env-vars]
+    :lifecycle :live
+    :doc       "What environment variables a spawned child sees: an allowlist over names, an unconditional deny, and literal non-secret values. Ungated — nil/empty IS the off state, and all three resolve per agent."}
+
    :tools/mcp
    {:title     "MCP tools"
     :family    :tools

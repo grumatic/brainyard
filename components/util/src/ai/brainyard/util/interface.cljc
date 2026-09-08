@@ -24,6 +24,13 @@
                         pretty configure-logging! default-log-config))
 
 ;; ============================================================================
+;; Glob matching (CLJ only) — `*` over names, shared by every allowlist key
+;; ============================================================================
+
+#?(:clj (export-symbols ai.brainyard.util.core.glob
+                        glob->re glob-match? first-match))
+
+;; ============================================================================
 ;; Environment resolution (CLJ only)
 ;;
 ;; The one place `by` answers "what is the value of environment variable K?" —
@@ -33,7 +40,8 @@
 
 #?(:clj (export-symbols ai.brainyard.util.core.env
                         resolve-var resolve-first resolve-any?
-                        register-dotenv-keys! dotenv-keys child-env))
+                        register-dotenv-keys! dotenv-keys child-env
+                        apply-policy! infrastructure-vars))
 
 ;; ============================================================================
 ;; Display normalization (CLJ only)

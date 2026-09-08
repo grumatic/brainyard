@@ -663,6 +663,15 @@
    :tool-deny-tools            {:type "array"
                                 :default []
                                 :doc "Globs over registered tool names that are refused OUTRIGHT, enforced by a second :agent.tool-use/pre gate in common/tool_permission.clj. Same glob shape as :tool-approval-patterns. SHIPS EMPTY, so it is inert until configured. Unlike :tool-approval-patterns this does NOT consult [:permissions :mode] — a deny survives :auto-approve, and under :ask-each-time it never prompts, because a prompt is an offer to run and a denied tool is not on offer. It is also NOT exemptable by :tool-allow-tools, which carves narrow holes in :tool-approval-patterns only: a deny another key can undo is not a deny. Narrow the glob instead. Runs at priority 95, ABOVE the tool-result cache at 90, so a cached result cannot be served past the deny — the one ordering difference from the approval gate, which sits below the cache on purpose. Still not a sandbox, and the limit is measured rather than theoretical: a shell code-eval fence never dispatches a tool, so it never reaches this gate — denying read-file does not stop an agent running `sed -n 1p` in a ```bash block, which is what a live model did unprompted the first time read-file was denied to it. Covered: the LLM tool channel, sandbox callables, the `bash` TOOL, the script bridge, sub-agent dispatch. Not covered: shell fences. Use --sandbox when containment is the requirement. See docs/design/tool-permission-gate-design.md."}
+   :env-allow                  {:type "array"
+                                :default nil
+                                :doc "Globs over ENVIRONMENT VARIABLE NAMES that a spawned child may see. nil (the default) means no filtering — the child inherits what it inherits today, so this ships inert. Non-nil switches the scope to allowlist mode: every other name is removed from the child's environment. PATH, HOME, TMPDIR, SHELL, USER, LANG, TERM and friends are always kept (see util/infrastructure-vars) — an allowlist is a statement about secrets and configuration, not about whether a process can find /bin/sh, and without that floor the first `:env-allow [\"GITHUB_TOKEN\"]` produces a child with no PATH and no clue why. Names given in :env-vars are admitted too, since the operator just named them. :env-deny still removes any of these. Same glob shape as :tool-approval-patterns. Resolves through the normal precedence chain, so a per-agent override scopes one specialist."}
+   :env-deny                   {:type "array"
+                                :default []
+                                :doc "Globs over ENVIRONMENT VARIABLE NAMES removed from a spawned child, unconditionally. Ships empty. Applied AFTER :env-vars and the .env layer, and not exemptable by :env-allow or :env-vars — a deny another key can talk round is not a deny, the same rule :tool-deny-tools settled. This is the way to keep a credential out of one agent's subprocesses (`:env-deny [\"AWS_*\"]`) without disturbing anything else. NOT a containment boundary: an agent holding a shell fence can only be denied what we hand its children — see docs/design/tool-permission-gate-design.md §1.3.2 and use --sandbox when containment is the requirement."}
+   :env-vars                   {:type "map"
+                                :default {}
+                                :doc "Literal environment variables handed to a spawned child, as {\"NAME\" \"value\"}. Ships empty. Applied over the inherited environment and the .env layer, so it is the way to point one agent at a different endpoint or flag. NOT for secrets: config.edn at :project scope is committed with the repo, and config$apply's secret scan refuses a write whose value looks like a credential (sk-…, AKIA…, ghp_…, a PEM block). Put the secret in .env and reference it by name via :env-allow instead. Names declared here are admitted past :env-allow but NOT past :env-deny."}
    :mcp-allow-tools            {:type "array"
                                 :default []
                                 :doc "Allowlist of MCP tools that skip the fail-closed permission gate (auto-approved). Each entry is a `server/tool` glob — `*` matches any run of chars (e.g. \"linear/*\", \"slack/post_message\", \"*/*_read\"). Side-effecting MCP tools NOT matched here (and lacking readOnlyHint) prompt for approval via the same UI as write-file/bash. See mcp/permission.clj."}
@@ -1924,6 +1933,24 @@
        :ask-each-time   :ask-each-time
        :deny-by-default :deny-by-default
        :ask-each-time))))
+
+(defn env-policy
+  "Resolve the environment-scoping policy for `agent` — `{:allow :deny :vars}`,
+   the shape `util/apply-policy!` consumes.
+
+   Each key travels the normal precedence chain, so a per-agent override
+   (`:config-extra`) scopes one specialist and a `config.edn` entry scopes
+   everything. All three ship inert, so the default policy leaves a child's
+   environment exactly as the `.env` layer alone would.
+
+   Accepts the same agent-or-st forms as `get-config`; nil resolves through
+   `proto/*current-agent*`, which is what lets a spawn site deep inside a tool
+   call pick up the calling agent's policy without growing a parameter."
+  ([] (env-policy nil))
+  ([agent-or-st]
+   {:allow (get-config agent-or-st :env-allow)
+    :deny  (get-config agent-or-st :env-deny)
+    :vars  (get-config agent-or-st :env-vars)}))
 
 (defn- write-persisted-key!
   "Write a single `[:agent :config k]` leaf to `.brainyard/config.edn` at

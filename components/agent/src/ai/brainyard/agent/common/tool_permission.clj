@@ -51,6 +51,7 @@
    because it wants a different priority and a different relationship to
    `[:permissions :mode]`. See `tool-deny-gate`."
   (:require [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.util.interface :as util]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.session :as session]
             [ai.brainyard.mulog.interface :as mulog]
@@ -60,40 +61,21 @@
 ;; Glob matching — shared with :script-bridge-tools and :mcp-allow-tools
 ;; ============================================================================
 
-(defn glob->re
-  "`user$*` → `^\\Quser$\\E.*$`. Only `*` is special (any run of chars).
+(def glob->re
+  "See `util/glob->re` — moved to `util` when the environment policy keys
+   became its fifth and sixth callers and could not reach it here. The var is
+   captured, not the value, so a `with-redefs` in either place still works."
+  #'util/glob->re)
 
-   The literal segments are `Pattern/quote`d rather than escaped by hand,
-   because EVERY registered tool name contains `$`, which inside a regex is an
-   end-of-input ANCHOR. The naive `(str/replace pat \"*\" \".*\")` compiles
-   `mcp$*` to `^mcp$.*$` — a pattern that matches nothing beginning `mcp$`.
-   The same reason a raw name must never be handed to `re-pattern`: that was
-   half of what made `check-permission` inert.
+(def glob-match?
+  "See `util/glob-match?`."
+  #'util/glob-match?)
 
-   `*` spans `$` deliberately, so `user$*` covers `user$tool$create` and the
-   nested forms are refinements rather than additions."
-  [pat]
-  (re-pattern (str "^"
-                   (->> (str/split (str pat) #"\*" -1)
-                        (map #(java.util.regex.Pattern/quote %))
-                        (str/join ".*"))
-                   "$")))
-
-(def ^:private glob->re* (memoize glob->re))
-
-(defn glob-match?
-  "True when `glob` admits `target`. Whole-name, never a substring — the other
-   half of what made `check-permission` inert was `re-find`, under which
-   `:deny [\"read\"]` denied `read-file` AND `spread-metrics`."
-  [glob target]
-  (boolean (re-matches (glob->re* glob) (str target))))
-
-(defn first-match
-  "The first glob in `globs` admitting `target`, or nil. Returns the PATTERN
-   rather than a boolean because the approval prompt caches on it: the unit a
-   human agrees to is the family they were shown, not the one call."
-  [globs target]
-  (first (filter #(glob-match? % target) globs)))
+(def first-match
+  "See `util/first-match`. Returns the PATTERN rather than a boolean because
+   the approval prompt caches on it: the unit a human agrees to is the family
+   they were shown, not the one call."
+  #'util/first-match)
 
 ;; ============================================================================
 ;; The shared verdict
