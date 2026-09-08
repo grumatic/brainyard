@@ -9,23 +9,33 @@
 > **Scope, as built:** `core/tool.clj` (`check-permission` + `permission-config`
 > + `match-items` deleted, the `declare` and the dead `:denied` branch with
 > them, docstring corrected), new `common/tool_permission.clj` (shared matcher
-> + `gate-verdict` + the general gate), `mcp/permission.clj` (now one policy
-> over the shared verdict, wording byte-identical), `core/config.clj`
-> (`:tool-approval-patterns`, `:tool-allow-tools`), `core/feature.clj`
-> (`:tools/permission`), `common/script_bridge.clj` (its private glob matcher
-> replaced by the shared one), `bases/agent-tui/…/permissions.clj` (the
-> `:type :tool-use` arm), `interface.clj` (load path for the install).
+> + `gate-verdict` + the general gate + the deny gate), `mcp/permission.clj`
+> (now one policy over the shared verdict, wording byte-identical),
+> `core/config.clj` (`:tool-approval-patterns`, `:tool-allow-tools`,
+> `:tool-deny-tools`), `core/feature.clj` (`:tools/permission`),
+> `common/script_bridge.clj` (its private glob matcher replaced by the shared
+> one), `bases/agent-tui/…/permissions.clj` (the `:type :tool-use` arm),
+> `interface.clj` (load path for the installs).
 > **Tests:** `components/agent/test/…/common/tool_permission_test.clj` —
-> 10 tests, 57 assertions.
+> 17 tests, 91 assertions.
 >
-> **The four §5 questions, as resolved:** (1) nothing ships non-empty — §3.2
-> already argued inert-by-default and the candidates are gated elsewhere for
-> file writes anyway; (2) the approval prompt caches on the **matched
-> pattern**, the family analogue of MCP's per-server cache, since the unit a
-> human agreed to is the family they were shown; (3) two keys, as the note
-> leaned; (4) no special case for sub-agent dispatch — a pattern matches only
-> what an operator wrote, so `*` reaching every specialist is a choice, not a
-> default.
+> **Added after the first landing:** `:tool-deny-tools` (§3.2a) — an
+> unconditional deny that no `[:permissions :mode]` overrides, running as a
+> SECOND hook at priority 95 because it needs to outrank the tool cache that
+> the approval gate deliberately sits below. And §1.3.2, the measured coverage
+> boundary of `:agent.tool-use/pre`: a shell **fence** dispatches no tool, so
+> no gate on this hook — approval, deny or MCP — ever sees it.
+>
+> **§5's first four questions, as resolved** (a fifth, raised later by §1.3.2,
+> is still open): (1) nothing ships non-empty — §3.2 already argued
+> inert-by-default and the candidates are gated elsewhere for file writes
+> anyway; (2) the approval prompt caches on the **matched pattern**, the family
+> analogue of MCP's per-server cache, since the unit a human agreed to is the
+> family they were shown; (3) two keys, as the note leaned — `:tool-deny-tools`
+> is a third but answers a different question, since it is not a form of
+> allowlist; (4) no special case for sub-agent dispatch — a pattern matches
+> only what an operator wrote, so `*` reaching every specialist is a choice,
+> not a default.
 >
 > **Found while:** widening `:script-bridge-tools` to accept globs. The bridge
 > asked "what stops a script calling `config$apply`?", and the honest answer
@@ -126,11 +136,12 @@ in a detected container, prompt on a bare host.
 
 Two facts that make this the right foundation:
 
-- **It sits where every dispatch passes.** `dispatch-with-hooks` wraps the
-  registry path, so the hook sees native MCP bindings *and* the `mcp$tools :op
-  :call` proxy. Verified live: a `by-tool` bridge call fires
-  `:agent.tool-use/pre` with the real tool name, and nine handlers are
-  registered there today —
+- **It sits where every dispatch passes** — every *dispatch*, which is not the
+  same as every *action*; see §1.3.2, which measures the difference.
+  `dispatch-with-hooks` wraps the registry path, so the hook sees native MCP
+  bindings *and* the `mcp$tools :op :call` proxy. Verified live: a `by-tool`
+  bridge call fires `:agent.tool-use/pre` with the real tool name, and nine
+  handlers are registered there today —
 
   | priority | handler | source |
   |---:|---|---|
@@ -142,7 +153,9 @@ Two facts that make this the right foundation:
   | 50 | `auto-notify/deflect-poll` | auto-notify |
 
   (plus three TUI/persist observers). Higher runs first —
-  `matching-entries` sorts `(comp - :priority)`.
+  `matching-entries` sorts `(comp - :priority)`. That table is the state at the
+  time of the finding; the as-built order, with both gates from this note in
+  place, is in §3.2a.
 
 - **Its refusal is better than an error string.** A `:replace` verdict hands
   the model an `{:error …}` explaining how to get permission, and the turn
@@ -187,6 +200,49 @@ continues), `:block` (body skipped, `blocked-tool-result` synthesizes
 upstream BT actions terminate the loop). `:reason` is required on all three.
 `tool-post-hook` fires either way, tagging `:hook-replaced` / `:hook-blocked` /
 `:hook-modified-args` so observers see a refusal rather than a silent gap.
+
+#### 1.3.2 What the chokepoint does NOT see — the coverage boundary, measured
+
+§1.3's first bullet is the premise the whole note rests on, and read quickly it
+promises more than it delivers. `:agent.tool-use/pre` fires inside
+`dispatch-with-hooks`, so it sees every **tool dispatch**. An agent's ability to
+*act* is wider than that.
+
+Measured by registering an observer at priority 999 that records every
+`tool-name` reaching the hook, then driving a live turn with `read-file` in
+`:tool-deny-tools`:
+
+| channel | reaches the hook | evidence |
+|---|:---:|---|
+| LLM tool channel | ✅ | the gate prompts on a model-issued call |
+| sandbox callable in a code block — `(read-file :path …)` | ✅ | the prompt fired on exactly this form |
+| the `bash` **tool** | ✅ | refused live by `:tool-deny-tools ["bash"]` |
+| script bridge | ✅ | the `by-tool` bridge call in §1.3 |
+| sub-agent dispatch | ✅ | `do-call-tool--agent` runs inside `dispatch-with-hooks` |
+| a shell **fence** (a fenced `bash` code block) | ❌ | **zero** hook events across a whole turn |
+
+The model, told nothing about the gate, worked the detour out on the first try
+and volunteered it: asked for the first line of `deps.edn` with `read-file`
+denied, it answered correctly and appended *"read-file is blocked by the
+:tool-deny-tools policy in this session, so the line was read via head -n 1 in a
+bash block."* Two further turns (`sed -n '2p'`, `wc -l`) confirmed the same
+thing from the hook's side — the observer recorded nothing at all while each
+turn ran and answered.
+
+Three consequences worth stating, because each is easy to assume the other way:
+
+- **This is a property of the CHOKEPOINT, not of any one policy.** It applies
+  identically to `:tool-approval-patterns`, `:tool-deny-tools` and the MCP
+  gate. No amount of glob-writing closes it.
+- **It is not a bug in the gate.** A fence is the code-eval channel, which has
+  its own guard surface (`eval/eval-bash-guard` matches the `bash` TOOL, not a
+  fence). Gating fences means a gate on that channel — a different hook, a
+  different classification problem (what does "this command is a read" mean for
+  an arbitrary shell line?), and a separate design. See open question 5.
+- **It is what §4's "not a sandbox" means concretely.** The gate raises the
+  cost of a mistake and makes the audit trail legible. A determined process —
+  or, as measured, an ordinarily capable model working around an obstacle — is
+  contained by `--sandbox`, not by this.
 
 ---
 
@@ -307,15 +363,26 @@ local can talk it round. To allow something, narrow the glob.
 It remains veto-only: no match abstains, so it can only ever add a refusal —
 the property every ordering claim here rests on.
 
-**What it does not reach, measured rather than assumed.** Instrumenting
-`:agent.tool-use/pre` across a live turn in which `read-file` was denied
-recorded **zero events** while the model answered the question anyway with
-`sed -n '2p'` in a shell fence, having found the detour on its own. The gate's
-chokepoint is `dispatch-with-hooks`, which covers the LLM tool channel, sandbox
-callables (`(read-file :path …)` in a code block — verified firing), the `bash`
-**tool**, the script bridge and sub-agent dispatch. A ```bash **fence** is run
-by the code-eval channel and dispatches no tool at all. This is §4's "not a
-sandbox" stated as a measurement rather than a caution.
+**What it does not reach is §1.3.2**, not a property of the deny: a shell fence
+dispatches no tool, so no gate on this hook sees it. A deny narrows what the
+model may *call*; it does not narrow what the model may *do*.
+
+The as-built walk order on `:agent.tool-use/pre`, both gates in place:
+
+| priority | handler | on-error |
+|---:|---|---|
+| 200 | `memory-agent/write-guard` | log |
+| 100 | `loop-guard/redundant-tool-call-guard` | log |
+| **95** | **`tool-permission/tool-deny-gate`** | **throw** |
+| 90 | `context-actions/tool-cache-lookup` | log |
+| **85** | **`tool-permission/tool-permission-gate`** | **throw** |
+| 80 | `mcp/mcp-permission-gate` | log |
+| 50 | `eval/eval-bash-guard`, `auto-notify/deflect-poll` | log |
+| 0 | three TUI/persist observers | log |
+
+Both gates take `:on-error :throw` against the house `:log` default, for the
+reason §1.3.1 gives: under `:log` a crashing gate returns nil, which the walk
+reads as an abstention, so the failure **permits** the call it exists to refuse.
 
 ### 3.3 One prompt branch
 
@@ -347,12 +414,14 @@ silently ungated one.
 
 ## 4. What this deliberately does not fix
 
-**It is not a sandbox**, and §3.2a now says so with a measurement rather than
+**It is not a sandbox**, and §1.3.2 now says so with a measurement rather than
 an argument: a shell fence reaches the code-eval channel without dispatching a
-tool, so no gate on `:agent.tool-use/pre` ever sees it. An agent with a bash
-fence — script-agent, coact-agent — already runs arbitrary code as the user,
-and `~/.brainyard` is writable under the default seatbelt policy. A tool gate raises the cost of a *mistake* and
-makes the audit trail legible; it does not contain a determined process. The
+tool, so no gate on `:agent.tool-use/pre` ever sees it — and a live model found
+that detour by itself, the first time a tool was denied to it. An agent with a
+bash fence — script-agent, coact-agent — already runs arbitrary code as the
+user, and `~/.brainyard` is writable under the default seatbelt policy. A tool
+gate raises the cost of a *mistake* and makes the audit trail legible; it does
+not contain a determined process. The
 honest framing, carried over from `script-agent-design.md` §13: **blast radius
 and legibility, not a security boundary.** Anything stronger belongs in
 `--sandbox`.
@@ -373,6 +442,10 @@ floor this gate reads.
 
 ## 5. Open questions for review
 
+Questions 1–4 were resolved when the note shipped — the answers are in the
+status block at the top, and are recorded here as the questions they answered
+rather than deleted. Question 5 is open.
+
 1. **Should any pattern ship non-empty?** Inert-by-default is the safe landing,
    but a gate nobody configures protects nobody. Candidate starter set:
    `config$apply`, `edit-agent`, `write-file` — each already gated elsewhere
@@ -388,6 +461,15 @@ floor this gate reads.
    inside `dispatch-with-hooks`, so `:agent`-type tools are matchable today. A
    pattern admitting one would prompt per dispatched specialist, which may be
    right or may be unusable.
+5. **Should the code-eval channel get a gate of its own?** (Raised by §1.3.2,
+   open.) A tool gate cannot see a shell fence, so today `:tool-deny-tools
+   ["read-file"]` is advisory against any agent holding a bash fence. The two
+   honest answers are opposite: *no* — containment is `--sandbox`'s job and a
+   second half-gate invites the belief that the pair is a boundary; or *yes* —
+   a fence-level policy would at least make the detour visible in the audit
+   trail rather than silent. What it cannot be is a glob list: classifying an
+   arbitrary shell line as a read or a write is the problem
+   `eval/mutating-bash?` already only half-solves for one agent.
 
 ---
 
@@ -401,6 +483,26 @@ floor this gate reads.
   have auto-allowed (85 > 80); a cache hit at 90 short-circuits before any
   prompt; and `:tool-allow-tools` does **not** bypass `mcp-permission-gate` —
   an allow is `nil`, so the walk continues.
+  A stand-in for a lower gate must NOT be registered at the real
+  `mcp-permission-gate`'s own priority: an equal-priority tie breaks on
+  registration order, so such a test passes when run alone and fails in any JVM
+  that also loaded `mcp/permission.clj`. Ours sits at 84 — what is under test
+  is "a gate below 85 still gets its say", and any priority under 85 says that.
+- **The deny is unconditional, asserted per mode.** `:tool-deny-tools` refuses
+  under `:auto-approve`, `:ask-each-time` AND `:deny-by-default`, and under
+  `:ask-each-time` it must additionally make **zero** `permission-fn` calls —
+  a prompt is an offer to run, and pinning "refused" alone would pass for a
+  gate that prompted and was declined.
+- **The deny is not exemptable.** With the same tool in `:tool-deny-tools` and
+  `:tool-allow-tools`, `approval-pattern` returns nil (the 85 gate IS exempted)
+  while `deny-pattern` still matches and the call is refused. A deny another
+  key can undo is not a deny, and this is the assertion that keeps it so.
+- **The deny outranks the cache.** Pin the priority (95 > 90) *and* the
+  behaviour: a `:replace` at 90 carrying a cached result must not win over a
+  deny. Priority alone is a number a refactor can move without a test noticing;
+  the behavioural assertion is the one that says why 95. Measured by demoting
+  the gate to 85 with a stand-in cache at 90 — a denied `read-file` came back
+  carrying the content of an earlier read.
 - **Headless is fail-closed:** no `permission-fn` and `:ask-each-time` ⇒
   refusal, not silent allow.
 - **The refusal is WELL-FORMED, asserted structurally.** `fire-decision!`
