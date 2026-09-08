@@ -559,6 +559,53 @@
        :reason (str "MCP tool call (" display ") denied (non-interactive mode). "
                     "Allowlist it via :mcp-allow-tools or set [:permissions :mode] :auto-approve.")})))
 
+(defn- tool-permission-confirm
+  "Tool-use branch of `make-permission-fn`'s callback. Handles a
+   `{:type :tool-use :tool \"config$apply\" :pattern \"config$*\" :display …}`
+   request from the general tool permission gate
+   (common/tool_permission.clj).
+
+   Caches always/never on the **matched pattern**, not the tool name — the
+   MCP arm caches per server for the same reason. The unit a human agreed to
+   is the family they were shown, so approving `config$*` once must not
+   re-prompt for every command in it. Falls back to the tool name when the
+   request carries no pattern, so a caller that omits it still caches
+   something rather than prompting forever."
+  [!tool-allowed !tool-denied !input-reader-thread feedback-fn req]
+  (let [tool    (or (:tool req) "tool")
+        key     (or (:pattern req) tool)
+        display (or (:display req) tool)]
+    (cond
+      (contains? @!tool-allowed key) {:allowed true}
+
+      (contains? @!tool-denied key)
+      {:denied true :reason "User denied this tool (won't ask again this session)"}
+
+      (or @!input-reader-thread (mode-b-popup-feasible?))
+      (let [resp (feedback-fn
+                  {:kind :confirm
+                   :question (str "Tool call requested: " display)
+                   :choices [{:key \y :label "yes"    :value :yes}
+                             {:key \n :label "no"     :value :no}
+                             {:key \a :label (str "always (remember " key ")") :value :always}
+                             {:key \d :label "never (deny, don't ask again)" :value :never}]
+                   :timeout-ms 30000})]
+        (case (:value resp)
+          :yes    {:allowed true}
+          :always (do (swap! !tool-allowed conj key) {:allowed true})
+          :no     {:denied true :reason "User denied this tool"}
+          :never  (do (swap! !tool-denied conj key)
+                      {:denied true :reason "User denied this tool (won't ask again this session)"})
+          (if (:timeout resp)
+            {:denied true :reason "Permission prompt timed out (30s)"}
+            {:denied true :reason "User denied this tool"})))
+
+      :else
+      {:denied true
+       :reason (str "Tool call (" display ") denied (non-interactive mode). "
+                    "Allowlist it via :tool-allow-tools, drop it from "
+                    ":tool-approval-patterns, or set [:permissions :mode] :auto-approve.")})))
+
 (defn- within-allowed-dir?
   "True when every path in `paths` canonicalizes to a location inside some entry
    of `allowed-dirs` (also canonicalized, so the macOS /var→/private/var symlink
@@ -588,16 +635,26 @@
      file access — {:path <p> | :paths [<p>…] :action :read|:write|:bash …}
      MCP call    — {:type :mcp-tool :servers [<s>…] :tools [\"s/t\"…] :display <s>}
                    (the fail-closed MCP permission gate; see mcp/permission.clj)
+     tool call   — {:type :tool-use :tool <id> :pattern <glob> :display <s>}
+                   (the general tool permission gate; see common/tool_permission.clj)
    Returns:  {:allowed true} | {:denied true :reason …}"
   [!input-reader-thread feedback-fn]
   (let [!session-allowed (atom #{})
         !session-denied  (atom #{})
         ;; Separate caches for MCP-tool approvals, keyed by server name.
         !mcp-allowed     (atom #{})
-        !mcp-denied      (atom #{})]
+        !mcp-denied      (atom #{})
+        ;; …and for general tool approvals, keyed by the matched glob pattern.
+        !tool-allowed    (atom #{})
+        !tool-denied     (atom #{})]
     (fn [{:keys [path paths type] :as req}]
-      (if (= :mcp-tool type)
+      (case type
+        :mcp-tool
         (mcp-permission-confirm !mcp-allowed !mcp-denied !input-reader-thread feedback-fn req)
+
+        :tool-use
+        (tool-permission-confirm !tool-allowed !tool-denied !input-reader-thread feedback-fn req)
+
         ;; ---- file-access permission ----
         ;; Support both :path (single) and :paths (vector from bash security check)
         (let [all-paths (or (when paths (seq paths)) (when path [path]))

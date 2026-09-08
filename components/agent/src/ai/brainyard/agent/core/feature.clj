@@ -528,6 +528,14 @@
     :lifecycle :live
     :doc       "TTL cache over read-only tool results."}
 
+   :tools/permission
+   {:title     "Tool permission gate"
+    :family    :tools
+    :gate      nil
+    :keys      [:tool-approval-patterns :tool-allow-tools]
+    :lifecycle :live
+    :doc       "Human approval for tools matching a glob, via :agent.tool-use/pre. Ungated: the empty pattern list IS the off state, and a separate :enable- boolean would describe what an empty vector already implies."}
+
    :tools/mcp
    {:title     "MCP tools"
     :family    :tools

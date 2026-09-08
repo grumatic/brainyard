@@ -1,16 +1,31 @@
 # Tool Permission Gate — Generalizing the MCP Gate, Retiring `check-permission`
 
-> **Status: DESIGN NOTE — nothing implemented.** Written to settle the shape
-> before touching a path every tool call goes through.
+> **Status: SHIPPED, and inert by default.** All of §3 is built; the note is
+> now the as-built reference. `check-permission` is gone.
 >
-> **Problem in one line:** `core/tool`'s `check-permission` looks like a
-> permission gate, is called on every dispatch, and cannot deny anything.
+> **Problem in one line:** `core/tool`'s `check-permission` looked like a
+> permission gate, was called on every dispatch, and could not deny anything.
 >
-> **Scope if accepted:** `core/tool.clj` (delete `check-permission`, fix the
-> `call-tool` docstring), a new `common/tool_permission.clj`,
-> `mcp/permission.clj` (becomes one policy over the shared gate),
-> `core/config.clj` (two keys), `bases/agent-tui/…/permissions.clj` (one
-> prompt branch).
+> **Scope, as built:** `core/tool.clj` (`check-permission` + `permission-config`
+> + `match-items` deleted, the `declare` and the dead `:denied` branch with
+> them, docstring corrected), new `common/tool_permission.clj` (shared matcher
+> + `gate-verdict` + the general gate), `mcp/permission.clj` (now one policy
+> over the shared verdict, wording byte-identical), `core/config.clj`
+> (`:tool-approval-patterns`, `:tool-allow-tools`), `core/feature.clj`
+> (`:tools/permission`), `common/script_bridge.clj` (its private glob matcher
+> replaced by the shared one), `bases/agent-tui/…/permissions.clj` (the
+> `:type :tool-use` arm), `interface.clj` (load path for the install).
+> **Tests:** `components/agent/test/…/common/tool_permission_test.clj` —
+> 10 tests, 57 assertions.
+>
+> **The four §5 questions, as resolved:** (1) nothing ships non-empty — §3.2
+> already argued inert-by-default and the candidates are gated elsewhere for
+> file writes anyway; (2) the approval prompt caches on the **matched
+> pattern**, the family analogue of MCP's per-server cache, since the unit a
+> human agreed to is the family they were shown; (3) two keys, as the note
+> leaned; (4) no special case for sub-agent dispatch — a pattern matches only
+> what an operator wrote, so `*` reaching every specialist is a choice, not a
+> default.
 >
 > **Found while:** widening `:script-bridge-tools` to accept globs. The bridge
 > asked "what stops a script calling `config$apply`?", and the honest answer
@@ -269,6 +284,19 @@ input channel, mirroring both existing arms.
 Remove the `def`, the `defn`, the `match-items` helper, the `declare`, and the
 `permission` binding in `call-tool`; correct the docstring to say what is
 actually true — that permission is enforced by `:agent.tool-use/pre`.
+
+**As built,** a comment stands where the function did, recording both bugs and
+pointing at the hook. A deleted gate leaves no trace in a diff a year later,
+and the next person to want tool permissions should find the answer at the
+place they will look for it.
+
+**One thing the build added that the note did not call for:** the gate
+registers with **`:on-error :throw`**, against the house `:log` default.
+Under `:log` a handler that throws returns nil, `fire-decision!` reads that as
+an abstention, and the call proceeds ungated — a crashing permission gate that
+permits. For a cache or a nudge `:log` is right; for this it is the
+wrong-direction failure, so a bug surfaces as a failed tool call instead of a
+silently ungated one.
 
 ---
 

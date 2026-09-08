@@ -60,6 +60,10 @@
             ;; requiring-resolve'd) so AOT emits a class for it — the a2a
             ;; comment in components/agent/deps.edn explains why that matters.
             [ai.brainyard.agent.common.script-bridge]
+            ;; Installs the general :agent.tool-use/pre permission gate at load.
+            ;; Not a defagent, but it must load for the gate to exist at all,
+            ;; and this list is the one place built-ins are guaranteed loaded.
+            [ai.brainyard.agent.common.tool-permission]
             ;; Live-runtime debug specialist. Requires the clj-nrepl
             ;; server to be running on the host (BY_NREPL_ENABLED on
             ;; agent-tui / agent-web, or clj-nrepl$start-server on
