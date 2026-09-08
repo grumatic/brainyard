@@ -27,7 +27,8 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [ai.brainyard.acp.interface :as acp]
-            [ai.brainyard.mulog.interface :as mulog]))
+            [ai.brainyard.mulog.interface :as mulog]
+            [ai.brainyard.util.interface :as util]))
 
 ;; =============================================================================
 ;; Workspace-root discovery (used by the :stub backend)
@@ -70,11 +71,16 @@
 
 (defn- copy-env
   "Build a map of env-var pairs for any keys whose value is set in the
-   parent process — useful for forwarding API keys without hard-coding."
+   parent process — useful for forwarding API keys without hard-coding.
+
+   Reads through `util/resolve-var`, so a credential supplied by `.env` (a JVM
+   property, not an environment variable) forwards too. With `System/getenv`
+   alone, `ANTHROPIC_API_KEY` in a `.env` authenticated `by` itself and then
+   failed to reach the `claude-code` backend this launches — which reads the
+   same variable name."
   [vars]
   (into {}
-        (keep (fn [v] (when-let [val (System/getenv v)]
-                        [v val])))
+        (keep (fn [v] (when-let [val (util/resolve-var v)] [v val])))
         vars))
 
 (defn which

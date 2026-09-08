@@ -82,6 +82,71 @@
        (or (not-blank (System/getenv n)) (not-blank (System/getProperty n)))
        (or (System/getenv n) (System/getProperty n))))))
 
+(defonce ^:private !dotenv-keys
+  ;; Variable names a `.env` file supplied, registered by the loader.
+  ;;
+  ;; `child-env` needs to know WHICH properties are environment values. The JVM
+  ;; property table also holds ~60 standard entries (java.version, user.dir,
+  ;; os.arch, …) plus anything any library set, and shipping those into a child
+  ;; process as environment variables would be wrong and noisy. Only the loader
+  ;; knows which keys came from a `.env`, so it says so.
+  (atom #{}))
+
+(defn register-dotenv-keys!
+  "Record the variable names `.env` supplied. Called once by the loader after
+   it writes them to the property table. Idempotent; last call wins.
+
+   Injected rather than discovered, the same shape as `persist/set-root!` and
+   `set-catalog-cache-root!` — the loader lives in the app project and this
+   namespace sits below every component, so the knowledge has to travel down."
+  [ks]
+  (reset! !dotenv-keys (into #{} (keep #(some-> % name not-empty)) ks))
+  nil)
+
+(defn dotenv-keys
+  "The registered `.env` variable names. Empty before the loader runs (a
+   `bb` task, a test, a JVM launched by hand), which is correct: nothing was
+   loaded, so nothing is missing from a child."
+  []
+  @!dotenv-keys)
+
+(defn child-env
+  "The `{name value}` map a spawned child needs in order to see what this
+   process sees.
+
+   A `ProcessBuilder` child inherits the real ENVIRONMENT and nothing else, so
+   the one layer it is missing is exactly the one `.env` supplied — which lives
+   in the property table because the JVM environment cannot be written to. That
+   is why a `.env` `GH_TOKEN` reached `clj-llm` but never reached `gh`.
+
+   Deliberately NOT the whole property table (see `!dotenv-keys`), and
+   deliberately skipping any key the real environment already carries a
+   NON-BLANK value for: the child inherits that value already, and `.env` never
+   overrides a real variable in this process either — writing one here would
+   invert, for children only, a precedence rule both loaders implement.
+
+   The word non-blank is load-bearing, and was measured rather than reasoned:
+   a `(some? (System/getenv k))` guard treats an exported-but-empty variable as
+   `the child has it`, so the child receives the blank while THIS process, whose
+   `resolve-var` falls through to the property, uses the real value. Parent and
+   child then disagree about the same variable — the one thing this function
+   exists to prevent. It is the identical shadowing bug `resolve-var` fixes one
+   layer up, and it is not hypothetical: agent and CI shells commonly export
+   `GIT_ASKPASS=` and `SSH_ASKPASS=` empty, which is how the proc suite caught it.
+
+   Blank counts as unset on the property side too, so a `FOO=` line does not
+   export an empty `FOO` into every subprocess."
+  []
+  (persistent!
+   (reduce (fn [m k]
+             (if (not-blank (System/getenv k))
+               m
+               (if-let [v (not-blank (System/getProperty k))]
+                 (assoc! m k v)
+                 m)))
+           (transient {})
+           @!dotenv-keys)))
+
 (defn resolve-first
   "The first of `ks` that resolves, as `[k value]`, or nil.
 

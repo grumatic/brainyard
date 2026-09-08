@@ -20,7 +20,8 @@
             [clojure.string :as str]
             [clojure.java.io :as io]
             [clojure.data.json :as json]
-            [ai.brainyard.mulog.interface :as mulog]))
+            [ai.brainyard.mulog.interface :as mulog]
+            [ai.brainyard.util.interface :as util]))
 
 ;; ============================================================================
 ;; Helpers
@@ -110,6 +111,12 @@
   (try
     (let [pb (ProcessBuilder. ^java.util.List (into ["aws"] args))
           env-map (.environment pb)]
+      ;; The `.env` layer first, caller `:env` on top. The AWS CLI reads
+      ;; AWS_PROFILE / AWS_REGION from its ENVIRONMENT, and a ProcessBuilder
+      ;; child inherits only the real one — so an AWS_PROFILE set in `.env`
+      ;; (which `.env.example` documents as the easy path) configured `by`'s
+      ;; own Bedrock calls and then silently did not reach `aws` here.
+      (doseq [[k v] (util/child-env)] (.put env-map ^String k ^String v))
       (when env
         (doseq [[k v] env]
           (.put env-map k v)))

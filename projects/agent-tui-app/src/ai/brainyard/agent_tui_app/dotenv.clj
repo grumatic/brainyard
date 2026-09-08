@@ -110,6 +110,11 @@
                                   :keys (mapv first new-keys)})))))
       (doseq [[k v] @merged]
         (System/setProperty k v))
+      ;; Tell the resolver WHICH properties are environment values. It cannot
+      ;; work that out — the property table also holds ~60 standard JVM entries
+      ;; — and `util/child-env` needs the answer to hand a spawned child the
+      ;; `.env` layer it would otherwise never see.
+      (util/register-dotenv-keys! (keys @merged))
       (cond-> {:paths        @loaded
                :loaded-count (count @merged)}
         missing (assoc :env-file-missing missing)))))

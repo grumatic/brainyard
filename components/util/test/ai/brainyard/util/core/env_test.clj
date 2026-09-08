@@ -106,3 +106,92 @@
       (is (false? (env/resolve-any? ["BY_TEST_ANY_BLANK"]))
           "blank is unset here too, which is what /login was getting wrong")
       (is (false? (env/resolve-any? []))))))
+
+;; ============================================================================
+;; child-env — the layer a spawned process is missing
+;;
+;; Phase 2 of docs/design/environment-scoping-design.md. A ProcessBuilder child
+;; inherits the real ENVIRONMENT and nothing else, so the one layer it lacks is
+;; exactly the one `.env` supplied — which lives in the property table because
+;; the JVM environment cannot be written to. That asymmetry is why a `.env`
+;; GH_TOKEN reached clj-llm and never reached `gh`.
+;; ============================================================================
+
+(defn- with-dotenv
+  "Register `ks` as .env-supplied for the duration of `f`, restoring after."
+  [ks f]
+  (let [prior (env/dotenv-keys)]
+    (try (env/register-dotenv-keys! ks) (f)
+         (finally (env/register-dotenv-keys! prior)))))
+
+(deftest child-env-is-empty-until-the-loader-registers
+  ;; A bb task, a test, a hand-launched JVM: nothing was loaded, so nothing is
+  ;; missing from a child. Empty is the correct answer, not a missing feature.
+  (with-dotenv []
+    (fn [] (is (= {} (env/child-env))))))
+
+(deftest child-env-carries-a-dotenv-supplied-value
+  (with-props {"BY_TEST_CHILD_TOKEN" "ghp-from-dotenv"}
+    (fn []
+      (with-dotenv ["BY_TEST_CHILD_TOKEN"]
+        (fn [] (is (= {"BY_TEST_CHILD_TOKEN" "ghp-from-dotenv"} (env/child-env))))))))
+
+(deftest child-env-never-overrides-a-real-environment-variable
+  ;; The child inherits PATH already, and `.env` never overrides a real
+  ;; variable in THIS process either — writing one here would invert, for
+  ;; children only, a precedence rule both loaders implement.
+  (with-props {"PATH" "SHOULD-NOT-WIN"}
+    (fn []
+      (with-dotenv ["PATH"]
+        (fn []
+          (is (some? (System/getenv "PATH")) "precondition")
+          (is (not (contains? (env/child-env) "PATH"))))))))
+
+(deftest a-blank-real-env-var-does-not-block-the-dotenv-value
+  ;; The same shadowing bug `resolve-var` fixes one layer up, reproduced in
+  ;; `child-env` and caught by the proc suite. A `(some? (System/getenv k))`
+  ;; guard reads an exported-but-empty variable as "the child already has it",
+  ;; so the child gets the blank while THIS process, whose resolve-var falls
+  ;; through to the property, uses the real value — parent and child
+  ;; disagreeing about one variable, which is the single thing child-env
+  ;; exists to prevent. Not hypothetical: agent and CI shells commonly export
+  ;; GIT_ASKPASS= and SSH_ASKPASS= empty.
+  ;;
+  ;; The environment cannot be written from a test, so this asserts the guard
+  ;; itself: whatever `not-blank` says about the env value is what decides.
+  (let [blank-env (->> ["GIT_ASKPASS" "SSH_ASKPASS"]
+                       (filter #(and (some? (System/getenv %))
+                                     (clojure.string/blank? (System/getenv %))))
+                       first)]
+    (if blank-env
+      (with-props {blank-env "from-dotenv"}
+        (fn []
+          (with-dotenv [blank-env]
+            (fn [] (is (= {blank-env "from-dotenv"} (env/child-env))
+                       "a blank real env var must not suppress the .env value")))))
+      (is true "no blank env var in this environment to exercise the guard"))))
+
+(deftest child-env-skips-a-blank-value
+  ;; A `FOO=` line must not export an empty FOO into every subprocess.
+  (with-props {"BY_TEST_CHILD_BLANK" ""}
+    (fn []
+      (with-dotenv ["BY_TEST_CHILD_BLANK"]
+        (fn [] (is (= {} (env/child-env))))))))
+
+(deftest child-env-ignores-properties-nobody-registered
+  ;; The property table also holds ~60 standard JVM entries; shipping
+  ;; `java.version` into a child as an environment variable would be wrong.
+  (with-dotenv []
+    (fn []
+      (is (some? (System/getProperty "java.version")) "precondition")
+      (is (not (contains? (env/child-env) "java.version"))))))
+
+(deftest register-dotenv-keys-normalizes-and-is-last-write-wins
+  (with-props {"BY_TEST_REG" "v"}
+    (fn []
+      (with-dotenv [:BY_TEST_REG]
+        (fn [] (is (= #{"BY_TEST_REG"} (env/dotenv-keys))
+                   "a keyword key registers by NAME")))
+      (with-dotenv ["BY_TEST_REG" nil ""]
+        (fn [] (is (= #{"BY_TEST_REG"} (env/dotenv-keys))
+                   "nil and empty entries are dropped rather than stored"))))))

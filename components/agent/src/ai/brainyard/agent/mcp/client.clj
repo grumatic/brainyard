@@ -282,6 +282,16 @@
           expanded-args (mapv expand-env-refs args)
           process-builder (ProcessBuilder. ^"[Ljava.lang.String;" (into-array String (cons command expanded-args)))
           _ (when working-dir (.directory process-builder (io/file working-dir)))
+          ;; The `.env` layer, BEFORE the server's declared `:env` so an
+          ;; explicit entry still wins. A ProcessBuilder child inherits the
+          ;; real environment and nothing else, so without this a server whose
+          ;; config says `{"PGPASSWORD" "${PG_PW}"}` got its value expanded
+          ;; (`expand-env-refs` reads the property table) while a server that
+          ;; simply expects `PGPASSWORD` in its environment got nothing — the
+          ;; same variable, present or absent depending on which way the server
+          ;; happened to ask for it.
+          _ (let [env-map (.environment process-builder)]
+              (doseq [[k v] (util/child-env)] (.put env-map ^String k ^String v)))
           _ (when env
               (let [env-map (.environment process-builder)]
                 (doseq [[k v] env]

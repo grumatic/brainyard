@@ -1,11 +1,12 @@
 # Environment Scoping — One Resolver, Three Scopes, and the Difference Between a Knob and a Secret
 
-> **Status: PHASES 0 AND 1 SHIPPED; §3.3 onward is still a PROPOSAL.** §1 is
+> **Status: PHASES 0–2 SHIPPED; §3.3 onward is still a PROPOSAL.** §1 is
 > measured against the tree as it was; §3 is the design; §7 phases it and marks
 > what has landed. Phase 0 built the resolver and collapsed the private copies
 > (§3.1a); Phase 1 routed the 69 `:env-fn` entries through it and reconciled the
-> two `.env` loaders' control flags (§3.6a). Neither added a config key or any
-> scoping; between them they closed every defect §1.2 measured.
+> two `.env` loaders' control flags (§3.6a); Phase 2 gave spawned children the
+> `.env` layer (§3.5a). None added a config key or any scoping — together they
+> closed every defect §1.2 measured plus the child-process asymmetry behind it.
 >
 > **Problem in one line:** brainyard has three unrelated things called
 > "environment" — `BY_*` config knobs, third-party credentials, and the
@@ -405,6 +406,79 @@ paths had no shared env parameter. Once `shell-pb` has one, the prologue's
 *future* additions should go through it instead, but rewriting the working
 script-library plumbing is not this feature's job.
 
+### 3.5a Phase 2, as built
+
+`util/child-env` returns the `{name value}` map a spawned child needs in order
+to see what this process sees. A `ProcessBuilder` child inherits the real
+ENVIRONMENT and nothing else, so the one layer it lacks is exactly the one
+`.env` supplied — which is why a `.env` `GH_TOKEN` reached `clj-llm` and never
+reached `gh`.
+
+**It cannot be "the property table".** That table also holds ~60 standard JVM
+entries (`java.version`, `user.dir`, `os.arch`) plus whatever any library set,
+and exporting those as environment variables would be wrong and noisy. Only the
+loader knows which keys came from a `.env`, so it says so:
+`dotenv.clj` calls `util/register-dotenv-keys!` after writing them — the same
+injection shape as `persist/set-root!`, because the loader lives in the app
+project and the resolver sits below every component. Before the loader runs
+(a `bb` task, a test), the set is empty and `child-env` is `{}` — which is the
+correct answer, not a missing feature.
+
+**`proc/shell-pb` applies it by default rather than taking it as an argument**,
+and that is the one place the plan in §3.5 was wrong. `proc.clj`'s docstring
+said it "deliberately depends on nothing", which reads as an argument for the
+parameter — but that independence was never the point in itself. The point,
+stated in the same docstring, is that *"a sixth spawn site is a two-line change
+that inherits [the protection] instead of a fourth copy of the bug"*. An env
+layer passed as an argument fails exactly that test: the next site written would
+omit it, silently, the way all five old sites each omitted the askpass
+hardening. So `proc` now requires `util`, and `apply-dotenv!` sits between
+`harden-env!` and any caller entry — hardening is a default, `.env` is what the
+user wrote, an explicit caller entry is the most specific thing anyone said.
+All five shell sites (`bash` tool, coact fence, skills, exec-backend, `:bash`
+task) inherit it with no call-site change.
+
+Three spawn sites build their own `ProcessBuilder` and were wired directly:
+**MCP** (`client.clj` — without it, a server whose config says
+`{"PGPASSWORD" "${PG_PW}"}` got its value expanded, since `expand-env-refs`
+reads the property table, while a server that simply expects `PGPASSWORD` in
+its environment got nothing: the same variable, present or absent depending on
+which way the server asked), the **`aws` CLI** (`aws_commands.clj` — an
+`AWS_PROFILE` in `.env` configured `by`'s own Bedrock calls and then did not
+reach `aws`), and **ACP's `copy-env`** (`acp-client/registry.clj` — its
+`:forward-env` allowlist read `System/getenv`, so an `ANTHROPIC_API_KEY` from
+`.env` authenticated `by` and failed to reach the `claude-code` backend that
+reads the same variable name).
+
+**The prediction that was wrong.** §7 said Phase 2 would make MCP "inherit
+ACP's marker stripping". It does not, and should not: `strip-nested-session-markers!`
+removes `CLAUDECODE`, which exists to stop a nested *Claude* session
+misbehaving. An MCP filesystem server is not a Claude session, and stripping a
+marker there would be cargo-culting a fix for a problem it does not have. The
+sharing that was worth having is the env layer, not the marker policy.
+
+**A bug found by the tests, of the same class as Phase 0's.** `child-env`
+originally skipped any key for which `(System/getenv k)` was non-nil, on the
+reasoning that the child inherits it. An exported-but-**empty** variable is
+non-nil, so the child received the blank while this process — whose
+`resolve-var` falls through to the property — used the real value. Parent and
+child disagreeing about one variable is the single thing `child-env` exists to
+prevent. The guard is now `not-blank`. Not hypothetical: the shell this was
+developed in exports `GIT_ASKPASS=` and `SSH_ASKPASS=` empty, which is how the
+proc suite caught it, and that is a common agent/CI pattern.
+
+**Tests.** `util/…/env_test.clj` grows the `child-env` cases (15 tests, 34
+assertions total), and a new `agent/test/…/core/proc_test.clj` (6 tests) spawns
+**real processes** on purpose: every other assertion here proves a map was
+computed correctly, which is one step short of the claim being made. The claim
+is that a subprocess can now see a `.env` value, and the only way to prove it is
+to ask one.
+
+```
+echo "[$BY_TEST_PROC_TOKEN]"   before → []      after → [ghp-from-dotenv]
+echo "[$GIT_ASKPASS]"                          → [false]   (hardening intact)
+```
+
 ### 3.6 Fixing the four measured `.env` inconsistencies
 
 Each is small and each is a prerequisite for the resolver being trustworthy.
@@ -575,7 +649,7 @@ the next.
 |---|---|---|
 | **0** ✅ | `env/resolve` + collapse the `env-or-prop` copies. No new config keys. **Shipped — see §3.1a.** | `/login` and the `/model` picker stop lying about `.env`-supplied keys. |
 | **1** ✅ | Route `schema-env-value` through it; reconcile `dotenv.clj`'s control flags; fix `resolve-project-dir`. **Shipped — see §3.6a.** | §1.2(a)(b)(c)(d) all close. `BY_*` knobs in `.env` work everywhere. |
-| **2** | `env/child-env` + `shell-pb`'s env argument + wire the five shell sites and MCP. Still no new config keys — the map is just "the resolver's view", so children finally see `.env`. | A `.env` `GH_TOKEN` reaches `gh` on the direct-binary path. MCP inherits ACP's marker stripping. |
+| **2** ✅ | `env/child-env` + `proc/shell-pb` applies it + MCP, the `aws` CLI and ACP's forward-env. Still no config keys. **Shipped — see §3.5a.** | A `.env` `GH_TOKEN` reaches `gh` on the direct-binary path. |
 | **3** | `:env-allow` / `:env-deny` / `:env-vars` at global + agent scope. | The feature as asked. |
 | **4** | Tool scope (pending Q2); `--web` / `--sandbox` `:child-env`; dispatch-time scoping for sub-agents, mirroring the work tier. | |
 

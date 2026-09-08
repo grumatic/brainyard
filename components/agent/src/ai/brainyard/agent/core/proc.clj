@@ -23,13 +23,26 @@
 
    Hence this namespace: the protection lives in ONE place, and a sixth
    spawn site is a two-line change that inherits it instead of a fourth copy
-   of the bug. It deliberately depends on nothing, so any caller can use it.
+   of the bug.
 
-   Two mechanisms, applied together:
+   Three mechanisms, applied together:
 
      `sh-argv`         — run the command in its own SESSION, so it has no
                          controlling terminal and `/dev/tty` fails ENXIO.
-     `harden-env!`     — make credential prompts FAIL rather than wait.")
+     `harden-env!`     — make credential prompts FAIL rather than wait.
+     `apply-dotenv!`   — hand the child the `.env` layer, which a
+                         `ProcessBuilder` does not inherit.
+
+   The third one is why this namespace now requires `util` rather than
+   depending on nothing at all. That independence was never the point in
+   itself — it was there so no caller would be blocked from using this, and
+   `util` is the leaf brick that blocks nobody. What the docstring above IS
+   claiming is that a sixth spawn site inherits the protection rather than
+   re-deriving it, and an env layer passed as an ARGUMENT would fail exactly
+   that test: the next site to be written would omit it, silently, in the same
+   way the five old sites each omitted the askpass hardening."
+  (:require [ai.brainyard.util.interface :as util])
+  (:import [java.lang ProcessBuilder]))
 
 (def ^:const new-session-script
   "Shell prologue that re-execs the command in a BRAND-NEW SESSION.
@@ -95,6 +108,24 @@
   [command]
   ["/bin/sh" "-c" new-session-script "brainyard-sh" (str command)])
 
+(defn apply-dotenv!
+  "Apply the `.env` layer to `pb`'s environment. Returns `pb`.
+
+   A child inherits the real ENVIRONMENT and nothing else, so the one thing it
+   is missing is what `.env` supplied — which lives in the JVM property table,
+   because the JVM environment cannot be written to. That asymmetry is why a
+   `.env` `GH_TOKEN` reached `clj-llm` but never reached `gh`.
+
+   Runs AFTER `harden-env!` and BEFORE any caller env, which is the same
+   precedence the rest of the tree uses: hardening is a default, `.env` is the
+   user's configuration, an explicit caller entry is the most specific thing
+   anyone said. `util/child-env` is empty until the loader has run, so this is
+   a no-op in a `bb` task or a test rather than a source of surprise."
+  ^ProcessBuilder [^ProcessBuilder pb]
+  (let [env (.environment pb)]
+    (doseq [[k v] (util/child-env)] (.put env ^String k ^String v)))
+  pb)
+
 (defn harden-env!
   "Apply `non-interactive-env` to `pb`'s environment. Returns `pb`.
 
@@ -107,12 +138,13 @@
 
 (defn shell-pb
   "A ProcessBuilder for `command`, in its own session, with credential
-   prompts disarmed and stdout/stderr merged.
+   prompts disarmed, the `.env` layer applied, and stdout/stderr merged.
 
    The one-call form for the common case. Callers needing more (a working
-   directory, extra env) `doto` the result — `harden-env!` has already run,
-   so their own env entries override it."
+   directory, extra env) `doto` the result — `harden-env!` and `apply-dotenv!`
+   have already run, so their own env entries override both."
   ^ProcessBuilder [command]
   (-> (ProcessBuilder. ^"[Ljava.lang.String;" (into-array String (sh-argv command)))
       (harden-env!)
+      (apply-dotenv!)
       (doto (.redirectErrorStream true))))

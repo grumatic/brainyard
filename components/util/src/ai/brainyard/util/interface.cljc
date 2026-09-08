@@ -32,7 +32,8 @@
 ;; ============================================================================
 
 #?(:clj (export-symbols ai.brainyard.util.core.env
-                        resolve-var resolve-first resolve-any?))
+                        resolve-var resolve-first resolve-any?
+                        register-dotenv-keys! dotenv-keys child-env))
 
 ;; ============================================================================
 ;; Display normalization (CLJ only)
