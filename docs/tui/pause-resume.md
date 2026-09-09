@@ -22,13 +22,15 @@ continue *with a steering note*, or cancel. `Ctrl-\` does the same thing as
 
 | State | Key | Effect |
 |---|---|---|
-| running | `ESC` *(or `Ctrl-\`)* | Request a cooperative pause; tips block appears |
+| running | `ESC` *(or `Ctrl-\`, or `/pause`)* | Request a cooperative pause; tips block appears |
+| idle | `/pause` *(or `Ctrl-\`)* | Refused — "Nothing to pause — no turn is running." |
 | running | `Ctrl-C` | Cancel the active turn (double-press within 1s exits `by`) |
 | **paused** | `ESC` *(or `Ctrl-\`, or empty `Enter`)* | Resume — continue as-is |
 | **paused** | `/continue` + `Enter` | Resume — continue as-is |
 | **paused** | type a message + `Enter` | Resume, folding the message into the loop as a steering note |
 | **paused** | `Ctrl-C` | Cancel the turn |
 | **paused** | `/quit` + `Enter` | Cancel the paused run and exit `by` |
+| **paused** | `/pause` + `Enter` | Says it is already paused; does not resume |
 | idle | `ESC` | Normal editor behaviour (close menu / clear line) — **not** a pause |
 
 The paused tips block:
@@ -43,7 +45,7 @@ The paused tips block:
 
 The two slash commands are rendered from `input/pause-passthrough-commands`,
 the same vector that decides what escapes the steering-note path, so a command
-that passes through cannot go unadvertised.
+that passes through *and acts* cannot go unadvertised.
 
 ## How it works
 
@@ -143,16 +145,36 @@ no ambiguity.
 A paused prompt reads every typed line as a steering note, slash commands
 included, so a command typed here used to reach the LLM as literal text and do
 nothing. `input/pause-passthrough-commands` is the allow-list that escapes
-that, and it holds exactly the two ways out: `/continue` and `/quit`. Before it,
-`/pause`'s own advice to use `/continue` was answered by handing the model the
-word "/continue", and `/quit` could not quit at all — measured: the TUI stayed
-up and the run resumed, steered by the text "/quit".
+that. It holds the two ways OUT — `/continue` and `/quit` — plus `/pause`
+itself. Before it, `/pause`'s own advice to use `/continue` was answered by
+handing the model the word "/continue"; `/quit` could not quit at all (measured:
+the TUI stayed up and the run resumed, steered by the text "/quit"); and a
+second `/pause` RESUMED the run, the exact opposite of what was typed.
+
+`/pause` is the one entry with a nil `:tip`: it passes through so it cannot
+misfire, but it only ever answers "already paused" here, and a paused panel
+advertising `/pause` would be offering a no-op.
 
 It is an allow-list rather than "every recognised command" because several
 would be actively wrong here — `/clear` on a session with a live parked run
 above all — and it cannot be "anything slash-prefixed" because an absolute path
 is a normal thing to steer with, and `/tmp/foo.txt is the file` parses as the
 command `/tmp/foo.txt`.
+
+### A pause is refused when there is nothing to pause
+
+`pause-run` only sets a flag; nothing reads it until a BT node next checks. So
+arming it on an IDLE agent produced a session that reported `paused` with
+nothing parked, and then swallowed the user's next question as a steering note
+for a run that did not exist. `ESC` already declined this case by pre-checking
+`turn-in-flight?`; `Ctrl-\` went straight to `toggle-pause!` and the `/pause`
+command called `pause-run` outright, so both armed it. All three now share the
+one test, and refuse with `input/nothing-to-pause-message`.
+
+The guard covers only the PAUSE direction. A resume stays reachable whatever
+the flag says — an agent left in that state by an older build has no turn in
+flight either, and refusing to unpause it would be the one outcome with no way
+out.
 
 `/quit` additionally needs `stop!` to cancel the paused run *cooperatively*
 before it tears the queues down. `stop-queue!` cancels the worker future, which

@@ -2154,13 +2154,26 @@
   "Cooperatively pause the current BT run on the active agent. The BT
    picks the signal up at the next :condition / :action / iteration
    boundary and parks on the runtime's pause condition. /continue
-   unparks it; Ctrl-C still cancels even from a paused state."
+   unparks it; Ctrl-C still cancels even from a paused state.
+
+   Refuses when there is nothing to pause, on the same `turn-in-flight?` test
+   ESC uses — see `input/toggle-pause!` for why arming the flag on an idle
+   agent is worse than doing nothing. An already-paused run says so rather than
+   re-emitting the advice, which would read as though something had happened."
   [_args]
   (if-let [ag (tui-session/get-active-agent)]
     (try
-      (agent/pause-run (:!state ag))
-      (tui-session/emit! (ansi/muted "[paused] (use /continue to resume)"))
-      (try (tui-session/update-status-bar!) (catch Throwable _))
+      (cond
+        (agent/paused? (:!state ag))
+        (tui-session/emit! (ansi/muted "[paused] (already — use /continue to resume)"))
+
+        (not (input/turn-in-flight? ag))
+        (tui-session/emit! (ansi/muted input/nothing-to-pause-message))
+
+        :else
+        (do (agent/pause-run (:!state ag))
+            (tui-session/emit! (ansi/muted "[paused] (use /continue to resume)"))
+            (try (tui-session/update-status-bar!) (catch Throwable _))))
       (catch Throwable t
         (tui-session/emit! (ansi/failure (str "pause-run failed: " (.getMessage t))))))
     (tui-session/emit! (ansi/warning "No TUI agent running."))))

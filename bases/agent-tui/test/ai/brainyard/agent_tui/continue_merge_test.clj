@@ -89,6 +89,9 @@
     (is (input/pause-passthrough-command? "  /continue  "))
     (is (input/pause-passthrough-command? "/continue 40"))
     (is (input/pause-passthrough-command? "/quit")))
+  (testing "/pause passes through too — as a steering note it would RESUME the
+            run, the exact opposite of what was typed"
+    (is (input/pause-passthrough-command? "/pause")))
   (testing "the allow-list is short on purpose — several commands would be
             actively wrong mid-pause, /clear on a session with a live parked
             run above all"
@@ -101,13 +104,72 @@
     (is (not (input/pause-passthrough-command? "keep going but skip the tests")))
     (is (not (input/pause-passthrough-command? "")))))
 
-(deftest every-passthrough-command-is-advertised-in-the-tips-block
-  (testing "the tips block is the only thing on screen while paused, so a
-            command that passes through but is not listed there is a way out
-            nobody can find"
-    (let [tips (str/join "\n" (#'input/pause-tips-lines 200))]
-      (doseq [[cmd _] input/pause-passthrough-commands]
-        (is (str/includes? tips cmd) (str cmd " missing from the pause tips"))))))
+(def ^:private handle-pause #'commands/handle-pause-run-command)
+
+(deftest pause-refuses-when-nothing-is-running
+  (let [ag {:!state (atom {})}]
+    (with-redefs [input/turn-in-flight? (constantly false)]
+      (let [out (capture ag #(handle-pause ""))]
+        (testing "arming the flag on an idle agent produced a session reporting
+                  `paused` with nothing parked, which then swallowed the user's
+                  NEXT question as a steering note for a run that did not exist"
+          (is (str/includes? out "Nothing to pause"))
+          (is (not (agent/paused? (:!state ag)))))))))
+
+(deftest pause-still-works-on-a-live-turn
+  (let [ag {:!state (atom {})}]
+    (with-redefs [input/turn-in-flight? (constantly true)]
+      (let [out (capture ag #(handle-pause ""))]
+        (is (str/includes? out "use /continue to resume"))
+        (is (agent/paused? (:!state ag)))))))
+
+(deftest pausing-an-already-paused-run-says-so
+  (let [ag (paused-agent)]
+    (with-redefs [input/turn-in-flight? (constantly true)]
+      (let [out (capture ag #(handle-pause ""))]
+        (testing "re-emitting the plain advice would read as though something
+                  had happened"
+          (is (str/includes? out "already")))))))
+
+(deftest the-guard-covers-the-pause-direction-only
+  (testing "a resume must stay reachable whatever `turn-in-flight?` says — an
+            agent left paused by an older build has no turn in flight either,
+            and refusing to unpause it is the one outcome with no way out"
+    (let [ag (paused-agent)]
+      (with-redefs [input/turn-in-flight? (constantly false)
+                    tui-session/get-active-agent (constantly ag)
+                    tui-session/emit! (constantly nil)
+                    tui-session/update-status-bar! (constantly nil)
+                    ai.brainyard.agent-tui.input/hide-pause-tips! (constantly nil)]
+        (input/toggle-pause!))
+      (is (not (agent/paused? (:!state ag)))))))
+
+(deftest ctrl-backslash-refuses-on-an-idle-agent
+  (testing "ESC already declined this case by pre-checking `turn-in-flight?`;
+            Ctrl-\\ went straight to `toggle-pause!` and armed the flag"
+    (let [ag  {:!state (atom {})}
+          out (atom [])]
+      (with-redefs [input/turn-in-flight? (constantly false)
+                    tui-session/get-active-agent (constantly ag)
+                    tui-session/emit! (fn [& a] (swap! out conj (first a)))
+                    tui-session/update-status-bar! (constantly nil)]
+        (input/toggle-pause!))
+      (is (str/includes? (str/join "\n" @out) "Nothing to pause"))
+      (is (not (agent/paused? (:!state ag)))))))
+
+(deftest every-passthrough-command-that-does-something-is-advertised
+  (let [tips (str/join "\n" (#'input/pause-tips-lines 200))]
+    (testing "the tips block is the only thing on screen while paused, so a
+              command that passes through and acts, but is not listed there, is
+              a way out nobody can find"
+      (doseq [{:keys [cmd tip]} input/pause-passthrough-commands
+              :when tip]
+        (is (str/includes? tips cmd) (str cmd " missing from the pause tips"))))
+    (testing "and one that only declines is kept off the panel — listing it
+              would advertise a no-op"
+      (doseq [{:keys [cmd tip]} input/pause-passthrough-commands
+              :when (nil? tip)]
+        (is (not (str/includes? tips cmd)) (str cmd " should not be advertised"))))))
 
 (deftest resume-is-gone-from-every-surface-that-offers-commands
   (testing "the canonical registry — the source /help and autocomplete both read"

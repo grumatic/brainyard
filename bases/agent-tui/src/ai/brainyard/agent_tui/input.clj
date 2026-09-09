@@ -69,11 +69,15 @@
    either, because an absolute path is a normal thing to steer with and
    `/tmp/foo.txt is the file` parses as the command `/tmp/foo.txt`.
 
-   The second element is what the tips block prints; `pause-tips-lines` renders
-   from this vector, and a test pins the two together so a command added here
-   cannot go unadvertised."
-  [["/continue" "continue"]
-   ["/quit"     "exit brainyard"]])
+   `:tip` is what the tips block prints; `pause-tips-lines` renders from this
+   vector, and a test pins the two together so a command that DOES something
+   here cannot go unadvertised. A nil `:tip` means \"passes through, but there
+   is nothing to offer the reader\" — `/pause` is the only such case: it must
+   not become a steering note (typing it would then RESUME the run, the exact
+   opposite of the request) but a paused panel listing `/pause` is noise."
+  [{:cmd "/continue" :tip "continue"}
+   {:cmd "/quit"     :tip "exit brainyard"}
+   {:cmd "/pause"    :tip nil}])
 
 (defn pause-passthrough-command?
   "True when `input`'s first token is one of `pause-passthrough-commands`.
@@ -83,7 +87,7 @@
    so this can never let through something the dispatcher would then reject."
   [input]
   (let [tok (first (str/split (str/trim (str input)) #"\s+"))]
-    (boolean (some #(= tok (first %)) pause-passthrough-commands))))
+    (boolean (some #(= tok (:cmd %)) pause-passthrough-commands))))
 
 (def ^:private tips-key-col
   "Width of the tips table's left (key/command) column."
@@ -104,8 +108,8 @@
          ;; display width; the right column is styled and never measured.
          row (fn [k desc] (str "    " (format (str "%-" tips-key-col "s") k)
                                (ansi/muted desc)))
-         cmd (fn [c] (second (some #(when (= c (first %)) %)
-                                   pause-passthrough-commands)))]
+         cmd (fn [c] (:tip (some #(when (= c (:cmd %)) %)
+                                 pause-passthrough-commands)))]
      (mapv fit
            [""
             (str "  " (ansi/warning "⏸ Paused")
@@ -189,20 +193,46 @@
   (boolean (when-let [aidx (some-> ag tui-session/session-idx-for-agent)]
              (get @!ask-threads aidx))))
 
+(def nothing-to-pause-message
+  "What a pause request with no turn in flight is answered with.
+
+   Shared by the `/pause` command and the `Ctrl-\\` key so the two refusals read
+   the same; ESC never gets here, because it pre-checks `turn-in-flight?` and
+   falls through to the editor when idle (ESC has another job)."
+  "Nothing to pause — no turn is running.")
+
 (defn toggle-pause!
   "Toggle cooperative pause on the active agent. Shared by ESC and Ctrl-\\.
    On pause: request the cooperative pause and show the sticky tips block.
    On resume: clear the pause and dispose the tips block. No-op when no agent
-   exists on the active tab."
+   exists on the active tab.
+
+   REFUSES to pause an agent with no turn in flight. `pause-run` only sets a
+   flag — nothing reads it until a BT node next checks, so arming it on an idle
+   agent produced a session that reported `paused` with nothing parked, and
+   then swallowed the user's NEXT question as a steering note for a run that
+   did not exist. ESC already declined this case; `Ctrl-\\` did not, and neither
+   did the `/pause` command.
+
+   The guard covers only the PAUSE direction. A resume must stay reachable
+   whatever the flag says: an agent already left in that state by an older
+   build has no turn in flight either, and refusing to unpause it would be the
+   one outcome with no way out."
   []
   (when-let [ag (tui-session/get-active-agent)]
     (let [!state (:!state ag)
           paused? (try (agent/paused? !state) (catch Throwable _ false))]
       (try
-        (if paused?
+        (cond
+          paused?
           (do (agent/resume-run !state)
               (hide-pause-tips!)
               (tui-session/emit! (ansi/muted "[resumed]")))
+
+          (not (turn-in-flight? ag))
+          (tui-session/emit! (ansi/muted nothing-to-pause-message))
+
+          :else
           (do (agent/pause-run !state)
               (show-pause-tips!)))
         (try (tui-session/update-status-bar!) (catch Throwable _))

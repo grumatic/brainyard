@@ -194,12 +194,16 @@
         (reset! input/!ask-threads {})))))
 
 (deftest toggle-pause!-shows-and-hides-tips
+  ;; `turn-in-flight?` is stubbed true throughout: pausing is refused without a
+  ;; turn to pause, and this test is about the tips block, not the guard (see
+  ;; `continue-merge-test` for the guard itself).
   (let [paused?   (atom false)
         ag        {:!state (atom {})}
         shown     (atom [])
         disposed  (atom [])]
     (with-redefs [tui-session/get-active-agent (fn [] ag)
                   tui-session/update-status-bar! (fn [] nil)
+                  input/turn-in-flight? (fn [_] true)
                   agent/paused?     (fn [_] @paused?)
                   agent/pause-run   (fn [_] (reset! paused? true))
                   agent/resume-run  (fn [_] (reset! paused? false))
