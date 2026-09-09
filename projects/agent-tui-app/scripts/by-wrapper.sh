@@ -51,13 +51,28 @@ if [ -z "$BY_NO_DOTENV" ]; then
     if [ -n "$BY_ENV_FILE" ] && [ -f "$BY_ENV_FILE" ]; then
         load_env_file "$BY_ENV_FILE"
     else
-        # Walk up from cwd looking for .env
+        # Walk up from cwd. At each level `.brainyard/.env` is read BEFORE
+        # `.env` — it is the file `by env set` writes, so it has to outrank a
+        # project's own application `.env` or a write through the tool would
+        # silently do nothing. Both at a level are loaded (load_env_file only
+        # sets keys that are still unset, so the first one read wins per key);
+        # the walk then stops, as it always has.
+        # BY_PROJECT_DIR is checked first when set — someone naming the root.
+        if [ -n "$BY_PROJECT_DIR" ] && [ -f "$BY_PROJECT_DIR/.brainyard/.env" ]; then
+            load_env_file "$BY_PROJECT_DIR/.brainyard/.env"
+        fi
         d="$PWD"
         while [ "$d" != "/" ] && [ -n "$d" ]; do
+            found=""
+            if [ -f "$d/.brainyard/.env" ]; then
+                load_env_file "$d/.brainyard/.env"
+                found=1
+            fi
             if [ -f "$d/.env" ]; then
                 load_env_file "$d/.env"
-                break
+                found=1
             fi
+            if [ -n "$found" ]; then break; fi
             d="$(dirname "$d")"
         done
     fi

@@ -20,6 +20,7 @@
             [ai.brainyard.agent.common.a2a-serve :as a2a-serve]
             [ai.brainyard.agent.core.protocol :as protocol]
             [ai.brainyard.agent.core.feature :as feature]
+            [ai.brainyard.agent.core.env-files]
             [ai.brainyard.agent.core.session :as session]
             [ai.brainyard.agent.core.memory :as agent-mem]
             [ai.brainyard.memory.interface :as mem]
@@ -394,6 +395,15 @@
 ;; ============================================================================
 ;; Directory & File Management
 ;; ============================================================================
+
+;; ============================================================================
+;; Per-agent `.env` files — docs/design/env-files-design.md
+;; ============================================================================
+
+(export-symbols ai.brainyard.agent.core.env-files
+                agent-env agent-env-path defagent-type
+                scope-path read-file set-var! unset-var! import-file!
+                ensure-gitignore! invalidate-cache!)
 
 (export-symbols ai.brainyard.agent.core.config
                 find-git-root resolve-working-dir set-working-dir-override!

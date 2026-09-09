@@ -1934,6 +1934,12 @@
        :deny-by-default :deny-by-default
        :ask-each-time))))
 
+(def ^:private !agent-env
+  "requiring-resolve delay for `env-files/agent-env` — that namespace requires
+   this one, so the dependency can only run in this direction at call time."
+  (delay (or (requiring-resolve 'ai.brainyard.agent.core.env-files/agent-env)
+             (constantly {}))))
+
 (def ^:private !get-parent-agent
   "requiring-resolve delay for `runtime/get-parent-agent` — the same shape
    `core.tool` uses, and for the same reason: a static require here would be a
@@ -1951,9 +1957,18 @@
    ancestry — see there for why."
   ([] (env-policy nil))
   ([agent-or-st]
-   {:allow (get-config agent-or-st :env-allow)
-    :deny  (get-config agent-or-st :env-deny)
-    :vars  (get-config agent-or-st :env-vars)}))
+   (let [a (resolve-agent agent-or-st)]
+     {:allow (get-config agent-or-st :env-allow)
+      :deny  (get-config agent-or-st :env-deny)
+      ;; The agent's own `.env` layers OVER config.edn's `:env-vars`, which is
+      ;; the conventional direction: a local uncommitted file beats a shared
+      ;; committed one. It is also the only direction that makes the pair
+      ;; coherent — `:env-vars` cannot hold a secret (`config$apply`'s scan
+      ;; refuses one, and project config.edn is meant to travel with the repo),
+      ;; so the file is where the credential is and the config key is where the
+      ;; endpoint or flag is. See docs/design/env-files-design.md §3.2.
+      :vars  (merge (get-config agent-or-st :env-vars)
+                    (@!agent-env a))})))
 
 (def ^:private max-policy-depth
   "Bound on the ancestry walk. `:max-agent-call-depth` already bounds real

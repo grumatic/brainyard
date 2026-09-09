@@ -41,7 +41,8 @@
 #?(:clj (export-symbols ai.brainyard.util.core.env
                         resolve-var resolve-first resolve-any?
                         register-dotenv-keys! dotenv-keys child-env
-                        apply-policy! infrastructure-vars))
+                        apply-policy! infrastructure-vars
+                        parse-env-line parse-env-file))
 
 ;; ============================================================================
 ;; Display normalization (CLJ only)

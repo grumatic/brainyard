@@ -166,6 +166,51 @@
 
 
 ;; ============================================================================
+;; `.env` file parsing — one parser, three readers
+;;
+;; Lived privately in the app project's `dotenv.clj` until `by env import` and
+;; the per-agent files needed the same rules. A file that parses one way for the
+;; loader and another for the CLI writing it is the defect this prevents.
+;; ============================================================================
+
+(defn parse-env-line
+  "One `.env` line → `[k v]`, or nil for a blank, a comment, or a line with no
+   `=`. Strips a leading `export ` and one layer of surrounding quotes."
+  [^String line]
+  (let [trimmed (str/trim line)]
+    (when (and (not (str/blank? trimmed))
+               (not (str/starts-with? trimmed "#")))
+      (let [eq (.indexOf trimmed (int \=))]
+        (when (pos? eq)
+          (let [k (-> (subs trimmed 0 eq) str/trim (str/replace #"^export\s+" ""))
+                v (str/trim (subs trimmed (inc eq)))
+                v (cond
+                    (and (>= (count v) 2)
+                         (str/starts-with? v "\"")
+                         (str/ends-with? v "\""))
+                    (subs v 1 (dec (count v)))
+
+                    (and (>= (count v) 2)
+                         (str/starts-with? v "'")
+                         (str/ends-with? v "'"))
+                    (subs v 1 (dec (count v)))
+
+                    :else v)]
+            (when (seq k) [k v])))))))
+
+(defn parse-env-file
+  "Parse `f` into `{name value}`, or nil when it does not exist.
+
+   Swallows read errors to `{}` rather than throwing: a malformed or unreadable
+   `.env` must not stop the process from starting, and the caller has no better
+   recovery than carrying on without it."
+  [^java.io.File f]
+  (when (.exists f)
+    (try
+      (into {} (keep parse-env-line (str/split-lines (slurp f))))
+      (catch Exception _ {}))))
+
+;; ============================================================================
 ;; Scoping policy — docs/design/environment-scoping-design.md §3.3
 ;; ============================================================================
 

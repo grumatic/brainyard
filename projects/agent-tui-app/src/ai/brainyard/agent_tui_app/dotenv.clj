@@ -16,9 +16,15 @@
    docs/design/environment-scoping-design.md each layer had its own copy of
    that lookup and several readers had neither.)
 
-   Resolution: `BY_ENV_FILE` if it names a readable file, else cwd/.env → each
-   parent → ~/.brainyard/.env. First hit per key wins, and an existing env var
-   always takes precedence. `BY_NO_DOTENV` skips the whole thing.
+   Resolution: `BY_ENV_FILE` if it names a readable file, else — at each level
+   walking up from cwd — `<dir>/.brainyard/.env` then `<dir>/.env`, and finally
+   `~/.brainyard/.env`. First hit per key wins, and an existing env var always
+   takes precedence. `BY_NO_DOTENV` skips the whole thing.
+
+   `.brainyard/.env` is where brainyard's own project-scoped credentials belong,
+   beside the `config.edn`, `sessions/` and `agents/` that already live there;
+   it was the one project-scoped thing with no home under `.brainyard/`. See
+   docs/design/env-files-design.md.
 
    **Both control flags are read from the environment (or a `-D` property),
    never from a `.env`** — which is what keeps them non-circular: the property
@@ -42,43 +48,42 @@
     (let [f (io/file p)]
       (if (.isFile f) f {:missing p}))))
 
-(defn- candidate-paths []
+(defn candidate-paths
+  "Every `.env` this process should consider, most specific first.
+
+   At each level of the walk `<dir>/.brainyard/.env` is offered BEFORE
+   `<dir>/.env`, and the ordering is forced rather than aesthetic: the
+   `.brainyard/` file is the one `by env set` writes, so a project that already
+   has an application `.env` carrying the same name would otherwise shadow every
+   write made through the tool — silently, with nothing to see.
+
+   Walking for `.brainyard/.env` rather than resolving the project root is what
+   keeps this correct at a moment when the project root is not yet known: this
+   runs in `-dispatch`, before `install-working-dir!` and before any config
+   loads. The git root is one of the ancestors, so the walk finds it anyway.
+   `BY_PROJECT_DIR` is honored first when set — as a LEVEL, both of its files
+   in the same order, because that is someone naming the root explicitly and a
+   root that contributed only one of its two files would be a third rule.
+
+   `~/.brainyard/.env` stays last. It is usually also produced by the walk (home
+   is commonly an ancestor of cwd); `distinct` collapses the pair."
+  []
   (let [cwd  (System/getProperty "user.dir")
-        home (System/getProperty "user.home")]
-    (->> (concat (loop [d (io/file cwd) acc []]
+        home (System/getProperty "user.home")
+        ;; env only, in practice — the property table is written at the END of
+        ;; `load-from-dotenv!`, so a `.env` cannot name its own project root.
+        proj (util/resolve-var "BY_PROJECT_DIR")]
+    (->> (concat (when proj [(io/file proj ".brainyard" ".env")
+                             (io/file proj ".env")])
+                 (loop [d (io/file cwd) acc []]
                    (if (nil? d)
                      acc
-                     (recur (.getParentFile d) (conj acc (io/file d ".env")))))
+                     (recur (.getParentFile d)
+                            (conj acc
+                                  (io/file d ".brainyard" ".env")
+                                  (io/file d ".env")))))
                  [(io/file home ".brainyard" ".env")])
          distinct)))
-
-(defn- parse-line [^String line]
-  (let [trimmed (str/trim line)]
-    (when (and (not (str/blank? trimmed))
-               (not (str/starts-with? trimmed "#")))
-      (let [eq (.indexOf trimmed (int \=))]
-        (when (pos? eq)
-          (let [k (str/trim (subs trimmed 0 eq))
-                v (str/trim (subs trimmed (inc eq)))
-                v (cond
-                    (and (>= (count v) 2)
-                         (str/starts-with? v "\"")
-                         (str/ends-with? v "\""))
-                    (subs v 1 (dec (count v)))
-
-                    (and (>= (count v) 2)
-                         (str/starts-with? v "'")
-                         (str/ends-with? v "'"))
-                    (subs v 1 (dec (count v)))
-
-                    :else v)]
-            (when (seq k) [k v])))))))
-
-(defn- parse-file [^java.io.File f]
-  (when (.exists f)
-    (try
-      (into {} (keep parse-line (str/split-lines (slurp f))))
-      (catch Exception _ {}))))
 
 (defn load-from-dotenv!
   "Scan `.env` candidate paths and merge into JVM System Properties. Real env
@@ -97,7 +102,7 @@
           merged (atom {})
           loaded (atom [])]
       (doseq [^java.io.File f paths]
-        (when-let [m (parse-file f)]
+        (when-let [m (util/parse-env-file f)]
           (let [new-keys (remove (fn [[k _]]
                                    (or (contains? @merged k)
                                        ;; a REAL env var wins; the property

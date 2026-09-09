@@ -388,6 +388,29 @@
    :as "Tombstone L2 episodes older than N days that are not kept (default 30)"
    :type :int})
 
+(def env-agent-opt
+  {:option "agent" :short "A"
+   :as "Per-agent scope: <project>/.brainyard/agents/<agent-id>/.env"
+   :type :string})
+
+(def env-scope-opt
+  {:option "scope"
+   :as "Which .env to act on: project (default) or user"
+   :type :string :default "project"})
+
+(def show-values-opt
+  {:option "show-values"
+   :as "Print values in full instead of masking them"
+   :type :with-flag :default false})
+
+(def env-file-opt
+  {:option "file" :short "f" :as "Env-format file to import" :type :string})
+
+(def overwrite-opt
+  {:option "overwrite"
+   :as "Replace names that already exist in the target (default: keep + report)"
+   :type :with-flag :default false})
+
 (def yes-opt
   {:option "yes" :short "y"
    :as "Skip the interactive confirmation for destructive verbs (forget/sweep/prune)"
@@ -3037,6 +3060,206 @@
               (println "\nBy scope")
               (doseq [[sc c] by-scope] (println (format "  %-24s %d" (name sc) c))))))))))
 
+;; ============================================================================
+;; `by env` — the `.env` files brainyard owns
+;;
+;; docs/design/env-files-design.md. Three scopes, one chain:
+;;   --agent A                 -> <project>/.brainyard/agents/A/.env
+;;   --scope project (default) -> <project>/.brainyard/.env
+;;   --scope user              -> ~/.brainyard/.env
+;;
+;; Values are MASKED everywhere by default, INCLUDING under --json: a
+;; machine-readable dump is the easier one to paste somewhere public.
+;; ============================================================================
+
+(defn- env-mask
+  "`sk-ant...****ab12`. Same shape as env-detect's provider masking; a short
+   value is fully starred rather than half-revealed, since half of a short
+   secret is most of it."
+  [v]
+  (let [v (str v)]
+    (cond
+      (str/blank? v)    ""
+      (<= (count v) 12) (apply str (repeat (count v) \*))
+      :else             (str (subs v 0 6) "...****" (subs v (- (count v) 4))))))
+
+(defn- env-show [opts v] (if (:show-values opts) (str v) (env-mask v)))
+
+(defn- env-sel
+  "Scope selector from CLI opts. `--agent` implies project scope and refuses to
+   combine with an explicit `--scope user`: the pair is contradictory, and
+   silently picking one is how a credential lands in the wrong file."
+  [opts]
+  (let [ag    (some-> (:agent opts) str not-empty)
+        scope (keyword (or (:scope opts) "project"))]
+    (when-not (contains? #{:project :user} scope)
+      (exit-err! (str "Error: unknown --scope " (name scope) " (expected project or user).")))
+    (when (and ag (= :user scope) (some? (:scope opts)) (not= "project" (:scope opts)))
+      (exit-err! "Error: --agent is project-scoped; drop --scope user."))
+    (cond-> {:scope scope} ag (assoc :agent ag))))
+
+(defn- env-candidates
+  "Every candidate file, most specific first, annotated with what it holds.
+
+   The global chain from `dotenv/candidate-paths`, plus the agent file when one
+   is named. The agent file is deliberately NOT part of that chain — it reaches
+   children through the policy, never the process — so it is listed first and
+   labelled, rather than pretended into the loader's order."
+  [opts]
+  (let [sel        (env-sel opts)
+        agent-path (when (:agent sel) (agent/scope-path sel))]
+    (vec (for [p (distinct (concat (when agent-path [agent-path])
+                                   (map str (dotenv/candidate-paths))))
+               :let [f    (io/file p)
+                     ex   (.isFile f)
+                     vars (when ex (agent/read-file p))]]
+           {:path p :exists ex :agent? (= p agent-path)
+            :names (vec (sort (keys vars))) :vars (or vars {})}))))
+
+(defn cmd-env-list [opts]
+  (install-working-dir! opts)
+  (let [cands (filter :exists (env-candidates opts))
+        rows  (->> cands
+                   (mapcat (fn [{:keys [path vars]}]
+                             (for [[k v] vars] {:name k :value v :source path})))
+                   ;; first file to define a name wins, mirroring the loader
+                   (reduce (fn [acc {:keys [name] :as r}]
+                             (if (contains? acc name) acc (assoc acc name r)))
+                           {})
+                   vals
+                   (sort-by :name))]
+    (if (:json opts)
+      (print-json! {:success true
+                    :vars (mapv #(assoc % :value (env-show opts (:value %))) rows)})
+      (if (empty? rows)
+        (println "No .env files with values on this chain.")
+        (let [agent-path (when (:agent (env-sel opts)) (agent/scope-path (env-sel opts)))]
+          (println (format "%-30s %-24s %s" "NAME" "VALUE" "SOURCE"))
+          (doseq [{:keys [name value source]} rows]
+            (println (format "%-30s %-24s %s" name (env-show opts value) source)))
+          (when (and agent-path (some #(= agent-path (:source %)) rows))
+            ;; Said once, at the bottom, because a row from the agent file does
+            ;; NOT resolve in this process — it is handed to spawned children.
+            (println)
+            (println (str "Rows from " agent-path))
+            (println "are agent scope: they reach that agent's child processes, not this one.")))))))
+
+(defn cmd-env-get [opts]
+  (install-working-dir! opts)
+  (let [vn (first (:_arguments opts))]
+    (when-not (not-empty vn)
+      (exit-err! "Usage: by env get NAME [--agent A] [--show-values]"))
+    (let [hit (some (fn [{:keys [path vars exists]}]
+                      (when (and exists (contains? vars vn))
+                        {:name vn :value (get vars vn) :source path}))
+                    (env-candidates opts))]
+      (cond
+        (:json opts) (print-json! (if hit
+                                    {:success true :name vn
+                                     :value  (env-show opts (:value hit))
+                                     :source (:source hit)}
+                                    {:success false :name vn :error "not set"}))
+        hit          (println (format "%s=%s   (%s)" vn (env-show opts (:value hit)) (:source hit)))
+        :else        (do (emit-err! (str vn " is not set in any .env on this chain."))
+                         (System/exit 1))))))
+
+(defn cmd-env-set [opts]
+  (install-working-dir! opts)
+  (let [arg (first (:_arguments opts))
+        i   (when arg (.indexOf ^String arg (int \=)))
+        [vn value] (when (and i (pos? i)) [(subs arg 0 i) (subs arg (inc i))])]
+    (when-not vn
+      (exit-err! "Usage: by env set NAME=VALUE [--agent A] [--scope project|user]"))
+    (if-let [r (agent/set-var! (env-sel opts) vn value)]
+      (if (:json opts)
+        (print-json! (assoc r :success true))
+        (println (format "%s %s in %s" (if (:created? r) "Created" "Updated") vn (:path r))))
+      (exit-err! "Error: could not resolve a target .env for that scope."))))
+
+(defn cmd-env-unset [opts]
+  (install-working-dir! opts)
+  (let [vn (first (:_arguments opts))]
+    (when-not (not-empty vn)
+      (exit-err! "Usage: by env unset NAME [--agent A] [--scope project|user]"))
+    (if-let [r (agent/unset-var! (env-sel opts) vn)]
+      (if (:json opts)
+        (print-json! (assoc r :success true))
+        (println (if (:removed? r)
+                   (format "Removed %s from %s" vn (:path r))
+                   (format "%s was not set in %s" vn (:path r)))))
+      (exit-err! "Error: could not resolve a target .env for that scope."))))
+
+(defn cmd-env-import [opts]
+  (install-working-dir! opts)
+  (let [src (or (:file opts) (first (:_arguments opts)))]
+    (when-not (not-empty src)
+      (exit-err! "Usage: by env import --file PATH [--agent A] [--scope ...] [--overwrite]"))
+    (let [r (agent/import-file! (env-sel opts) src {:overwrite? (:overwrite opts)})]
+      (cond
+        (nil? r)   (exit-err! "Error: could not resolve a target .env for that scope.")
+        (:error r) (do (if (:json opts)
+                         (print-json! {:success false :error (:error r)})
+                         (emit-err! (str "Error: " (:error r))))
+                       (System/exit 1))
+        (:json opts) (print-json! (assoc r :success true))
+        :else
+        (do (println (format "Imported into %s" (:path r)))
+            (when (seq (:added r))       (println "  added:      " (str/join ", " (:added r))))
+            (when (seq (:overwritten r)) (println "  overwritten:" (str/join ", " (:overwritten r))))
+            (when (seq (:skipped r))
+              (println "  skipped:    " (str/join ", " (:skipped r))
+                       "(already set; pass --overwrite to replace)")))))))
+
+(defn cmd-env-doctor [opts]
+  (install-working-dir! opts)
+  (let [vn     (first (:_arguments opts))
+        cands  (env-candidates opts)
+        real   (when vn (System/getenv vn))
+        rows   (mapv (fn [{:keys [path exists vars agent?]}]
+                       (cond-> {:path path :exists exists :agent agent?}
+                         vn       (assoc :defines (contains? vars vn))
+                         (and vn (contains? vars vn))
+                         (assoc :value (env-show opts (get vars vn)))
+                         (nil? vn) (assoc :count (count vars))))
+                     cands)
+        ;; TWO winners, because there are two questions and conflating them is
+        ;; the mistake this verb exists to prevent. The agent file is not on the
+        ;; process chain at all — it reaches a spawned CHILD through the policy —
+        ;; so naming it as "the" winner would assert the opposite of §3.2.
+        proc-win  (when vn
+                    (if real "<process environment>"
+                        (some #(when (and (:defines %) (not (:agent %))) (:path %)) rows)))
+        child-win (when vn
+                    (or (some #(when (and (:defines %) (:agent %)) (:path %)) rows)
+                        proc-win))]
+    (if (:json opts)
+      (print-json! (cond-> {:success true :candidates rows}
+                     vn (assoc :name vn
+                               :real-env (some? real)
+                               :winner-in-process proc-win
+                               :winner-for-children child-win)))
+      (do
+        (when vn
+          (println (format "Resolving %s" vn))
+          (cond
+            real     (println "  in this process:  the process environment — a real env var outranks every file")
+            proc-win (println (str "  in this process:  " proc-win))
+            :else    (println "  in this process:  not defined in any candidate file"))
+          (if (and child-win (not= child-win proc-win))
+            (println (str "  for its children: " child-win "  (agent scope)"))
+            (println (str "  for its children: " (or child-win "not defined"))))
+          (println))
+        (println "Candidates, most specific first:")
+        (doseq [{:keys [path exists defines value count agent]} rows]
+          (println (format "  %-7s %-9s %s%s%s"
+                           (if exists "found" "-")
+                           (cond (not exists) ""
+                                 vn           (if defines "DEFINES" "")
+                                 :else        (str count " var" (when (not= 1 count) "s")))
+                           path
+                           (if agent "   [agent scope — reaches children, not this process]" "")
+                           (if value (str "   " value) ""))))))))
+
 (defn cmd-projects-list
   "List every project registered under `~/.brainyard/projects/`, newest first.
 
@@ -3369,6 +3592,32 @@
                                  :description "Forget one registered project by slug (confirm or --yes)"
                                  :opts        [yes-opt json-opt]
                                  :runs        cmd-projects-remove}]}
+                 {:command     "env"
+                  :description "Manage the .env files brainyard owns (project, user, per-agent)"
+                  :subcommands [{:command     "list"
+                                 :description "Names, sources and MASKED values across the whole chain"
+                                 :opts        [env-agent-opt env-scope-opt show-values-opt working-dir-opt json-opt]
+                                 :runs        cmd-env-list}
+                                {:command     "get"
+                                 :description "One resolved value and which file supplied it"
+                                 :opts        [env-agent-opt env-scope-opt show-values-opt working-dir-opt json-opt]
+                                 :runs        cmd-env-get}
+                                {:command     "set"
+                                 :description "Set NAME=VALUE in the target scope's .env (created 0600)"
+                                 :opts        [env-agent-opt env-scope-opt working-dir-opt json-opt]
+                                 :runs        cmd-env-set}
+                                {:command     "unset"
+                                 :description "Remove NAME from the target scope's .env"
+                                 :opts        [env-agent-opt env-scope-opt working-dir-opt json-opt]
+                                 :runs        cmd-env-unset}
+                                {:command     "import"
+                                 :description "Merge an external env file into the target scope"
+                                 :opts        [env-file-opt overwrite-opt env-agent-opt env-scope-opt working-dir-opt json-opt]
+                                 :runs        cmd-env-import}
+                                {:command     "doctor"
+                                 :description "Show every candidate file and which one wins (optionally for one NAME)"
+                                 :opts        [env-agent-opt env-scope-opt show-values-opt working-dir-opt json-opt]
+                                 :runs        cmd-env-doctor}]}
                  {:command     "scripts"
                   :description "Inspect the agent script library and how often it is reused"
                   :subcommands [{:command     "list"
@@ -3493,7 +3742,7 @@
 ;; Entry point
 ;; ============================================================================
 
-(def ^:private known-subcommands #{"run" "ask" "agents" "models" "config" "sessions" "projects" "scripts" "memory" "events" "a2a"})
+(def ^:private known-subcommands #{"run" "ask" "agents" "models" "config" "sessions" "projects" "scripts" "memory" "events" "a2a" "env"})
 (def ^:private help-flags #{"--help" "-?" "-h"})
 ;; `-v` is taken by `run --verbose`, so the short version flag is capital `-V`.
 (def ^:private version-flags #{"--version" "-V"})
