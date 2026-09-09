@@ -595,7 +595,7 @@
                    (row "/version"              "show app version + mode")
                    (row "/keys"                 "show keyboard shortcuts")
                    (row "/model [name]"         "show or hot-swap the active LM")
-                   (row "/clear"                "restart session: clear history, scrollback, st-memory")
+                   (row "/clear"                "new session: empty context; previous stays resumable")
                    (row "/quit"                 "shut down the agent and exit")])
          "\n\n"
          (section "Sessions & agents"

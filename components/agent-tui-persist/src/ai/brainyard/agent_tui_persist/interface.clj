@@ -18,6 +18,7 @@
             [ai.brainyard.agent-tui-persist.core.messages :as messages]
             [ai.brainyard.agent-tui-persist.core.paths :as paths]
             [ai.brainyard.agent-tui-persist.core.restore :as restore]
+            [ai.brainyard.agent-tui-persist.core.rotate :as rotate]
             [ai.brainyard.agent-tui-persist.core.scrollback :as scrollback]
             [ai.brainyard.agent-tui-persist.core.snapshots :as snapshots]
             [ai.brainyard.agent-tui-persist.core.tree :as tree]))
@@ -119,13 +120,24 @@
 (def append-line!   edn-io/append-line!)
 (def read-lines     edn-io/read-lines)
 
-;; -- Archive (what /clear runs on) --------------------------------------------
+;; -- Archive / rotate ---------------------------------------------------------
 ;;
-;; Moves a session's conversation to a NEW id and leaves the live id empty but
-;; unchanged — so `ask.sock` never moves under an attached caller. Distinct
-;; from `fork-session!` below, which records a different relation.
+;; Two ways to end up with a cleared screen and a saved transcript, mirror
+;; images of each other:
+;;
+;;   archive-session! — move the CONVERSATION to a new id, live id stays put.
+;;   rotate-session!  — leave the conversation where it is, move the LIVE
+;;                      PROCESS to a new id.
+;;
+;; `/clear` runs `rotate-session!`, so a session id names one immutable
+;; conversation and the id printed at exit still holds the same transcript
+;; tomorrow. `archive-session!` remains for callers that must not move
+;; `ask.sock` out from under an attached `by ask -s <id>`.
+;; Both are distinct from `fork-session!` below, which records a different
+;; relation.
 
 (def archive-session!      archive/archive-session!)
+(def rotate-session!       rotate/rotate-session!)
 
 ;; -- Session tree (parent / fork / labels) -----------------------------------
 

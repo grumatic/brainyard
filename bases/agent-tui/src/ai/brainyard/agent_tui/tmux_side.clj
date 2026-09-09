@@ -164,6 +164,19 @@
                      :prior-mouse prior-mouse})
      @!state)))
 
+(defn retarget!
+  "Point the side channel's file outputs (FIFOs, `/scrollback dump`) at a
+   different `<project>/.brainyard/sessions/<id>/`, keeping any open panes and
+   their writers. Used when `/clear` rotates the live session onto a new id.
+
+   Deliberately not `install!`: that resets `:activity`/`:log` to nil, which
+   would ORPHAN an open side pane — the pane keeps running with nothing left
+   holding its id to kill it. Returns the new session dir, or nil when the side
+   channel is not installed (Mode A)."
+  [session-dir]
+  (when (installed?)
+    (:session-dir (swap! !state assoc :session-dir session-dir))))
+
 (defn- close-channel!
   "Tear down a single side channel (kill its pane + close its FIFO writer).
    Tolerates missing pieces — used both by `uninstall!` and the `hide` slash

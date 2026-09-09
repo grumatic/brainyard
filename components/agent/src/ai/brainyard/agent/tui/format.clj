@@ -988,7 +988,7 @@
                    ["trace"  "Show BT trace entries (thinking)"]]}]
    ["/allow-path"       " PATH"                   "Whitelist a file path for agent access"]
    ["/capture"          " PATH"                   "Save scrollback buffer to file"]
-   ["/clear"            ""                        "Restart the session: clear history, scrollback, and st-memory"]
+   ["/clear"            ""                        "Start a new session: empty context; the old one stays resumable"]
    ["/compact"          " [ratio]"                "Compact context to ratio of max tokens (default 0.2)"]
    ["/config"           " [key [val]]"            "Show/set runtime config"]
    ["/continue"         " [N]"                    "Resume last answer with N more iterations"]
@@ -2086,6 +2086,41 @@
                   (ansi/success "achieved")
                   (ansi/muted "in progress"))
                 "\n")))))
+
+;; ============================================================================
+;; Exit resume hint
+;; ============================================================================
+
+(defn format-resume-hint
+  "The parting line(s) naming what `by` just saved and how to get it back.
+
+   `sessions` is an ordered seq of `{:session-id :label}` — one per live tab
+   that holds a conversation worth reopening. Returns nil for an empty seq, so
+   a run that said nothing exits as quietly as it always did.
+
+   Every tab is listed, not just the active one, because closing `by` closes
+   all of them at once and the ids are not guessable. The label is what the
+   user actually recognises and the id is what the command needs, so both
+   appear; the label column is padded only in the multi-tab case, where the
+   commands lining up is what makes the block scannable."
+  [sessions]
+  (when (seq sessions)
+    (let [n     (count sessions)
+          ;; `display-width`, not `count` — a CJK or emoji label is wider than
+          ;; its character count and would push its command out of the column.
+          width (apply max 0 (map #(display-width (str (:label %))) sessions))]
+      (str (ansi/muted (if (= n 1)
+                         "Session saved."
+                         (str n " sessions saved.")))
+           "\n"
+           (str/join "\n"
+                     (for [{:keys [session-id label]} sessions
+                           :let [pad (- width (display-width (str label)))]]
+                       (str "  "
+                            (when label
+                              (ansi/muted (str label (apply str (repeat pad \space)) "  ")))
+                            (ansi/style (str "by --resume " session-id)
+                                        ansi/cyan))))))))
 
 ;; ============================================================================
 ;; BT Trace

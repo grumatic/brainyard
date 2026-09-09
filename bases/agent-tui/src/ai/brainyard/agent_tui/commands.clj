@@ -103,27 +103,34 @@
         (tui-session/emit!
          (fmt/format-conversation-history messages :last-n last-n))))))
 
-(defn- clear-stamp
-  "Local wall-clock stamp for an archive's label. Carries the DATE as well as
-   the time: archives live until the 14-day TTL purge takes them, so several
-   accumulate and 'before /clear 14:32' alone does not say which day."
-  []
-  (.format (java.time.LocalDateTime/now)
-           (java.time.format.DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm")))
-
 (defn clear!
-  "Restart the active session in place.
+  "Start a FRESH session in the current tab: empty context, new persisted
+   session id, previous conversation left intact on disk.
+
    Clears conversation history and in-memory scrollback, resets st-memory to
    st-memory-init, drops any display selection, and repaints the now-empty
-   viewport. Keeps the same agent instance and agent-session-id; tools,
-   instruction, and input history are preserved.
+   viewport. The agent instance, its tools and its instruction are kept — this
+   restarts the conversation, not the agent.
 
-   The PERSISTED conversation is not destroyed — it is moved to a new session
-   id (`persist/archive-session!`) and the id is named in the confirmation, so
-   a mistaken /clear is recoverable with `by run -r <archive-id>`. Todo and
-   permission state stay with the live session: remembered approvals are
-   preferences, not conversation, and a user should not have to re-grant them
-   because they cleared."
+   What is new is the SESSION ID. `/clear` used to keep the live id and move
+   the conversation out to `<id>-cleared-<ts>` (`persist/archive-session!`),
+   which kept `ask.sock` still for an attached `by ask -s <id>` at the price of
+   a session id that no longer named one fixed conversation. It now rotates the
+   other way (`core/rotate-session-id!` + `persist/rotate-session!`): the
+   transcript stays exactly where it is under the id it was written to, and the
+   live process moves to a new one. So the id named here — and the one printed
+   at exit — still holds the same transcript tomorrow, and `by --resume <id>`
+   means one thing.
+
+   The cost is the one archiving existed to avoid: an attached
+   `by ask -s <old-id>` loses its socket at the clear. The old session's
+   meta.edn keeps a `:rotated-to` breadcrumb pointing at where the live process
+   went.
+
+   Input history and remembered permissions travel forward with the process
+   (`persist/rotate-session!`'s `carried-tags`): recalled input is ergonomics
+   and approvals are preferences, and neither is conversation. Todo state does
+   not — it belongs to the work that was just cleared."
   []
   (let [ag (tui-session/get-active-agent)]
     (if-not ag
@@ -133,7 +140,20 @@
             st-mem-init (agent/get-st-memory-init ag)
             init-map    (if st-mem-init @st-mem-init {})
             asid        (try (agent/session-id ag) (catch Throwable _ nil))
-            active-idx  (sessions/active-idx)]
+            active-idx  (sessions/active-idx)
+            ;; --- On-disk rotation ------------------------------------------
+            ;; FIRST, while the session atom still describes the conversation
+            ;; being retired: the rotation flushes that session's final
+            ;; `session.edn` snapshot, and a snapshot taken after the clear
+            ;; below would describe the session that REPLACED it.
+            rotated (when asid
+                      (try
+                        ((requiring-resolve 'ai.brainyard.agent-tui.core/rotate-session-id!)
+                         ag active-idx)
+                        (catch Throwable t
+                          (mulog/warn ::clear-rotate-failed
+                                      :session-id asid :error (ex-message t))
+                          nil)))]
         ;; --- Agent state ----------------------------------------------------
         ;; Clear session messages, progress data, and total-turns counter
         (swap! !session (fn [s]
@@ -160,43 +180,41 @@
                                      :live-blocks     {}
                                      :viewport-offset 0
                                      :has-unread?     false}))
-        ;; --- On-disk persistence -------------------------------------------
-        ;; The conversation is MOVED to a new session id, not destroyed. This
-        ;; used to truncate the scrollback streams and delete messages.log, so
-        ;; a mistaken /clear was unrecoverable and a later resume could not
-        ;; tell that destruction apart from a corrupt file. The live id is
-        ;; kept deliberately: `ask.sock` is keyed on it, so re-issuing it here
-        ;; would move the socket out from under an attached `by ask -s <id>`.
-        (let [archived
-              (when asid
-                (try
-                  (persist/archive-session!
-                   asid (str asid "-cleared-" (System/currentTimeMillis))
-                   {:label (str "before /clear " (clear-stamp))})
-                  (catch Throwable t
-                    (mulog/warn ::clear-archive-failed
-                                :session-id asid :error (ex-message t))
-                    nil)))]
-          ;; The bridge's high-water mark counts messages ALREADY written, and
-          ;; the log those messages were in has just moved away. Left at its
-          ;; old value, `flush-new-messages!` computes a start index past the
-          ;; end of the now-empty message vector and writes nothing — so the
-          ;; FIRST turn after a /clear never reached disk, and the log silently
-          ;; resumed from turn two.
-          (when asid
-            (try (persist-bridge/prime-session-counts! asid 0)
-                 (catch Throwable _)))
-          ;; --- Repaint ------------------------------------------------------
-          (try (layout/render-viewport!) (catch Throwable _))
-          (try (layout/draw-separator!) (catch Throwable _))
-          (try (layout/redraw-chrome!)  (catch Throwable _))
-          (try (tui-session/update-status-bar!) (catch Throwable _))
-          (tui-session/emit!
-           (if-let [aid (:archive-id archived)]
-             (str (ansi/success "Cleared session and restarted.") "\n"
-                  (ansi/muted (str "  previous conversation saved as " aid
-                                   " — resume it with: by run -r " aid)))
-             (ansi/success "Cleared session and restarted."))))))))
+        ;; Rotation already primed the NEW id's high-water mark. Without a
+        ;; rotation the id is unchanged and its mark still counts the messages
+        ;; now being dropped from memory, so it has to be reset here or the
+        ;; first post-clear turn computes a start index past the end of an
+        ;; empty vector and never reaches disk — the log silently resumes from
+        ;; turn two.
+        (when (and asid (not rotated))
+          (try (persist-bridge/prime-session-counts! asid 0)
+               (catch Throwable _)))
+        ;; --- Repaint --------------------------------------------------------
+        (try (layout/render-viewport!) (catch Throwable _))
+        (try (layout/draw-separator!) (catch Throwable _))
+        (try (layout/redraw-chrome!)  (catch Throwable _))
+        (try (tui-session/update-status-bar!) (catch Throwable _))
+        (tui-session/emit!
+         (if-let [new-id (:new-id rotated)]
+           (str (ansi/success (str "Cleared. Started new session " new-id ".")) "\n"
+                (ansi/muted (str "  previous session " (:old-id rotated)
+                                 " kept on disk\n"
+                                 "  resume it with: by --resume " (:old-id rotated)))
+                ;; A cleared session gets the same session-end memory
+                ;; consolidation /quit would give it. Report a detached child
+                ;; here, where the clear that spawned it is still on screen.
+                (when-let [d (seq (:detached rotated))]
+                  (str "\n" (ansi/muted
+                              (str "  🧠 folding it into long-term memory in the"
+                                   " background (PID "
+                                   (str/join ", " (map (comp str :pid) d)) ")")))))
+           ;; Rotation failed: the screen and the context are clear, but the
+           ;; transcript is still under the SAME id and the next turn will
+           ;; append to it. Say so rather than printing a resume line that
+           ;; would reopen a session with both conversations in it.
+           (str (ansi/success "Cleared session and restarted.") "\n"
+                (ansi/warning (str "  could not start a new session id — this session's log"
+                                   " continues under " asid)))))))))
 
 (defn- compact-cmd
   "Handle /compact [ratio] command.

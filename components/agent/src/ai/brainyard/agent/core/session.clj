@@ -40,6 +40,13 @@
   (delete-session [this session-id]
     "Remove a session from the store. Implementations should fire
      `:agent.session/closed` when an existing session is deleted.")
+  (unregister-session [this session-id]
+    "Drop `session-id` from the store WITHOUT firing `:agent.session/closed`.
+     For a session that is CONTINUING under a different id, not ending — see
+     `rekey-session!`. Distinct from `delete-session` because the closed hook
+     is where teardown lives (reactor, FSM and auto-notify cleanup, the router
+     agent's INDEX.md summary), and running that on a rename would dismantle
+     the session it renamed.")
   (list-sessions [this user-id] "List session data maps for a user"))
 
 ;; ============================================================================
@@ -61,6 +68,9 @@
                     :user-id    (:user-id @!s)
                     :session    !s}))
     nil)
+  (unregister-session [_ session-id]
+    (swap! !store dissoc session-id)
+    nil)
   (list-sessions [_ user-id]
     (->> @!store
          vals
@@ -71,6 +81,28 @@
   "Create an in-memory session store."
   []
   (->InMemorySessionStore (atom {})))
+
+(defn rekey-session!
+  "Re-register `!session` under `new-id` and drop `old-id`, leaving the atom —
+   and therefore every agent sharing it — untouched. Returns `new-id`.
+
+   The session id lives ONLY as `:session-id` inside the shared session atom
+   (`agent/session-id` reads it there), so the caller mutating that key is what
+   actually moves the root agent and all of its session-sharing subagents at
+   once. This function fixes up the one place that does NOT follow the atom:
+   the store's own key. Left alone, the old key keeps pointing at the live atom
+   and `get-or-create-session` would hand a caller resuming the OLD id the
+   conversation that has since moved on.
+
+   Both halves matter, and `delete-session` is deliberately not used for the
+   removal — see `unregister-session`.
+
+   No-op when `old-id` equals `new-id`."
+  [session-store old-id new-id !session]
+  (when (and session-store (not= old-id new-id))
+    (set-session session-store new-id !session)
+    (unregister-session session-store old-id))
+  new-id)
 
 (defn generate-session-id
   "Generate a unique session-id string with the given prefix."

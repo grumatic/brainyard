@@ -1358,7 +1358,14 @@
       (try
         (if-let [handle (persist/try-acquire-lock! sid)]
           (do (swap! !session-locks assoc sid handle)
-              (try (persist/save-meta! sid {:pid (:pid handle)}) (catch Throwable _))
+              ;; Claiming the lock also RETIRES any `:rotated-to` breadcrumb.
+              ;; That field means "this id's process moved on and nothing has
+              ;; reclaimed the id" — which stops being true the instant someone
+              ;; resumes it. Left standing it would send an attach client after
+              ;; a session that is itself no longer live, which is a worse
+              ;; answer than the plain "not running" it replaced.
+              (try (persist/save-meta! sid {:pid (:pid handle) :rotated-to nil})
+                   (catch Throwable _))
               (mulog/info ::session-lock-acquired :session-id sid :pid (:pid handle)))
           (mulog/warn ::session-lock-contended :session-id sid
                       :owner-pid (try (persist/owner-pid sid) (catch Throwable _ nil))))
@@ -1519,6 +1526,97 @@
                (catch Throwable _ []))]
     (reset! terminal/!input-history hist)
     hist))
+
+(defn rotate-session-id!
+  "Move the LIVE session in tab `idx` onto a brand-new persisted session id and
+   return `{:old-id :new-id :carried}` (nil when there is nothing to rotate).
+
+   This is the process half of `/clear`. The disk half — seeding the new
+   directory and stamping the old one — is `persist/rotate-session!`; see its
+   namespace docstring for why the process moves rather than the conversation.
+
+   The session id lives in exactly one authoritative place: `:session-id`
+   inside the shared session atom. Mutating it there is what re-points the root
+   agent AND every session-sharing subagent at once, and it is why the eight
+   persist-bridge hooks need no changes — each re-derives the id per event, so
+   the very next `:message` lands in the new directory. Everything else in this
+   function is the state that does NOT follow that atom, in the one order that
+   is safe:
+
+   - The old `session.edn` is flushed FIRST, while the atom still describes the
+     old conversation. `on-ask-post` already writes it every turn, so this only
+     matters for the case that motivates it: rotating mid-turn would otherwise
+     leave the archived session's snapshot describing the session that replaced
+     it.
+   - The ask listener and the ownership lock are released BEFORE the id moves
+     and re-acquired after. Releasing deletes `by-host.lock`, which is what
+     makes the old id immediately resumable rather than \"already open in
+     another running by\". Both re-acquire functions re-derive the id from the
+     atom, so they need no argument.
+   - `agent/rekey-session!` fixes the session STORE's key, the one copy that
+     the atom cannot update itself. It deliberately does not fire
+     `:agent.session/closed` — the session is continuing under a new name, and
+     that hook is where reactor/FSM/auto-notify teardown lives.
+   - `prime-session-counts!` resets the message high-water mark for the new id.
+     The mark counts messages ALREADY on disk; left unset it would default to 0
+     anyway, but the OLD id's entry must go or a later resume of it in this
+     process would start from a count that describes a different conversation.
+
+   `input-history.edn` was copied forward by the disk half, so the reload here
+   restores the same recall list the user had a moment ago — a clear resets the
+   conversation, not the keyboard."
+  [ag idx]
+  (let [!session (:!session ag)
+        old-id   (try (agent/session-id ag) (catch Throwable _ nil))]
+    (when (and !session old-id)
+      (let [new-id  (agent/generate-session-id "agt")
+            label   (:label (sessions/get-session idx))
+            rotated (persist/rotate-session! old-id new-id
+                                             (cond-> {} label (assoc :label label)))]
+        ;; Freeze the outgoing session's snapshot before the atom moves on.
+        (try (persist/write-snap! old-id :session (dissoc @!session :messages :config))
+             (catch Throwable _))
+        ;; The old session has ENDED, so give it the session-end treatment it
+        ;; would get at /quit — while the agent still reports its id. Both the
+        ;; turn counter and the reduce are keyed by session-id, so skipping
+        ;; this strands the cleared conversation's L2 tail: the flush at /quit
+        ;; is scoped to the id we are about to move ON to and would never see
+        ;; it. In graph mode this detaches a child (the pid is reported by the
+        ;; caller); the heuristic path is LLM-free and takes milliseconds.
+        (try (agent/flush-session-consolidation! ag) (catch Throwable _))
+        (stop-ask-listener! old-id)
+        (release-session-lock! old-id)
+        ;; THE move. Every hook, every subagent, every `agent/session-id` call
+        ;; after this line resolves to the new directory.
+        (swap! !session assoc :session-id new-id)
+        (agent/rekey-session! !session-store old-id new-id !session)
+        (when idx
+          (sessions/update-session! idx assoc :agent-session-id new-id))
+        (swap! tui-session/!tui-state assoc :session-id new-id)
+        (persist-bridge/prime-session-counts! new-id 0)
+        (persist-bridge/forget-session-counts! old-id)
+        (persist-bridge/save-tui-session-meta!
+         new-id {:label label :defagent-id (:defagent-id (sessions/get-session idx))})
+        (acquire-session-lock! ag)
+        (start-ask-listener! ag)
+        ;; Mode B only: side-pane FIFOs and `/scrollback dump` write into the
+        ;; session dir by absolute path, so they keep filling the OLD one
+        ;; unless retargeted. No-op in Mode A.
+        (try (tmux-side/retarget!
+              (.getAbsolutePath ^java.io.File (persist/session-dir new-id)))
+             (catch Throwable _))
+        (load-input-history-for-session! new-id)
+        (mulog/info ::session-rotated :from old-id :to new-id
+                    :carried (:carried rotated))
+        {:old-id   old-id
+         :new-id   new-id
+         :carried  (:carried rotated)
+         ;; Any consolidation child the flush above handed off. Drained here
+         ;; rather than left for `stop!` so the pid is reported next to the
+         ;; clear that caused it — at /quit it would be attributed to a
+         ;; session it has nothing to do with.
+         :detached (try (agent/drain-detached-consolidations!)
+                        (catch Throwable _ nil))}))))
 
 (defn- format-mcp-summary
   "One-line 'MCP: connecting … · lazy …' banner from an init-mcp-from-config!
@@ -2190,90 +2288,121 @@
         (write-startup-notice!)))
     :ok))
 
+(defn- resumable-tabs
+  "Ordered `{:session-id :label}` for every live tab holding a conversation
+   worth reopening — the input to `fmt/format-resume-hint`.
+
+   Must be called BEFORE `stop!` closes anything: `close-session!` closes each
+   tab's agent, after which `(agent/session-id ag)` is no longer reliable.
+
+   Two exclusions. An `:output` tab is a read-only view onto its root's
+   sub-output stream and owns no session of its own (`:agent-session-id` is
+   nil), so it has nothing to resume. A tab with no messages has nothing to
+   come back to — `by --resume` on it would reopen an empty prompt, which is
+   what launching `by` does anyway. A tab whose message count can't be read is
+   INCLUDED: naming a session that turns out to be empty costs a line, and
+   omitting one that wasn't loses a conversation."
+  []
+  (into []
+        (keep (fn [{:keys [agent-session-id label agent session-type]}]
+                (when (and agent-session-id (not= :output session-type))
+                  (let [msgs (try (:messages @(:!session agent))
+                                  (catch Throwable _ ::unknown))]
+                    (when (or (= msgs ::unknown) (seq msgs))
+                      {:session-id agent-session-id :label label})))))
+        (sessions/session-list)))
+
 (defn stop!
   "Stop TUI session. Closes all sessions, detaches watches, tears down hooks,
    shuts down task manager and queue."
   []
-  ;; Remove every TUI-registered hook in one call
-  (try (agent/unregister-source! :tui) (catch Exception _))
-  ;; Tear down the persist bridge (unregisters the :persist hook source).
-  (try (persist-bridge/stop!) (catch Exception _))
-  ;; Stop every per-root input queue
-  (doseq [[_ !queue] @!input-queues]
-    (try (agent/stop-queue! !queue) (catch Exception _)))
-  (reset! !input-queues {})
-  (reset! !turn-submitter-registered? false)
-  ;; Shut down the task manager: cancel every running task, which drives each
-  ;; detached task's :on-cancel and destroys its subprocess tree. The pool's
-  ;; worker threads are daemon, so the JVM *exits* without waiting — but a
-  ;; subprocess spawned via ProcessBuilder (e.g. `npm run dev`) is NOT a daemon
-  ;; thread; it's an independent OS process that survives JVM exit unless we
-  ;; explicitly kill it here. Best-effort. The double-Ctrl-C / SIGTERM paths
-  ;; bypass `stop!` and get the same teardown from the JVM shutdown hook below.
-  ;; NOTE: both the shutdown and the self-improvement drain happen AFTER the
-  ;; session-close block below, not before it. Closing a session fires
-  ;; `:agent.instance/closed`, which is where skill distillation flushes its
-  ;; accumulated tail — submitting a task. Shutting the manager down first
-  ;; would leave that submission with no pool to run on and nothing to drain
-  ;; it. Tasks stay alive across close, which is simply their normal state.
-  ;;
-  ;; Session-end memory consolidation fires inside close-session! below (via the
-  ;; :agent.instance/closed flush hook). In graph mode it is handed to a DETACHED
-  ;; `by memory reduce` child — /quit no longer blocks; we report the spawned
-  ;; PID(s) afterward. The heuristic path still runs inline (LLM-free, ms). We
-  ;; snapshot whether any work is pending BEFORE close clears the per-session turn
-  ;; tallies, then report the outcome once the flush has actually run.
-  (let [pending? (try (agent/pending-consolidation?) (catch Throwable _ false))]
-    ;; Close all sessions (closes their agents and detaches watches)
-    (doseq [idx (sessions/session-indices)]
-      (sessions/close-session! idx))
-    (when pending?
-      (let [detached (try (agent/drain-detached-consolidations!) (catch Throwable _ nil))]
-        (tui-session/emit!
-         (str "\n"
-              (ansi/muted
-               (if (seq detached)
-                 (str "🧠 Spawned background process (PID "
-                      (str/join ", " (map (comp str :pid) detached))
-                      ") to fold this session into long-term memory — it continues after exit.")
-                 "🧠 Folded this session into long-term memory.")))))))
-  ;; Also close any agent in !tui-state (backward compat)
-  (when-let [^java.io.Closeable ag (tui-session/get-active-agent)]
-    (try
-      (.close ag)
-      (catch Exception _)))
-  ;; Every close that could emit background work has now happened. Give
-  ;; in-flight jobs (skill distillation / refinement, the memory consolidation
-  ;; cadence, including the session-end distill batch just queued above) a brief
-  ;; grace period before the shutdown cancels them: their LLM call is already
-  ;; paid for, so cancelling one at the finish line throws away a result we
-  ;; spent tokens on. Bounded, and only on this (/quit) path — the JVM shutdown
-  ;; hook is a hard-kill route that must not linger.
-  (try (agent/await-background-jobs! 3000) (catch Throwable _))
-  (try (agent/task-shutdown) (catch Throwable _))
-  (tui-session/stop-tui-publisher!)
-  (tui-session/stop-memory-activity-publisher!)
-  ;; Drain, then stop, the file publisher — a plain stop discards whatever
-  ;; is still batched, which on this path is the whole shutdown sequence.
-  (try (tui-log/flush-file-publisher!) (catch Exception _))
-  ;; Stop in-process nREPL server if we started one
-  (stop-nrepl-server!)
-  ;; Close every per-session ask socket
-  (try (stop-all-ask-listeners!) (catch Exception _))
-  ;; Release every per-session ownership lock
-  (try (release-all-session-locks!) (catch Exception _))
-  ;; Tear down any Mode-B side panes/FIFOs. No-op when not installed.
-  (try (tmux-side/uninstall!) (catch Exception _))
-  (tui-session/clear-agent!)
-  ;; Reset session manager
-  (reset! tui-session/!root-output-sessions {})
-  (sessions/reset-sessions!)
-  (layout/teardown!)
-  ;; Teardown courtesy line only for a real terminal — a daemon / no-TTY run
-  ;; stays fully silent on stdout.
-  (when (terminal/stdout-terminal?)
-    (tui-session/emit! (str "\n" (ansi/muted "TUI session ended."))))
-  :ok)
+  ;; Snapshot what we'll offer to resume BEFORE any teardown reaches the
+  ;; agents that hold the ids (see `resumable-tabs`).
+  (let [resumable (try (resumable-tabs) (catch Throwable _ nil))]
+    ;; Remove every TUI-registered hook in one call
+    (try (agent/unregister-source! :tui) (catch Exception _))
+    ;; Tear down the persist bridge (unregisters the :persist hook source).
+    (try (persist-bridge/stop!) (catch Exception _))
+    ;; Stop every per-root input queue
+    (doseq [[_ !queue] @!input-queues]
+      (try (agent/stop-queue! !queue) (catch Exception _)))
+    (reset! !input-queues {})
+    (reset! !turn-submitter-registered? false)
+    ;; Shut down the task manager: cancel every running task, which drives each
+    ;; detached task's :on-cancel and destroys its subprocess tree. The pool's
+    ;; worker threads are daemon, so the JVM *exits* without waiting — but a
+    ;; subprocess spawned via ProcessBuilder (e.g. `npm run dev`) is NOT a daemon
+    ;; thread; it's an independent OS process that survives JVM exit unless we
+    ;; explicitly kill it here. Best-effort. The double-Ctrl-C / SIGTERM paths
+    ;; bypass `stop!` and get the same teardown from the JVM shutdown hook below.
+    ;; NOTE: both the shutdown and the self-improvement drain happen AFTER the
+    ;; session-close block below, not before it. Closing a session fires
+    ;; `:agent.instance/closed`, which is where skill distillation flushes its
+    ;; accumulated tail — submitting a task. Shutting the manager down first
+    ;; would leave that submission with no pool to run on and nothing to drain
+    ;; it. Tasks stay alive across close, which is simply their normal state.
+    ;;
+    ;; Session-end memory consolidation fires inside close-session! below (via the
+    ;; :agent.instance/closed flush hook). In graph mode it is handed to a DETACHED
+    ;; `by memory reduce` child — /quit no longer blocks; we report the spawned
+    ;; PID(s) afterward. The heuristic path still runs inline (LLM-free, ms). We
+    ;; snapshot whether any work is pending BEFORE close clears the per-session turn
+    ;; tallies, then report the outcome once the flush has actually run.
+    (let [pending? (try (agent/pending-consolidation?) (catch Throwable _ false))]
+      ;; Close all sessions (closes their agents and detaches watches)
+      (doseq [idx (sessions/session-indices)]
+        (sessions/close-session! idx))
+      (when pending?
+        (let [detached (try (agent/drain-detached-consolidations!) (catch Throwable _ nil))]
+          (tui-session/emit!
+           (str "\n"
+                (ansi/muted
+                 (if (seq detached)
+                   (str "🧠 Spawned background process (PID "
+                        (str/join ", " (map (comp str :pid) detached))
+                        ") to fold this session into long-term memory — it continues after exit.")
+                   "🧠 Folded this session into long-term memory.")))))))
+    ;; Also close any agent in !tui-state (backward compat)
+    (when-let [^java.io.Closeable ag (tui-session/get-active-agent)]
+      (try
+        (.close ag)
+        (catch Exception _)))
+    ;; Every close that could emit background work has now happened. Give
+    ;; in-flight jobs (skill distillation / refinement, the memory consolidation
+    ;; cadence, including the session-end distill batch just queued above) a brief
+    ;; grace period before the shutdown cancels them: their LLM call is already
+    ;; paid for, so cancelling one at the finish line throws away a result we
+    ;; spent tokens on. Bounded, and only on this (/quit) path — the JVM shutdown
+    ;; hook is a hard-kill route that must not linger.
+    (try (agent/await-background-jobs! 3000) (catch Throwable _))
+    (try (agent/task-shutdown) (catch Throwable _))
+    (tui-session/stop-tui-publisher!)
+    (tui-session/stop-memory-activity-publisher!)
+    ;; Drain, then stop, the file publisher — a plain stop discards whatever
+    ;; is still batched, which on this path is the whole shutdown sequence.
+    (try (tui-log/flush-file-publisher!) (catch Exception _))
+    ;; Stop in-process nREPL server if we started one
+    (stop-nrepl-server!)
+    ;; Close every per-session ask socket
+    (try (stop-all-ask-listeners!) (catch Exception _))
+    ;; Release every per-session ownership lock
+    (try (release-all-session-locks!) (catch Exception _))
+    ;; Tear down any Mode-B side panes/FIFOs. No-op when not installed.
+    (try (tmux-side/uninstall!) (catch Exception _))
+    (tui-session/clear-agent!)
+    ;; Reset session manager
+    (reset! tui-session/!root-output-sessions {})
+    (sessions/reset-sessions!)
+    (layout/teardown!)
+    ;; Teardown courtesy line only for a real terminal — a daemon / no-TTY run
+    ;; stays fully silent on stdout. The resume hint rides the same guard: it is
+    ;; addressed to a person about to lose their scrollback, and a `--serve`
+    ;; daemon has no one to read it.
+    (when (terminal/stdout-terminal?)
+      (tui-session/emit! (str "\n" (ansi/muted "TUI session ended.")))
+      (when-let [hint (try (fmt/format-resume-hint resumable) (catch Throwable _ nil))]
+        (tui-session/emit! hint)))
+    :ok))
 
 ;; ============================================================================
 ;; Public API — Interaction

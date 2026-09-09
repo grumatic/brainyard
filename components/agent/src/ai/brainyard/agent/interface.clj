@@ -211,7 +211,7 @@
 
 (export-symbols ai.brainyard.agent.core.session
                 create-session-store create-session ISessionStore
-                set-session
+                get-session set-session rekey-session!
                 generate-session-id
                 get-session-config set-session-config get-messages
                 append-agent-activity)
@@ -284,7 +284,8 @@
 (export-symbols ai.brainyard.agent.common.memory-agent.hooks
                 pending-consolidation?
                 set-offload-fn!
-                drain-detached-consolidations!)
+                drain-detached-consolidations!
+                flush-session-consolidation!)
 
 ;; ============================================================================
 ;; Current Agent Dynamic Var

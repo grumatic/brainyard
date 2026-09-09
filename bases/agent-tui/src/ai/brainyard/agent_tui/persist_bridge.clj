@@ -304,6 +304,16 @@
   (swap! !msg-counts assoc session-id n)
   n)
 
+(defn forget-session-counts!
+  "Drop the high-water mark for `session-id`. Counterpart to
+   `prime-session-counts!` for a session this process is no longer writing —
+   `/clear`'s rotation onto a new id. Without it the old id keeps a count
+   describing a conversation this process has moved on from, and resuming that
+   id in the same process would start flushing partway through it."
+  [session-id]
+  (swap! !msg-counts dissoc session-id)
+  nil)
+
 (defn save-tui-session-meta!
   "Persist TUI-session-specific fields (label, defagent-id) into meta.edn
    so they can be restored on resume. Exceptions are swallowed; no-op when

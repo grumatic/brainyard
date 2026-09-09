@@ -24,7 +24,7 @@
                 format-answer format-answer-plain format-answer-soft render-markdown
                 format-usage-summary format-usage-table
                 format-conversation-message format-conversation-history
-                format-status-summary
+                format-status-summary format-resume-hint
                 format-trace format-mulog-event format-mulog-event-data
                 format-memory-activity-event)
 

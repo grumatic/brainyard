@@ -176,7 +176,7 @@ opens the completion menu; commands with sub-verbs open a submenu.
 | `/copy` | `[code [N]]` | Copy the last answer — or one of its code blocks — to the clipboard |
 | `/capture` | `PATH` | Save the scrollback buffer to a file |
 | `/compact` | `[ratio]` | Compact context to a ratio of max tokens (default 0.2) |
-| `/clear` | | Restart the session: history, scrollback, and st-memory |
+| `/clear` | | Start a new session: empty context; the previous one stays on disk, resumable with `by --resume <id>` |
 | `/continue` | `[N]` | Resume the last answer with N more iterations |
 | `/pause` / `/resume` | | Cooperatively pause / unpark the active BT run |
 | `/allow-path` | `PATH` | Whitelist a file path for agent access |

@@ -1183,6 +1183,26 @@
       positional      {:questions [positional]}
       :else           {:error "question argument is required"})))
 
+(defn- rotated-to
+  "The session id that `session-id`'s live process moved onto, or nil.
+
+   `/clear` rotates a running session onto a NEW id and leaves the transcript
+   behind under the old one, so the old id stops being attachable the moment
+   the user clears — its `ask.sock` went with the process. Without this the
+   only report is \"not open in a running `by`\", which is both true and
+   misleading: the session IS open, under a name the caller has no way to
+   guess. `persist/rotate-session!` writes the breadcrumb; this reads it."
+  [session-id]
+  (:rotated-to (try (persist/safe-read-meta session-id) (catch Throwable _ nil))))
+
+(defn- rotated-hint
+  "One indented line pointing at where a rotated session's process went, or nil
+   when the session was not rotated."
+  [session-id]
+  (when-let [to (rotated-to session-id)]
+    (str "  It was cleared: the live session continues as " to
+         " — attach to that instead.")))
+
 (defn cmd-ask-attach
   "Ask one or more questions of an already-running session over its side ask
    channel. Resolves <project>/.brainyard/sessions/<session-id>/ask.sock, sends
@@ -1206,11 +1226,14 @@
     (let [^java.io.File sock (persist/file-of session-id :ask-sock)]
       (when-not (and sock (.exists sock))
         (if json?
-          (print-json! {:success false :session-id session-id
-                        :error (str "session '" session-id "' is not attachable (no live ask socket)")})
+          (print-json! (cond-> {:success false :session-id session-id
+                                :error (str "session '" session-id "' is not attachable (no live ask socket)")}
+                         (rotated-to session-id) (assoc :rotated-to (rotated-to session-id))))
           (do (println (str "Error: session '" session-id "' is not attachable "
                             "(no live ask socket)."))
-              (println "  It must be open in a running `by run` TUI in this project.")
+              (if-let [hint (rotated-hint session-id)]
+                (println hint)
+                (println "  It must be open in a running `by run` TUI in this project."))
               (println "  List sessions with: by sessions list")))
         (System/exit 1))
       ;; --attach delegates to the LIVE session's agent, so the LM-selection
@@ -2686,10 +2709,12 @@
 
           (or (str/blank? (str sock)) (not (.exists (io/file ^String sock))))
           (do (if json?
-                (print-json! {:success false :session-id id :attachable false
-                              :error (str "session '" id "' is not attachable (no live ask socket)")})
+                (print-json! (cond-> {:success false :session-id id :attachable false
+                                      :error (str "session '" id "' is not attachable (no live ask socket)")}
+                               (rotated-to id) (assoc :rotated-to (rotated-to id))))
                 (emit-err! (str "Error: session '" id "' is not attachable "
-                                "(not open in a running `by`).")))
+                                "(not open in a running `by`)."
+                                (some->> (rotated-hint id) (str "\n")))))
               (System/exit 1))
 
           :else
@@ -2808,10 +2833,12 @@
             sock (:ask-socket-path row)]
         (if (or (nil? row) (str/blank? (str sock)) (not (.exists (io/file ^String sock))))
           (do (if json?
-                (print-json! {:success false :session-id id :attachable false
-                              :error (str "session '" id "' is not attachable (no live ask socket)")})
+                (print-json! (cond-> {:success false :session-id id :attachable false
+                                      :error (str "session '" id "' is not attachable (no live ask socket)")}
+                               (rotated-to id) (assoc :rotated-to (rotated-to id))))
                 (emit-err! (str "Error: session '" id "' is not attachable "
-                                "(not open in a running `by`).")))
+                                "(not open in a running `by`)."
+                                (some->> (rotated-hint id) (str "\n")))))
               (System/exit 1))
           (let [req  (cond-> {:op :emit :event event}
                        (map? payload) (assoc :payload payload))

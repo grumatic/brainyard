@@ -78,7 +78,7 @@
    "/continue [N] for more iterations · /history to review the chat"
    "Ctrl-C to interrupt · /pause and /resume a running agent"
    "Tab cycles output blocks · PgUp/PgDn scroll output history"
-   "/clear restarts the session · /compact shrinks the context"
+   "/clear starts a fresh session · /compact shrinks the context"
    "/memory manages long-term memory · /init authors BRAINYARD.md"
    "/task manages background tasks · /queue shows the input queue"
    "/usage for token & cost summary · /status for agent status"

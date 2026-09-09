@@ -499,6 +499,25 @@
               nil))))))
   nil)
 
+(defn flush-session-consolidation!
+  "Run the session-end flush for `agent`'s CURRENT session id, outside the
+   `:agent.instance/closed` hook. For a session that is ending WITHOUT its
+   agent closing — `/clear`, which rotates the live process onto a new id and
+   leaves the old session's transcript behind as a finished conversation.
+
+   Without this the cleared session's L2 tail is stranded: `!turn-counters` and
+   the reduce are both keyed by SESSION-ID, so the flush that fires later at
+   `/quit` is scoped to the id the process moved ON to and re-reads only that
+   session's episodes. The old session's turns would then be folded into L3 by
+   nothing at all, and its orphaned counter would leave
+   `pending-consolidation?` permanently true.
+
+   MUST be called BEFORE the session id is mutated — it reads the id off the
+   agent, which is exactly what makes it flush the session being retired.
+   Returns nil and never throws, like the handler it delegates to."
+  [agent]
+  (session-end-flush-handler {:agent agent}))
+
 (defn install-session-end-flush!
   "Register the session-end-flush hook globally. Idempotent."
   []
