@@ -153,9 +153,9 @@
     {:model "meta-llama/llama-4-scout-17b-16e-instruct"}
     {:model "llama-3.1-8b-instant"}]
    :apple-fm
-   [{:model "apple-foundationmodel" :curated-rank 35 :description "Apple FM ~3B (on-device, macOS 26+)"}]
+   [{:model "apple-foundationmodel" :curated-rank 36 :description "Apple FM ~3B (on-device, macOS 26+)"}]
    :free-llm
-   [{:model "auto" :curated-rank 34 :description "Free OpenAI-compatible endpoint (FREELLM_BASE_URL); 'auto' lets the backend pick"}]
+   [{:model "auto" :curated-rank 35 :description "Free OpenAI-compatible endpoint (FREELLM_BASE_URL); 'auto' lets the backend pick"}]
    :anthropic
    [{:model "claude-opus-5" :curated-rank 3 :description "Anthropic Claude Opus 5 (flagship)"}
     {:model "claude-sonnet-5" :curated-rank 4 :description "Anthropic Claude Sonnet 5 (fast + smart)"}
@@ -209,25 +209,35 @@
     {:model "o1"}]
    ;; Deliberately absent — see `excluded-model-patterns` below, which is the
    ;; enforceable form of this note.
+
+   ;; Local server: this is a guess about someone else's machine, so it is the
+   ;; provider most dependent on the refresh (`/v1/models` on localhost is the
+   ;; only authority for what is actually pulled). Curated entries are the ids
+   ;; worth offering in the picker WHEN present; an absent one simply never
+   ;; resolves, and a pulled model the refresh discovers is usable either way.
    :ollama
-   [{:model "gemma3:12b"}
-    {:model "glm-5:cloud" :curated-rank 33 :description "GLM-5 Cloud (Ollama)"}]
+   ;; `glm-5:cloud` was removed: ollama.com answers 410 "glm-5 was retired at
+   ;; 2026-07-15". The refresh cannot catch this class of rot — a `:cloud`
+   ;; model is a local POINTER manifest, so `/v1/models` keeps reporting it as
+   ;; present long after the remote is gone. Only a real request says so.
+   [{:model "kimi-k2.7-code:cloud" :curated-rank 33 :description "Kimi K2.7 Code Cloud (Ollama; coding, 262K context)"}
+    {:model "gemma4:latest" :curated-rank 34 :description "Gemma 4 8B (Ollama, local; tools + thinking)"}]
    :bedrock
    ;; Anthropic on Bedrock — prefer the `global.` cross-region inference
    ;; profiles; `us.`/`eu.`/`apac.` variants exist per partition.
-   [{:model "global.anthropic.claude-opus-5" :curated-rank 36 :description "Claude Opus 5 on Bedrock (global cross-region, flagship)"}
-    {:model "us.anthropic.claude-opus-5" :curated-rank 37 :description "Claude Opus 5 on Bedrock (US cross-region)"}
-    {:model "global.anthropic.claude-sonnet-5" :curated-rank 38 :description "Claude Sonnet 5 on Bedrock (global cross-region)"}
-    {:model "us.anthropic.claude-sonnet-5" :curated-rank 39 :description "Claude Sonnet 5 on Bedrock (US cross-region)"}
-    {:model "global.anthropic.claude-fable-5" :curated-rank 40 :description "Claude Fable 5 on Bedrock (global cross-region)"}
-    {:model "global.anthropic.claude-opus-4-8" :curated-rank 41 :description "Claude Opus 4.8 on Bedrock (global cross-region)"}
-    {:model "global.anthropic.claude-opus-4-7" :curated-rank 42 :description "Claude Opus 4.7 on Bedrock (global cross-region)"}
-    {:model "global.anthropic.claude-opus-4-6-v1" :curated-rank 43 :description "Claude Opus 4.6 on Bedrock (global cross-region)"}
-    {:model "global.anthropic.claude-sonnet-4-6" :curated-rank 44 :description "Claude Sonnet 4.6 on Bedrock (global cross-region)"}
-    {:model "global.anthropic.claude-haiku-4-5-20251001-v1:0" :curated-rank 45 :description "Claude Haiku 4.5 on Bedrock (global cross-region)"}
-    {:model "us.anthropic.claude-haiku-4-5-20251001-v1:0" :curated-rank 46 :description "Claude Haiku 4.5 on Bedrock (US cross-region)"}
-    {:model "global.anthropic.claude-opus-4-5-20251101-v1:0" :curated-rank 47 :description "Claude Opus 4.5 on Bedrock (global cross-region)"}
-    {:model "us.anthropic.claude-sonnet-4-5-20250929-v1:0" :curated-rank 48 :description "Claude Sonnet 4.5 on Bedrock (US cross-region)"}
+   [{:model "global.anthropic.claude-opus-5" :curated-rank 37 :description "Claude Opus 5 on Bedrock (global cross-region, flagship)"}
+    {:model "us.anthropic.claude-opus-5" :curated-rank 38 :description "Claude Opus 5 on Bedrock (US cross-region)"}
+    {:model "global.anthropic.claude-sonnet-5" :curated-rank 39 :description "Claude Sonnet 5 on Bedrock (global cross-region)"}
+    {:model "us.anthropic.claude-sonnet-5" :curated-rank 40 :description "Claude Sonnet 5 on Bedrock (US cross-region)"}
+    {:model "global.anthropic.claude-fable-5" :curated-rank 41 :description "Claude Fable 5 on Bedrock (global cross-region)"}
+    {:model "global.anthropic.claude-opus-4-8" :curated-rank 42 :description "Claude Opus 4.8 on Bedrock (global cross-region)"}
+    {:model "global.anthropic.claude-opus-4-7" :curated-rank 43 :description "Claude Opus 4.7 on Bedrock (global cross-region)"}
+    {:model "global.anthropic.claude-opus-4-6-v1" :curated-rank 44 :description "Claude Opus 4.6 on Bedrock (global cross-region)"}
+    {:model "global.anthropic.claude-sonnet-4-6" :curated-rank 45 :description "Claude Sonnet 4.6 on Bedrock (global cross-region)"}
+    {:model "global.anthropic.claude-haiku-4-5-20251001-v1:0" :curated-rank 46 :description "Claude Haiku 4.5 on Bedrock (global cross-region)"}
+    {:model "us.anthropic.claude-haiku-4-5-20251001-v1:0" :curated-rank 47 :description "Claude Haiku 4.5 on Bedrock (US cross-region)"}
+    {:model "global.anthropic.claude-opus-4-5-20251101-v1:0" :curated-rank 48 :description "Claude Opus 4.5 on Bedrock (global cross-region)"}
+    {:model "us.anthropic.claude-sonnet-4-5-20250929-v1:0" :curated-rank 49 :description "Claude Sonnet 4.5 on Bedrock (US cross-region)"}
     {:model "anthropic.claude-opus-5"}
     {:model "anthropic.claude-sonnet-5"}
     {:model "anthropic.claude-fable-5"}
@@ -265,14 +275,14 @@
     ;; bill 0.0 until AWS publishes rates. Catalogued anyway: whether a model
     ;; is drivable and whether we know its price are separate questions, and
     ;; the coverage report is what tracks the second.
-    {:model "global.openai.gpt-5.6-sol" :curated-rank 69 :description "OpenAI GPT-5.6 Sol on Bedrock (global cross-region, most capable)"}
-    {:model "global.openai.gpt-5.6-terra" :curated-rank 70 :description "OpenAI GPT-5.6 Terra on Bedrock (global cross-region, balanced)"}
-    {:model "global.openai.gpt-5.6-luna" :curated-rank 71 :description "OpenAI GPT-5.6 Luna on Bedrock (global cross-region, fastest + cheapest)"}
+    {:model "global.openai.gpt-5.6-sol" :curated-rank 70 :description "OpenAI GPT-5.6 Sol on Bedrock (global cross-region, most capable)"}
+    {:model "global.openai.gpt-5.6-terra" :curated-rank 71 :description "OpenAI GPT-5.6 Terra on Bedrock (global cross-region, balanced)"}
+    {:model "global.openai.gpt-5.6-luna" :curated-rank 72 :description "OpenAI GPT-5.6 Luna on Bedrock (global cross-region, fastest + cheapest)"}
     ;; Grok 4.6 emits a `reasoningContent` block BEFORE any text and will
     ;; spend the whole budget on it: probed at maxTokens 64 it returned
     ;; reasoning only and stopped on max_tokens with empty text; at 2000 it
     ;; answered normally. Give it room, or it looks like an empty reply.
-    {:model "global.xai.grok-4.6" :curated-rank 72 :description "xAI Grok 4.6 on Bedrock (global cross-region, reasoning — needs a large max-tokens)"}
+    {:model "global.xai.grok-4.6" :curated-rank 73 :description "xAI Grok 4.6 on Bedrock (global cross-region, reasoning — needs a large max-tokens)"}
     {:model "us.openai.gpt-5.6-sol"}
     {:model "us.openai.gpt-5.6-terra"}
     {:model "us.openai.gpt-5.6-luna"}
@@ -282,10 +292,10 @@
     {:model "openai.gpt-5.6-luna"}
     {:model "xai.grok-4.6"}
     ;; Amazon Nova
-    {:model "us.amazon.nova-2-lite-v1:0" :curated-rank 49 :description "Amazon Nova 2 Lite on Bedrock (US cross-region, fast)"}
-    {:model "us.amazon.nova-premier-v1:0" :curated-rank 50 :description "Amazon Nova Premier on Bedrock (US cross-region)" :region "us-east-1"}
-    {:model "us.amazon.nova-pro-v1:0" :curated-rank 51 :description "Amazon Nova Pro on Bedrock (US cross-region, multimodal)"}
-    {:model "us.amazon.nova-lite-v1:0" :curated-rank 52 :description "Amazon Nova Lite on Bedrock (US cross-region, fast)"}
+    {:model "us.amazon.nova-2-lite-v1:0" :curated-rank 50 :description "Amazon Nova 2 Lite on Bedrock (US cross-region, fast)"}
+    {:model "us.amazon.nova-premier-v1:0" :curated-rank 51 :description "Amazon Nova Premier on Bedrock (US cross-region)" :region "us-east-1"}
+    {:model "us.amazon.nova-pro-v1:0" :curated-rank 52 :description "Amazon Nova Pro on Bedrock (US cross-region, multimodal)"}
+    {:model "us.amazon.nova-lite-v1:0" :curated-rank 53 :description "Amazon Nova Lite on Bedrock (US cross-region, fast)"}
     {:model "amazon.nova-2-lite-v1:0"}
     {:model "amazon.nova-premier-v1:0" :region "us-east-1"}
     {:model "amazon.nova-pro-v1:0"}
@@ -302,22 +312,22 @@
     {:model "apac.amazon.nova-micro-v1:0"}
     ;; Open-weights and third-party. Entries pinned to us-east-1 are not
     ;; served in every region (verified against list-foundation-models).
-    {:model "meta.llama3-3-70b-instruct-v1:0" :curated-rank 53 :description "Meta Llama 3.3 70B on Bedrock"}
-    {:model "openai.gpt-oss-120b-1:0" :curated-rank 54 :description "OpenAI gpt-oss 120B (open-weights) on Bedrock" :region "us-east-1"}
-    {:model "openai.gpt-oss-20b-1:0" :curated-rank 55 :description "OpenAI gpt-oss 20B (open-weights) on Bedrock" :region "us-east-1"}
-    {:model "qwen.qwen3-32b-v1:0" :curated-rank 56 :description "Qwen3 32B (dense) on Bedrock" :region "us-east-1"}
-    {:model "qwen.qwen3-coder-30b-a3b-v1:0" :curated-rank 57 :description "Qwen3 Coder 30B (A3B) on Bedrock" :region "us-east-1"}
-    {:model "qwen.qwen3-vl-235b-a22b" :curated-rank 58 :description "Qwen3 VL 235B A22B (vision) on Bedrock" :region "us-east-1"}
-    {:model "deepseek.r1-v1:0" :curated-rank 59 :description "DeepSeek-R1 (reasoning) on Bedrock" :region "us-east-1"}
-    {:model "us.deepseek.r1-v1:0" :curated-rank 60 :description "DeepSeek-R1 on Bedrock (US cross-region)" :region "us-east-1"}
-    {:model "deepseek.v3.2" :curated-rank 61 :description "DeepSeek V3.2 on Bedrock" :region "us-east-1"}
-    {:model "mistral.mistral-large-3-675b-instruct" :curated-rank 62 :description "Mistral Large 3 675B on Bedrock" :region "us-east-1"}
-    {:model "zai.glm-5" :curated-rank 63 :description "Z.ai GLM-5 on Bedrock" :region "us-east-1"}
-    {:model "minimax.minimax-m2.5" :curated-rank 64 :description "MiniMax M2.5 on Bedrock" :region "us-east-1"}
-    {:model "moonshotai.kimi-k2.5" :curated-rank 65 :description "Moonshot Kimi K2.5 on Bedrock" :region "us-east-1"}
-    {:model "ai21.jamba-1-5-large-v1:0" :curated-rank 66 :description "AI21 Jamba 1.5 Large on Bedrock" :region "us-east-1"}
-    {:model "writer.palmyra-x5-v1:0" :curated-rank 67 :description "Writer Palmyra X5 on Bedrock" :region "us-east-1"}
-    {:model "us.writer.palmyra-x5-v1:0" :curated-rank 68 :description "Writer Palmyra X5 on Bedrock (US cross-region)" :region "us-east-1"}
+    {:model "meta.llama3-3-70b-instruct-v1:0" :curated-rank 54 :description "Meta Llama 3.3 70B on Bedrock"}
+    {:model "openai.gpt-oss-120b-1:0" :curated-rank 55 :description "OpenAI gpt-oss 120B (open-weights) on Bedrock" :region "us-east-1"}
+    {:model "openai.gpt-oss-20b-1:0" :curated-rank 56 :description "OpenAI gpt-oss 20B (open-weights) on Bedrock" :region "us-east-1"}
+    {:model "qwen.qwen3-32b-v1:0" :curated-rank 57 :description "Qwen3 32B (dense) on Bedrock" :region "us-east-1"}
+    {:model "qwen.qwen3-coder-30b-a3b-v1:0" :curated-rank 58 :description "Qwen3 Coder 30B (A3B) on Bedrock" :region "us-east-1"}
+    {:model "qwen.qwen3-vl-235b-a22b" :curated-rank 59 :description "Qwen3 VL 235B A22B (vision) on Bedrock" :region "us-east-1"}
+    {:model "deepseek.r1-v1:0" :curated-rank 60 :description "DeepSeek-R1 (reasoning) on Bedrock" :region "us-east-1"}
+    {:model "us.deepseek.r1-v1:0" :curated-rank 61 :description "DeepSeek-R1 on Bedrock (US cross-region)" :region "us-east-1"}
+    {:model "deepseek.v3.2" :curated-rank 62 :description "DeepSeek V3.2 on Bedrock" :region "us-east-1"}
+    {:model "mistral.mistral-large-3-675b-instruct" :curated-rank 63 :description "Mistral Large 3 675B on Bedrock" :region "us-east-1"}
+    {:model "zai.glm-5" :curated-rank 64 :description "Z.ai GLM-5 on Bedrock" :region "us-east-1"}
+    {:model "minimax.minimax-m2.5" :curated-rank 65 :description "MiniMax M2.5 on Bedrock" :region "us-east-1"}
+    {:model "moonshotai.kimi-k2.5" :curated-rank 66 :description "Moonshot Kimi K2.5 on Bedrock" :region "us-east-1"}
+    {:model "ai21.jamba-1-5-large-v1:0" :curated-rank 67 :description "AI21 Jamba 1.5 Large on Bedrock" :region "us-east-1"}
+    {:model "writer.palmyra-x5-v1:0" :curated-rank 68 :description "Writer Palmyra X5 on Bedrock" :region "us-east-1"}
+    {:model "us.writer.palmyra-x5-v1:0" :curated-rank 69 :description "Writer Palmyra X5 on Bedrock (US cross-region)" :region "us-east-1"}
     {:model "meta.llama3-1-70b-instruct-v1:0"}
     {:model "meta.llama3-1-8b-instruct-v1:0"}
     {:model "meta.llama3-70b-instruct-v1:0"}
