@@ -434,6 +434,46 @@ describe a discovery that never happened for this process. It also makes
 `by env doctor --env-file P` answer a genuinely useful question: what does *this*
 file give me?
 
+### 3.8 `by env doctor` answers with the POLICY, not just the files
+
+Found by investigating question 4, and measured before it was fixed:
+
+```
+agent .env  => {"BY_Q4_PROBE" "in-the-agent-file"}
+policy      => {:deny ["BY_Q4_PROBE"] :vars {"BY_Q4_PROBE" "in-the-agent-file"}}
+child sees  => []                              ← :env-deny wins, correctly
+
+doctor said => "for its children: …/agents/coact-agent/.env  (agent scope)"
+```
+
+The verb whose entire job is *"why doesn't this reach my agent?"* stated the
+opposite of what happens. Its `for its children` line came from
+`env-candidates`, which reads files and never calls `env-policy`, so
+`:env-deny` and `:env-allow` were invisible to it. This is the same class of
+error §3.7 corrected one level shallower — the child answer was still a FILE
+answer wearing a CHILD label.
+
+`env-effective-for-children` now runs the real machinery: `util/apply-policy!`
+over a map seeded from this process's environment, with the policy chain the CLI
+can know. Files answer *what is written down*; only the policy answers *what
+arrives*.
+
+```
+for its children: REMOVED by :env-deny / :env-allow (defined in …/coact-agent/.env)
+```
+
+**Two layers are reachable from outside a running agent**, and one is not. The
+global layer comes from the 1-arity `get-config` (config.edn, env, defaults);
+the named agent's comes from the defagent registry's `:config-extra` plus its
+`.env`. ANCESTRY cannot: a router that denies a name to the specialists it
+dispatches only exists during a dispatch, and there is none at a CLI. So every
+`doctor` answer carries a note saying a dispatched sub-agent may receive less —
+stating the limit rather than letting the omission read as an answer.
+
+`by env list` still reports files, which is what it is for, and its agent-scope
+footnote now says `:env-deny`/`:env-allow` may remove a row before it arrives
+and points at `doctor` — rather than promising delivery it cannot check.
+
 ---
 
 ## 4. What this deliberately does not fix
@@ -475,16 +515,23 @@ separate, mechanical change with its own risk of breaking the dev loop.
    precedence layer (`resolve-config`, `config.clj:1649`) and has no file. It is
    also the one layer that vanishes on restart, which may make a file for it
    incoherent.
-4. **Should the agent `.env` also feed `:env-allow`?** Today a name has to be
-   admitted by a policy to reach a child. An agent's own `.env` naming a variable
-   is arguably an admission — but making it implicit means a `.env` can widen an
-   ancestor's allowlist, which Phase 4 deliberately prevented for `:env-vars`.
-   Leaning: no, keep them separate, and let `by env doctor` explain why a value
-   is present in a file and absent from a child.
-5. **`env` is a heavily overloaded word.** `by env` reads naturally, but the
-   config keys are `:env-*`, the resolver is `util/…/env.clj`, and this adds a
-   third meaning (files). Worth one pass to check the CLI help does not read as
-   a fourth.
+4. ~~**Should the agent `.env` also feed `:env-allow`?**~~ **RESOLVED, and the
+   question was hiding a defect.** The answer is no — a `.env` is admitted past
+   its OWN policy's `:env-allow` (it lands in that policy's `:vars`) and not past
+   an ancestor's, which is the same-level rule Phase 4 of the scoping note
+   settled. But investigating it showed `by env doctor` could not have explained
+   any of that: it read the file chain alone, so with `:env-deny ["X"]` in
+   config.edn and `X` in an agent's `.env` it reported *"for its children:
+   &lt;that file&gt;"* while the child received nothing. Measured, then fixed —
+   see §3.8.
+5. **`env` is a heavily overloaded word, and the overload had teeth.** Five
+   things carry it: `by env` (files), `:env-allow`/`:env-deny`/`:env-vars`
+   (policy), `util/…/env.clj` (the resolver), `agent/…/env_files.clj` (the
+   files), and `--env-file`/`BY_ENV_FILE`/`.env`. The concern is not aesthetic:
+   what a user means by *this agent's environment* is files PLUS policy, and
+   `by env` managed only the first half — which is exactly how question 4's
+   defect happened. §3.8 closes the gap for `doctor`; `list` still reports
+   files, and now says so rather than promising delivery.
 
 ---
 

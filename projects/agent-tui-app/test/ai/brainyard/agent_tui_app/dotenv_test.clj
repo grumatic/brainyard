@@ -12,6 +12,7 @@
   (:require [clojure.test :refer [deftest testing is]]
             [ai.brainyard.agent-tui-app.dotenv :as dotenv]
             [ai.brainyard.agent-tui-app.main :as main]
+            [ai.brainyard.agent.interface :as agent]
             [clojure.java.io :as io]))
 
 (defn- rm-rf [^java.io.File f]
@@ -168,3 +169,45 @@
             (is (= gone (:env-file-missing r)))
             (is (false? (:env-file-from-flag? r))))
           (finally (clear! "BY_ENV_FILE")))))))
+
+;; ============================================================================
+;; `by env doctor` answers with the POLICY, not just the files
+;;
+;; It used to read the file chain alone, so with `:env-deny ["X"]` in config.edn
+;; and X in an agent's `.env` it reported "for its children: <that file>" while
+;; the child received nothing — the one verb whose job is answering "why doesn't
+;; this reach my agent?" stating the opposite of what happens.
+;; ============================================================================
+
+(def ^:private effective @#'ai.brainyard.agent-tui-app.main/env-effective-for-children)
+(def ^:private policy-chain @#'ai.brainyard.agent-tui-app.main/env-policy-chain)
+
+(deftest doctor-reports-what-the-policy-leaves-not-what-a-file-defines
+  (with-project
+    (fn [root]
+      (let [agent-dir (io/file root ".brainyard" "agents" "coact-agent")]
+        (.mkdirs agent-dir)
+        (spit (io/file agent-dir ".env") "BY_TEST_DOC=in-the-file\n")
+        (agent/invalidate-cache!)
+        (testing "with no policy, the file's value reaches a child"
+          (spit (io/file root ".brainyard" "config.edn") "{:agent {:config {}}}")
+          (agent/invalidate-global-config!)
+          (is (= "in-the-file" (effective {:agent "coact-agent"} "BY_TEST_DOC"))))
+        (testing "with :env-deny, it does not — and that is what doctor must say"
+          (spit (io/file root ".brainyard" "config.edn")
+                "{:agent {:config {:env-deny [\"BY_TEST_DOC\"]}}}")
+          (agent/invalidate-global-config!)
+          (is (nil? (effective {:agent "coact-agent"} "BY_TEST_DOC"))))
+        (agent/invalidate-global-config!)))))
+
+(deftest the-policy-chain-carries-global-and-agent-layers
+  (with-project
+    (fn [root]
+      (spit (io/file root ".brainyard" "config.edn")
+            "{:agent {:config {:env-deny [\"G\"]}}}")
+      (agent/invalidate-global-config!)
+      (let [[global] (policy-chain {:scope :project})]
+        (is (= ["G"] (:deny global)) "the global layer is read from config.edn"))
+      (let [chain (policy-chain {:agent "coact-agent"})]
+        (is (= 2 (count chain)) "a named agent adds its own layer, root first"))
+      (agent/invalidate-global-config!))))

@@ -3126,6 +3126,51 @@
            {:path p :exists ex :agent? (= p agent-path)
             :names (vec (sort (keys vars))) :vars (or vars {})}))))
 
+(defn- env-policy-chain
+  "The `:env-allow` / `:env-deny` / `:env-vars` policy chain as the CLI can know
+   it, root first — the shape `util/apply-policy!` consumes.
+
+   Two layers are reachable from outside a running agent: the GLOBAL one
+   (`config.edn`, env, schema defaults) via the 1-arity `get-config`, and the
+   named agent's own, read from the defagent registry's `:config-extra` plus its
+   `.env` file.
+
+   What is NOT reachable is ANCESTRY: a router that denies a name to the
+   specialists it dispatches only exists during a dispatch, and there is none
+   here. `env-doctor-note` says so rather than letting the omission read as an
+   answer."
+  [sel]
+  (let [global {:allow (agent/get-config :env-allow)
+                :deny  (agent/get-config :env-deny)
+                :vars  (agent/get-config :env-vars)}]
+    (if-let [a (:agent sel)]
+      (let [meta-extra (some-> (agent/get-tool-defs :type :agent)
+                               (get (keyword a))
+                               (get-in [:meta :config-extra]))
+            file-vars  (agent/read-file (agent/scope-path sel))]
+        [global
+         {:allow (:env-allow meta-extra)
+          :deny  (:env-deny meta-extra)
+          :vars  (merge (:env-vars meta-extra) file-vars)}])
+      [global])))
+
+(defn- env-effective-for-children
+  "What a child spawned in this scope would actually see for `var-name`, or nil.
+
+   Runs the REAL machinery — `util/apply-policy!` over a map seeded from this
+   process's environment — rather than reading the file chain and hoping. Files
+   answer \"what is written down\"; only the policy answers \"what arrives\", and
+   `:env-deny` / `:env-allow` can remove a name the files plainly define."
+  [sel var-name]
+  (let [m (java.util.HashMap. ^java.util.Map (into {} (System/getenv)))]
+    (util/apply-policy! m (env-policy-chain sel))
+    (.get m ^String var-name)))
+
+(def ^:private env-doctor-note
+  (str "Note: an ancestor's :env-deny / :env-allow is applied at DISPATCH and "
+       "cannot be seen from here, so a dispatched sub-agent may receive less "
+       "than this shows."))
+
 (defn cmd-env-list [opts]
   (install-working-dir! opts)
   (let [cands (filter :exists (env-candidates opts))
@@ -3152,7 +3197,9 @@
             ;; NOT resolve in this process — it is handed to spawned children.
             (println)
             (println (str "Rows from " agent-path))
-            (println "are agent scope: they reach that agent's child processes, not this one.")))))))
+            (println (str "are agent scope: they are handed to that agent's child processes, "
+                          "not to this one — and :env-deny / :env-allow may still remove "
+                          "one before it arrives. `by env doctor NAME` says which."))))))))
 
 (defn cmd-env-get [opts]
   (install-working-dir! opts)
@@ -3239,15 +3286,23 @@
         proc-win  (when vn
                     (if real "<process environment>"
                         (some #(when (and (:defines %) (not (:agent %))) (:path %)) rows)))
-        child-win (when vn
+        ;; The FILE that would supply it, and what the policy actually leaves.
+        ;; They differ exactly when :env-deny / :env-allow removes a name the
+        ;; files define — which is the case this verb exists to diagnose, and
+        ;; the one it used to get confidently wrong by reading files alone.
+        child-src (when vn
                     (or (some #(when (and (:defines %) (:agent %)) (:path %)) rows)
-                        proc-win))]
+                        proc-win))
+        child-val (when vn (env-effective-for-children (env-sel opts) vn))]
     (if (:json opts)
       (print-json! (cond-> {:success true :candidates rows}
                      vn (assoc :name vn
                                :real-env (some? real)
                                :winner-in-process proc-win
-                               :winner-for-children child-win)))
+                               :file-for-children child-src
+                               :reaches-children (some? child-val)
+                               :value-for-children (when child-val (env-show opts child-val))
+                               :note env-doctor-note)))
       (do
         (when vn
           (println (format "Resolving %s" vn))
@@ -3255,9 +3310,17 @@
             real     (println "  in this process:  the process environment — a real env var outranks every file")
             proc-win (println (str "  in this process:  " proc-win))
             :else    (println "  in this process:  not defined in any candidate file"))
-          (if (and child-win (not= child-win proc-win))
-            (println (str "  for its children: " child-win "  (agent scope)"))
-            (println (str "  for its children: " (or child-win "not defined"))))
+          (cond
+            (nil? child-val)
+            (println (str "  for its children: REMOVED by :env-deny / :env-allow"
+                          (when child-src (str " (defined in " child-src ")"))))
+
+            (and child-src (not= child-src proc-win))
+            (println (str "  for its children: " child-src "  (agent scope)"))
+
+            :else
+            (println (str "  for its children: " (or child-src "not defined"))))
+          (println env-doctor-note)
           (println))
         (println "Candidates, most specific first:")
         (doseq [{:keys [path exists defines value count agent]} rows]
