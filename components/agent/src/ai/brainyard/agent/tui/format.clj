@@ -991,7 +991,7 @@
    ["/clear"            ""                        "Start a new session: empty context; the old one stays resumable"]
    ["/compact"          " [ratio]"                "Compact context to ratio of max tokens (default 0.2)"]
    ["/config"           " [key [val]]"            "Show/set runtime config"]
-   ["/continue"         " [N]"                    "Resume last answer with N more iterations"]
+   ["/continue"         " [N]"                    "Keep going: unpark a paused run, or re-ask with N more iterations"]
    ["/copy"             " [code [N]]"             "Copy the last answer (or one of its code blocks) to the clipboard"
     {:completions [["code" "Copy the last fenced code block (add N for the Nth)"]]}]
    ["/display-format"   " [level]"                "Show/set display detail level"
@@ -1027,14 +1027,13 @@
                    ["correct"     "Correct a recalled fact (correct <evidence>)"]
                    ["help"        "Show /memory usage details"]]}]
    ["/model"            " [name|#]"               "Show model picker / switch model"]
-   ["/pause"            ""                        "Cooperatively pause the active BT run"]
+   ["/pause"            ""                        "Cooperatively pause the active BT run (/continue unparks it)"]
    ["/popup"            " test"                    "Open a smoke-test popup (Mode B)"
     {:completions [["test"   "Open a no-op picker popup"]]}]
    ["/queue"            " [cancel [all|uuid]]"    "Show input queue or cancel items"
     {:completions [["list"   "Show input queue"]
                    ["cancel" "Cancel queued items (all or uuid)"]]}]
    ["/quit"             ""                        "Exit TUI"]
-   ["/resume"           ""                        "Unpark a paused BT run on the active agent"]
    ["/sandbox"          " [fn|eval CODE]"         "Run sandbox function or eval code"
     {:completions [["eval" "Eval Clojure code in sandbox"]]}]
    ["/scrollback"       " dump"                    "Dump host pane scrollback to file (Mode B)"

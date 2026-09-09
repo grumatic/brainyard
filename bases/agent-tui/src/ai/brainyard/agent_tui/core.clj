@@ -2668,7 +2668,13 @@
                   (layout/scroll-to-bottom!)
                   (layout/redraw-chrome!)
                   (let [input (str/trim line)
-                        paused-ag (when (seq input)
+                        paused-ag (when (and (seq input)
+                                             ;; `/continue` is how a pause is
+                                             ;; meant to END, so it has to reach
+                                             ;; the dispatcher instead of being
+                                             ;; swallowed as a steering note —
+                                             ;; see `commands/pause-exit-command?`.
+                                             (not (commands/pause-exit-command? input)))
                                     (when-let [ag (tui-session/get-active-agent)]
                                       (when (try (agent/paused? (:!state ag))
                                                  (catch Throwable _ false))

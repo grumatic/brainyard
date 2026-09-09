@@ -120,8 +120,16 @@ treating your line as a new prompt:
   turn (not a resume of the dead one).
 
 All three resume/cancel paths — the `ESC`/`Ctrl-\` toggle, the typed-line path,
-the `/resume` command, and `Ctrl-C` — dispose the tips block and refresh the
+the `/continue` command, and `Ctrl-C` — dispose the tips block and refresh the
 status bar.
+
+`/continue` is the only slash command here; there is no `/resume`. It used to be
+its own command, next to a `/continue [N]` that re-asked the last question after
+it exhausted its iteration budget — so a user had to work out *which way* the run
+had stopped before they could name the way out of it, and neither word said. The
+two states are mutually exclusive by construction (a paused run is live and
+parked on a condition, an exhausted one is idle and finished), so one verb covers
+both with no ambiguity.
 
 ## What gets interrupted
 
@@ -157,7 +165,8 @@ elapsed clock excludes the pause instead of jumping forward.
   `toggle-pause!`, `handle-esc!`, `turn-in-flight?`, the `:pause-tips` block.
 - `bases/agent-tui/src/ai/brainyard/agent_tui/core.clj` — paused-line submit
   routing (resume-with-note).
-- `bases/agent-tui/src/ai/brainyard/agent_tui/commands.clj` — the `/resume` command.
+- `bases/agent-tui/src/ai/brainyard/agent_tui/commands.clj` — `handle-continue-command`
+  (the `/continue` command) and `unpause-run!`.
 - `bases/agent-tui/src/ai/brainyard/agent_tui/session.clj` — the pause-aware
   think-block ticker.
 - `components/agent/src/ai/brainyard/agent/core/runtime.clj` — `pause-run` /

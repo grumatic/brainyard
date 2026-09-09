@@ -177,8 +177,8 @@ opens the completion menu; commands with sub-verbs open a submenu.
 | `/capture` | `PATH` | Save the scrollback buffer to a file |
 | `/compact` | `[ratio]` | Compact context to a ratio of max tokens (default 0.2) |
 | `/clear` | | Start a new session: empty context; the previous one stays on disk, resumable with `by --resume <id>` |
-| `/continue` | `[N]` | Resume the last answer with N more iterations |
-| `/pause` / `/resume` | | Cooperatively pause / unpark the active BT run |
+| `/continue` | `[N]` | Keep going: unpark a run parked by `/pause`, or re-ask the last answer with N more iterations after it exhausted its budget |
+| `/pause` | | Cooperatively pause the active BT run (`/continue` unparks it) |
 | `/allow-path` | `PATH` | Whitelist a file path for agent access |
 | `/sandbox` | `[fn\|eval CODE]` | Run a sandbox function or eval code |
 | `/quit` | | Exit |

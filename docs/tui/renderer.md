@@ -383,7 +383,7 @@ The built-in roster (non-exhaustive):
 | `/compact [args]` | Force a context compaction. |
 | `/todo` | Show the current TODO list. |
 | `/usage` | Token cost + latency breakdown. |
-| `/continue [args]` | Continue from the last iteration. |
+| `/continue [N]` | Keep going — unpark a paused run, or continue from the last iteration. |
 | `/task [list\|detail\|cancel\|del\|log\|run\|bg\|fg]` | Task-manager front-end (bare `/task` or `list` shows the task list; a bare task id is treated as `detail`). |
 | `/allow-path <path>` | Add a path to the action-permission allowlist. |
 | `/capture` | Save current scrollback to a file. |
@@ -391,7 +391,7 @@ The built-in roster (non-exhaustive):
 | `/mcp [<server> start\|stop\|status]` | MCP server management (bare `/mcp` lists configured servers + connection state). |
 | `/agent status\|new\|switch\|close\|trace` | Sub-agent control. |
 | `/session [N\|subcmd]` | Multi-session switching, plus subcommands: live tabs — `tabs` (default), `switch <N>`, `new`, `close`, `rename` (alias `label`); persisted on-disk — `list`, `show <id>`, `tree`, `fork`. |
-| `/pause`, `/resume` | Pause / resume the active BT. |
+| `/pause` | Pause the active BT (`/continue` unparks it). |
 | `/queue [cancel …]` | Input queue management. |
 | `/activity show|hide|toggle` *(Mode B)* | Split / kill a tmux side pane for the activity stream. |
 | `/log show|hide` *(Mode B)* | Split / kill a tmux side pane tailing the session's app log. |

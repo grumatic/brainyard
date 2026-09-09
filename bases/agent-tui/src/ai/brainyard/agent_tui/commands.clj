@@ -1276,8 +1276,10 @@
 ;; Continue Command (private)
 ;; ============================================================================
 
-(defn- continue-agent
-  "Continue the RLM agent from where it left off with more iterations."
+(defn- continue-iterations
+  "Re-ask the last question with more iterations, after a run stopped by
+   EXHAUSTING its budget. One of the two things `/continue` can mean — see
+   `handle-continue-command`, which is the only caller."
   [args]
   (let [ag (tui-session/get-active-agent)
         st-mem (some-> ag agent/get-bt-st-memory deref)]
@@ -2151,30 +2153,84 @@
 (defn- handle-pause-run-command
   "Cooperatively pause the current BT run on the active agent. The BT
    picks the signal up at the next :condition / :action / iteration
-   boundary and parks on the runtime's pause condition. /resume
+   boundary and parks on the runtime's pause condition. /continue
    unparks it; Ctrl-C still cancels even from a paused state."
   [_args]
   (if-let [ag (tui-session/get-active-agent)]
     (try
       (agent/pause-run (:!state ag))
-      (tui-session/emit! (ansi/muted "[paused] (use /resume to continue)"))
+      (tui-session/emit! (ansi/muted "[paused] (use /continue to resume)"))
       (try (tui-session/update-status-bar!) (catch Throwable _))
       (catch Throwable t
         (tui-session/emit! (ansi/failure (str "pause-run failed: " (.getMessage t))))))
     (tui-session/emit! (ansi/warning "No TUI agent running."))))
 
-(defn- handle-resume-run-command
-  "Unpark a paused BT run on the active agent."
-  [_args]
-  (if-let [ag (tui-session/get-active-agent)]
-    (try
-      (agent/resume-run (:!state ag))
-      (input/hide-pause-tips!)
-      (tui-session/emit! (ansi/muted "[resumed]"))
-      (try (tui-session/update-status-bar!) (catch Throwable _))
-      (catch Throwable t
-        (tui-session/emit! (ansi/failure (str "resume-run failed: " (.getMessage t))))))
-    (tui-session/emit! (ansi/warning "No TUI agent running."))))
+(defn- unpause-run!
+  "Unpark a paused BT run on the active agent. Reached through `/continue`;
+   `/resume` used to be its own command and is gone."
+  [ag]
+  (try
+    (agent/resume-run (:!state ag))
+    (input/hide-pause-tips!)
+    (tui-session/emit! (ansi/muted "[resumed]"))
+    (try (tui-session/update-status-bar!) (catch Throwable _))
+    (catch Throwable t
+      (tui-session/emit! (ansi/failure (str "resume-run failed: " (.getMessage t)))))))
+
+(defn pause-exit-command?
+  "True when `input` is the slash command that ENDS a pause, rather than text
+   meant to steer through it.
+
+   A paused run treats every typed line as a mid-run steering note (see the
+   `paused-ag` branch in `core/run!`), which is the right default — the whole
+   point of pausing is to say something — but it swallows slash commands whole.
+   That was survivable while the way out was a separate `/resume` nobody could
+   reach either; it is not survivable now that `/pause` prints \"use /continue
+   to resume\", because the promise would be answered by handing the LLM the
+   literal text \"/continue\" as an instruction.
+
+   Deliberately narrow: exactly this one command, matched on the first token so
+   `/continue 40` counts. Every other slash command is still read as a note,
+   which is what it did before and is a separate question from this rename."
+  [input]
+  (= "/continue" (first (str/split (str/trim (str input)) #"\s+"))))
+
+(defn- handle-continue-command
+  "`/continue [N]` — keep going, whichever way the run stopped.
+
+   Two commands used to answer that: `/resume` unparked a run parked by
+   `/pause`, and `/continue N` re-asked the last question after it exhausted
+   its iteration budget. Users had to know which stop they were looking at
+   before they could name the way out of it, and the two words did not say —
+   both mean \"carry on\". They are also mutually exclusive by construction: a
+   paused run is LIVE and parked on a condition, an exhausted one is IDLE and
+   finished, so no state satisfies both and the merge can never be ambiguous.
+
+   The paused branch is checked first because it is the live one — an agent
+   holding a thread is more urgent than one that stopped a while ago, and a
+   stale `:iterations-exhausted` from an earlier turn must not win over a run
+   parked right now.
+
+   `N` belongs only to the exhausted branch (it is an iteration budget). It is
+   reported as ignored rather than silently dropped on a paused run: a user who
+   typed a number meant something by it, and a resumed run continues on the
+   budget it was already given."
+  [args]
+  (let [ag (tui-session/get-active-agent)]
+    (cond
+      (nil? ag)
+      (tui-session/emit! (ansi/warning "No TUI agent running."))
+
+      (agent/paused? (:!state ag))
+      (do (when-not (str/blank? args)
+            (tui-session/emit!
+             (ansi/muted (str "  (ignoring " (str/trim args)
+                              " — an iteration count applies only to a run that"
+                              " exhausted its budget, not to a paused one)"))))
+          (unpause-run! ag))
+
+      :else
+      (continue-iterations args))))
 
 ;; ============================================================================
 ;; Queue Command (consolidated)
@@ -2498,7 +2554,7 @@
         "/init"         (do (emit-command-header! input) (handle-init-command args) :continue)
         "/effort"       (do (emit-command-header! input) (handle-effort-command args) :continue)
         "/help"         (do (emit-command-header! input) (tui-session/emit! (fmt/format-help)) :continue)
-        "/continue"     (do (emit-command-header! input) (continue-agent args) :continue)
+        "/continue"     (do (emit-command-header! input) (handle-continue-command args) :continue)
         "/task"         (do (emit-command-header! input) (handle-task-command args) :continue)
         "/allow-path"   (do (emit-command-header! input) (permissions/handle-allow-path-command args) :continue)
         "/capture"      (do (emit-command-header! input) (capture-cmd args) :continue)
@@ -2511,7 +2567,6 @@
         "/session"      (do (emit-command-header! input) (handle-session-command args) :continue)
         "/memory"       (do (emit-command-header! input) (handle-memory-command args) :continue)
         "/pause"        (do (emit-command-header! input) (handle-pause-run-command args) :continue)
-        "/resume"       (do (emit-command-header! input) (handle-resume-run-command args) :continue)
         "/queue"        (do (emit-command-header! input) (handle-queue-command args) :continue)
         "/activity"     (do (emit-command-header! input) (side-pane-cmd/handle-activity-command args))
         "/log"          (do (emit-command-header! input) (side-pane-cmd/handle-log-command args))
