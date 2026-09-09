@@ -49,6 +49,46 @@
    commands.clj can dispose it without re-deriving the id."
   :pause-tips)
 
+(def pause-passthrough-commands
+  "Slash commands that reach the normal dispatcher while a turn is PAUSED,
+   instead of being read as a mid-run steering note.
+
+   A paused run treats every typed line as a note for the agent to carry on
+   with — which is the right default, since saying something is the whole point
+   of pausing — but it swallows slash commands whole, so a command typed at a
+   paused prompt reached the LLM as literal text and did nothing. That is fine
+   for a command that has no business running mid-pause and is not fine for the
+   two that are the only ways OUT of one: without this, `/pause`'s own advice
+   to use `/continue` was answered by handing the model the word \"/continue\",
+   and `/quit` could not quit at all (measured: the TUI stayed up and the run
+   resumed steered by the text \"/quit\").
+
+   Deliberately a short allow-list rather than \"every recognised command\".
+   Several would be actively wrong here — `/clear` on a session with a live
+   parked run above all — and \"anything slash-prefixed\" is not available
+   either, because an absolute path is a normal thing to steer with and
+   `/tmp/foo.txt is the file` parses as the command `/tmp/foo.txt`.
+
+   The second element is what the tips block prints; `pause-tips-lines` renders
+   from this vector, and a test pins the two together so a command added here
+   cannot go unadvertised."
+  [["/continue" "continue"]
+   ["/quit"     "exit brainyard"]])
+
+(defn pause-passthrough-command?
+  "True when `input`'s first token is one of `pause-passthrough-commands`.
+
+   Matched on the first token so `/continue 40` counts, and case-sensitively on
+   the exact name — the same test `parse-command` and the dispatch `case` apply,
+   so this can never let through something the dispatcher would then reject."
+  [input]
+  (let [tok (first (str/split (str/trim (str input)) #"\s+"))]
+    (boolean (some #(= tok (first %)) pause-passthrough-commands))))
+
+(def ^:private tips-key-col
+  "Width of the tips table's left (key/command) column."
+  25)
+
 (defn- pause-tips-lines
   "Rows for the paused 'what next' tips block.
 
@@ -59,14 +99,23 @@
   ([] (pause-tips-lines nil))
   ([cols]
    (let [w   (max 20 (- (or cols (:cols @layout/!layout) 80) 1))
-         fit (fn [s] (fmt/truncate-to-width s w))]
+         fit (fn [s] (fmt/truncate-to-width s w))
+         ;; Left column is plain text, so `format`'s character width IS its
+         ;; display width; the right column is styled and never measured.
+         row (fn [k desc] (str "    " (format (str "%-" tips-key-col "s") k)
+                               (ansi/muted desc)))
+         cmd (fn [c] (second (some #(when (= c (first %)) %)
+                                   pause-passthrough-commands)))]
      (mapv fit
            [""
             (str "  " (ansi/warning "⏸ Paused")
                  (ansi/muted " — agent stops at the next safe checkpoint"))
-            (str "    ESC                      " (ansi/muted "continue"))
-            (str "    type a message + Enter   " (ansi/muted "continue, steering the agent"))
-            (str "    Ctrl-C                   " (ansi/muted "cancel this turn"))]))))
+            ;; ESC and /continue do the same thing, so they share a row rather
+            ;; than reading as two separate options.
+            (row "ESC  or  /continue"     (cmd "/continue"))
+            (row "type a message + Enter" "continue, steering the agent")
+            (row "Ctrl-C"                 "cancel this turn")
+            (row "/quit"                  (cmd "/quit"))]))))
 
 (defn show-pause-tips!
   "Render the paused-state tips as a sticky-bottom live-block (anchored below

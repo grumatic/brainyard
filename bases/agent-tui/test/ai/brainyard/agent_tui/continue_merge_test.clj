@@ -12,6 +12,7 @@
    anywhere a user or the autocomplete menu can still reach."
   (:require [ai.brainyard.agent-tui.commands :as commands]
             [ai.brainyard.agent-tui.autocomplete :as autocomplete]
+            [ai.brainyard.agent-tui.input :as input]
             [ai.brainyard.agent-tui.session :as tui-session]
             [ai.brainyard.agent.interface :as agent]
             [ai.brainyard.agent.interface.tui.format :as fmt]
@@ -79,19 +80,34 @@
 (deftest no-agent-says-so-rather-than-branching
   (is (str/includes? (capture nil #(handle-continue "")) "No TUI agent running")))
 
-(deftest continue-escapes-the-steering-note-path
+(deftest the-ways-out-of-a-pause-escape-the-steering-note-path
   (testing "a paused run reads every typed line as a mid-run steering note, so
-            the one command that ENDS a pause has to be exempted — or /pause's
-            own advice is answered by handing the LLM the text \"/continue\""
-    (is (commands/pause-exit-command? "/continue"))
-    (is (commands/pause-exit-command? "  /continue  "))
-    (is (commands/pause-exit-command? "/continue 40")))
-  (testing "and the exemption is exactly that one command — steering with
-            arbitrary text, slash-prefixed or not, is the default and stays"
-    (is (not (commands/pause-exit-command? "/status")))
-    (is (not (commands/pause-exit-command? "/continue-ish")))
-    (is (not (commands/pause-exit-command? "keep going but skip the tests")))
-    (is (not (commands/pause-exit-command? "")))))
+            the two commands that END one have to be exempted — or /pause's own
+            advice is answered by handing the LLM the text \"/continue\", and
+            /quit cannot quit"
+    (is (input/pause-passthrough-command? "/continue"))
+    (is (input/pause-passthrough-command? "  /continue  "))
+    (is (input/pause-passthrough-command? "/continue 40"))
+    (is (input/pause-passthrough-command? "/quit")))
+  (testing "the allow-list is short on purpose — several commands would be
+            actively wrong mid-pause, /clear on a session with a live parked
+            run above all"
+    (is (not (input/pause-passthrough-command? "/clear")))
+    (is (not (input/pause-passthrough-command? "/status")))
+    (is (not (input/pause-passthrough-command? "/continue-ish"))))
+  (testing "and \"anything slash-prefixed\" is not available either: an absolute
+            path is a normal thing to steer with, and parses as a command"
+    (is (not (input/pause-passthrough-command? "/tmp/foo.txt is the file")))
+    (is (not (input/pause-passthrough-command? "keep going but skip the tests")))
+    (is (not (input/pause-passthrough-command? "")))))
+
+(deftest every-passthrough-command-is-advertised-in-the-tips-block
+  (testing "the tips block is the only thing on screen while paused, so a
+            command that passes through but is not listed there is a way out
+            nobody can find"
+    (let [tips (str/join "\n" (#'input/pause-tips-lines 200))]
+      (doseq [[cmd _] input/pause-passthrough-commands]
+        (is (str/includes? tips cmd) (str cmd " missing from the pause tips"))))))
 
 (deftest resume-is-gone-from-every-surface-that-offers-commands
   (testing "the canonical registry — the source /help and autocomplete both read"

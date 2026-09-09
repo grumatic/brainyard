@@ -25,18 +25,25 @@ continue *with a steering note*, or cancel. `Ctrl-\` does the same thing as
 | running | `ESC` *(or `Ctrl-\`)* | Request a cooperative pause; tips block appears |
 | running | `Ctrl-C` | Cancel the active turn (double-press within 1s exits `by`) |
 | **paused** | `ESC` *(or `Ctrl-\`, or empty `Enter`)* | Resume — continue as-is |
+| **paused** | `/continue` + `Enter` | Resume — continue as-is |
 | **paused** | type a message + `Enter` | Resume, folding the message into the loop as a steering note |
 | **paused** | `Ctrl-C` | Cancel the turn |
+| **paused** | `/quit` + `Enter` | Cancel the paused run and exit `by` |
 | idle | `ESC` | Normal editor behaviour (close menu / clear line) — **not** a pause |
 
 The paused tips block:
 
 ```
 ⏸ Paused — agent stops at the next safe checkpoint
-  ESC                      continue
+  ESC  or  /continue       continue
   type a message + Enter   continue, steering the agent
   Ctrl-C                   cancel this turn
+  /quit                    exit brainyard
 ```
+
+The two slash commands are rendered from `input/pause-passthrough-commands`,
+the same vector that decides what escapes the steering-note path, so a command
+that passes through cannot go unadvertised.
 
 ## How it works
 
@@ -123,13 +130,40 @@ All three resume/cancel paths — the `ESC`/`Ctrl-\` toggle, the typed-line path
 the `/continue` command, and `Ctrl-C` — dispose the tips block and refresh the
 status bar.
 
-`/continue` is the only slash command here; there is no `/resume`. It used to be
-its own command, next to a `/continue [N]` that re-asked the last question after
-it exhausted its iteration budget — so a user had to work out *which way* the run
-had stopped before they could name the way out of it, and neither word said. The
-two states are mutually exclusive by construction (a paused run is live and
-parked on a condition, an exhausted one is idle and finished), so one verb covers
-both with no ambiguity.
+`/continue` replaces the former `/resume`. It used to be its own command, next
+to a `/continue [N]` that re-asked the last question after it exhausted its
+iteration budget — so a user had to work out *which way* the run had stopped
+before they could name the way out of it, and neither word said. The two states
+are mutually exclusive by construction (a paused run is live and parked on a
+condition, an exhausted one is idle and finished), so one verb covers both with
+no ambiguity.
+
+### Which slash commands survive a pause
+
+A paused prompt reads every typed line as a steering note, slash commands
+included, so a command typed here used to reach the LLM as literal text and do
+nothing. `input/pause-passthrough-commands` is the allow-list that escapes
+that, and it holds exactly the two ways out: `/continue` and `/quit`. Before it,
+`/pause`'s own advice to use `/continue` was answered by handing the model the
+word "/continue", and `/quit` could not quit at all — measured: the TUI stayed
+up and the run resumed, steered by the text "/quit".
+
+It is an allow-list rather than "every recognised command" because several
+would be actively wrong here — `/clear` on a session with a live parked run
+above all — and it cannot be "anything slash-prefixed" because an absolute path
+is a normal thing to steer with, and `/tmp/foo.txt is the file` parses as the
+command `/tmp/foo.txt`.
+
+`/quit` additionally needs `stop!` to cancel the paused run *cooperatively*
+before it tears the queues down. `stop-queue!` cancels the worker future, which
+unblocks a thread by interrupting it — and a paused run is sitting in
+`Condition.await` inside `wait-if-paused`, so it would leave the pause by way of
+an `InterruptedException` thrown into the BT. `cancel-run` signals that
+condition (its fourth mechanism), so the thread wakes, sees `:cancelled`, and
+unwinds through the exit it already has. That cancel is guarded on `paused?`:
+`reset-runtime` does not clear `[:runtime :thread]`, so an idle agent can still
+name a thread from a finished run, and only a paused agent is known to own the
+one it names.
 
 ## What gets interrupted
 
@@ -167,6 +201,9 @@ elapsed clock excludes the pause instead of jumping forward.
   routing (resume-with-note).
 - `bases/agent-tui/src/ai/brainyard/agent_tui/commands.clj` — `handle-continue-command`
   (the `/continue` command) and `unpause-run!`.
+- `bases/agent-tui/src/ai/brainyard/agent_tui/input.clj` — `pause-passthrough-commands`
+  / `pause-passthrough-command?` (what escapes the steering-note path, and what
+  the tips block advertises).
 - `bases/agent-tui/src/ai/brainyard/agent_tui/session.clj` — the pause-aware
   think-block ticker.
 - `components/agent/src/ai/brainyard/agent/core/runtime.clj` — `pause-run` /

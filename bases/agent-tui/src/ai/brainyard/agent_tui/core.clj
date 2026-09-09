@@ -2323,6 +2323,26 @@
     (try (agent/unregister-source! :tui) (catch Exception _))
     ;; Tear down the persist bridge (unregisters the :persist hook source).
     (try (persist-bridge/stop!) (catch Exception _))
+    ;; Cooperatively cancel any PAUSED run before the queues go. `stop-queue!`
+    ;; cancels the worker future, which unblocks a thread by INTERRUPTING it —
+    ;; and a paused run is sitting in `Condition.await` inside `wait-if-paused`,
+    ;; so it would leave the pause by way of an InterruptedException thrown into
+    ;; the BT rather than through the exit it already has. `cancel-run` signals
+    ;; that condition (its fourth mechanism) alongside the cooperative flag, so
+    ;; the parked thread wakes, sees `:cancelled`, and unwinds exactly as every
+    ;; other cancellation does.
+    ;;
+    ;; Guarded on `paused?` rather than run for every agent: `reset-runtime`
+    ;; does not clear `[:runtime :thread]`, so an idle agent can still hold a
+    ;; reference to a thread from a finished run — and `cancel-run` interrupts
+    ;; it. Only a paused agent is known to own the thread it names.
+    ;;
+    ;; This path is newly reachable: until `/quit` stopped being read as a
+    ;; steering note at a paused prompt, quitting from a pause was impossible.
+    (doseq [idx (sessions/session-indices)
+            ag  (:agent-instances (sessions/get-session idx))
+            :when (try (agent/paused? (:!state ag)) (catch Throwable _ false))]
+      (try (agent/cancel-run (:!state ag)) (catch Throwable _)))
     ;; Stop every per-root input queue
     (doseq [[_ !queue] @!input-queues]
       (try (agent/stop-queue! !queue) (catch Exception _)))
@@ -2669,12 +2689,12 @@
                   (layout/redraw-chrome!)
                   (let [input (str/trim line)
                         paused-ag (when (and (seq input)
-                                             ;; `/continue` is how a pause is
-                                             ;; meant to END, so it has to reach
-                                             ;; the dispatcher instead of being
-                                             ;; swallowed as a steering note —
-                                             ;; see `commands/pause-exit-command?`.
-                                             (not (commands/pause-exit-command? input)))
+                                             ;; The two ways OUT of a pause have
+                                             ;; to reach the dispatcher instead
+                                             ;; of being swallowed as a steering
+                                             ;; note — see
+                                             ;; `input/pause-passthrough-commands`.
+                                             (not (input/pause-passthrough-command? input)))
                                     (when-let [ag (tui-session/get-active-agent)]
                                       (when (try (agent/paused? (:!state ag))
                                                  (catch Throwable _ false))

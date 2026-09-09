@@ -2177,24 +2177,6 @@
     (catch Throwable t
       (tui-session/emit! (ansi/failure (str "resume-run failed: " (.getMessage t)))))))
 
-(defn pause-exit-command?
-  "True when `input` is the slash command that ENDS a pause, rather than text
-   meant to steer through it.
-
-   A paused run treats every typed line as a mid-run steering note (see the
-   `paused-ag` branch in `core/run!`), which is the right default — the whole
-   point of pausing is to say something — but it swallows slash commands whole.
-   That was survivable while the way out was a separate `/resume` nobody could
-   reach either; it is not survivable now that `/pause` prints \"use /continue
-   to resume\", because the promise would be answered by handing the LLM the
-   literal text \"/continue\" as an instruction.
-
-   Deliberately narrow: exactly this one command, matched on the first token so
-   `/continue 40` counts. Every other slash command is still read as a note,
-   which is what it did before and is a separate question from this rename."
-  [input]
-  (= "/continue" (first (str/split (str/trim (str input)) #"\s+"))))
-
 (defn- handle-continue-command
   "`/continue [N]` — keep going, whichever way the run stopped.
 
