@@ -14,6 +14,7 @@
    loop from a `by` session."
   (:require [ai.brainyard.agent.common.gateway :as gw]
             [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.env-files :as env-files]
             [ai.brainyard.agent.core.tool :refer [defcommand]]
             [ai.brainyard.clj-http-native.interface :as http]
             [ai.brainyard.mulog.interface :as mulog]
@@ -56,9 +57,14 @@
     nil))
 
 (defn telegram-transport
-  "Build a Telegram transport from a bot token (default BY_TELEGRAM_TOKEN), or
-   nil when no token is available."
-  ([] (telegram-transport (System/getenv "BY_TELEGRAM_TOKEN")))
+  "Build a Telegram transport from a bot token, or nil when none is available.
+
+   The default reads through `env-files/resolve-for`, so the calling agent's own
+   `.env` supplies the token when it has one. Without that, an agent given a
+   dedicated bot in `agents/<agent>/.env` would hand that token to any
+   subprocess it spawned and then post as the GLOBAL bot from in here — one
+   agent, two identities, differing on whether the call happened to shell out."
+  ([] (telegram-transport (env-files/resolve-for "BY_TELEGRAM_TOKEN")))
   ([token]
    (when-not (str/blank? token)
      (->TelegramTransport (str "https://api.telegram.org/bot" token) (atom 0)))))
@@ -70,7 +76,8 @@
 (defcommand gateway$start
   "Start the Telegram messaging gateway long-poll loop in-process (needs BY_TELEGRAM_TOKEN)."
   (fn [& {:keys [token]}]
-    (if-let [tp (telegram-transport (or (not-empty (str token)) (System/getenv "BY_TELEGRAM_TOKEN")))]
+    (if-let [tp (telegram-transport (or (not-empty (str token))
+                                        (env-files/resolve-for "BY_TELEGRAM_TOKEN")))]
       (if (gw/start-gateway! (config/project-dir) tp)
         {:started true}
         {:error "gateway is already running"})

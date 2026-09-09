@@ -216,3 +216,62 @@
   (is (= {"GH_TOKEN" "ro"} (ef/agent-env (mk :explore-agent/i1))))
   (testing "and is invisible to another agent"
     (is (= {} (ef/agent-env (mk :exec-agent/i1))))))
+
+;; ============================================================================
+;; resolve-for — the agent-scoped read
+;;
+;; Without it a per-agent credential is split-brained: `gh` as a subprocess uses
+;; the agent's token while an in-process call from a tool uses the global one.
+;; One agent, two identities, differing on whether the call happened to shell
+;; out — and nothing announces it.
+;; ============================================================================
+
+(deftest resolve-for-prefers-the-agents-own-file
+  (seed-agent-env! "explore-agent" "BY_TEST_RF_TOKEN=agent-token\n")
+  (is (= "agent-token" (ef/resolve-for (mk :explore-agent/i1) "BY_TEST_RF_TOKEN"))))
+
+(deftest resolve-for-falls-back-to-the-global-chain
+  (let [prior (System/getProperty "BY_TEST_RF_GLOBAL")]
+    (try
+      (System/setProperty "BY_TEST_RF_GLOBAL" "global-value")
+      (is (= "global-value" (ef/resolve-for (mk :explore-agent/i1) "BY_TEST_RF_GLOBAL"))
+          "an agent with no file of its own sees what everyone sees")
+      (testing "and its own file wins when it has one"
+        (seed-agent-env! "explore-agent" "BY_TEST_RF_GLOBAL=agent-value\n")
+        (ef/invalidate-cache!)
+        (is (= "agent-value" (ef/resolve-for (mk :explore-agent/i1) "BY_TEST_RF_GLOBAL")))
+        (is (= "global-value" (ef/resolve-for (mk :exec-agent/i1) "BY_TEST_RF_GLOBAL"))
+            "while a different agent still sees the global one"))
+      (finally
+        (if prior (System/setProperty "BY_TEST_RF_GLOBAL" prior)
+            (System/clearProperty "BY_TEST_RF_GLOBAL"))))))
+
+(deftest resolve-for-treats-blank-as-unset
+  ;; The rule the whole tree shares — and the one that stops an accidental
+  ;; empty line in a `.env` masking a credential that really is set.
+  (let [prior (System/getProperty "BY_TEST_RF_BLANK")]
+    (try
+      (System/setProperty "BY_TEST_RF_BLANK" "global-value")
+      (seed-agent-env! "explore-agent" "BY_TEST_RF_BLANK=\n")
+      (ef/invalidate-cache!)
+      (is (= "global-value" (ef/resolve-for (mk :explore-agent/i1) "BY_TEST_RF_BLANK")))
+      (finally
+        (if prior (System/setProperty "BY_TEST_RF_BLANK" prior)
+            (System/clearProperty "BY_TEST_RF_BLANK"))))))
+
+(deftest resolve-for-is-safe-with-no-agent
+  ;; A tool reached outside a dispatch, a nil scope, a stub: answer the global
+  ;; question rather than throwing.
+  (is (nil? (ef/resolve-for nil "BY_TEST_RF_ABSENT")))
+  (is (nil? (ef/resolve-for {} "BY_TEST_RF_ABSENT")))
+  (is (nil? (ef/resolve-for (mk :explore-agent/i1) nil))))
+
+(deftest the-global-resolver-is-left-alone
+  ;; util/resolve-var stays process-global by construction: a scope parameter
+  ;; there would tax ~90 call sites, 69 of them :env-fn startup knobs, for the
+  ;; handful of readers that can supply one.
+  (seed-agent-env! "explore-agent" "BY_TEST_RF_SCOPED=agent-only\n")
+  (ef/invalidate-cache!)
+  (is (= "agent-only" (ef/resolve-for (mk :explore-agent/i1) "BY_TEST_RF_SCOPED")))
+  (is (nil? (util/resolve-var "BY_TEST_RF_SCOPED"))
+      "a global reader asking a global question still gets the global answer"))

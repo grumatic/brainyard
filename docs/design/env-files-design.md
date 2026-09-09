@@ -3,9 +3,9 @@
 > **Status: PHASES 0–3 SHIPPED; Phase 4 is still a proposal.** §1 is measured
 > against the tree as it was; §3 is the design, with as-built notes at §3.7;
 > §7 phases it. Shipped: both `.env` locations, the per-agent loader and its
-> seam into `env-policy`, and `by env` with six verbs. Not shipped: the
-> `--env-file` flag on `run`/`ask` and the scoped `resolve-var` arity (§3.5),
-> which §5's question 4 still bears on.
+> seam into `env-policy`, `by env` with six verbs, and the agent-scoped read —
+> which landed in a different shape than §3.5 proposed, see §3.7. Not shipped:
+> the `--env-file` flag on `run`/`ask`.
 >
 > **Depends on:** `docs/design/environment-scoping-design.md` (Phases 0–4,
 > shipped). That note built the resolver, gave children the `.env` layer, and
@@ -345,6 +345,66 @@ property table, and absent from `util/resolve-var`.
 run by the project alias (`clojure -M:test`) since Polylith does not cover
 project `src`.
 
+**§3.5 — the scoped read shipped as a separate function, not an arity.** The
+proposal was `(resolve-var k {:overlay …})`; reading the actual call sites made
+that the wrong shape. `util/resolve-var` is called from ~90 places where an
+agent means nothing — 69 of them `:env-fn` startup knobs — so a scope parameter
+there taxes every one of them for the handful of readers that can supply one.
+The scoped read belongs where the scope does:
+
+```clojure
+(util/resolve-var "GH_TOKEN")               ; process-global, unchanged
+(env-files/resolve-for agent "GH_TOKEN")    ; agent .env → env → property
+```
+
+**The agent file outranks the environment, which inverts the global chain, and
+consistency forces it.** `apply-policy!` puts a policy's `:vars` into a child's
+environment unconditionally, so a child ALREADY sees agent-scope-over-process-env.
+An in-process read ordering them the other way would contradict the environment
+of the very children that agent spawns.
+
+**And the argument for it is stronger than §3.5 said.** It framed the case as
+narrow — two callers. The real problem is SPLIT-BRAIN: give `explore-agent` a
+read-only `GH_TOKEN` and `gh` invoked as a subprocess uses it while an in-process
+HTTP call from a tool uses the global one. One agent, two identities, differing
+on whether the call happened to shell out, and nothing announces it. Narrow
+today; wrong in a way that does not surface.
+
+Migrated: `gateway/telegram.clj` (`BY_TELEGRAM_TOKEN`, both reads) and
+`email_commands.clj` (the sender identity, reply-to, and `AWS_REGION`). The last
+one caught a consistency bug in passing — `email$status` reported the region from
+`System/getenv` while `get-ses-client` had moved to the scoped read, so the
+status would have named a region the client was not using.
+
+**Three readers must NOT take a scope**, and the reasons are structural rather
+than "we only found two":
+
+- **The 69 `:env-fn` knobs.** `get-config` is already agent-aware and env is its
+  TOP layer, above the per-agent config layer. Wiring an overlay into
+  `schema-env-value` would let an agent's `.env` outrank that same agent's
+  `:config-extra`, inverting the precedence the config system documents.
+- **Global status readers** — `/login`, the `/model` picker, `env-detect` ask
+  whether this MACHINE is configured. A per-agent answer is wrong by construction.
+- **MCP.** Servers start once per process and are shared, so "this agent's token"
+  has no per-server meaning (§4).
+
+**Why it is explicit rather than implicit**, stated precisely: the hazard is not
+using a dynamic var — `proto/*current-agent*` is bound on the tool-dispatch
+thread, so reading it inside a synchronous tool body is fine, and `resolve-for`'s
+1-arity does exactly that. The hazard is making the GLOBAL resolver consult one.
+`resolve-var` is called from tickers, futures, `call-tool-with-fast-eval` and the
+task executor, where no binding exists — so the same name would resolve
+differently depending on which thread asked, silently, and only for credentials.
+The line sits between the two functions, not inside one.
+
+**Still not done, and named rather than smuggled:** the code-eval sandbox has no
+env access at all — `System` is denied and `sys-info-properties` is a closed
+7-entry list, deliberately, because in `by` the property table IS the credential
+store. Exposing `resolve-for` there as a binding would let an agent's own code
+use its own credential, which is arguably worth more than either call site above.
+It is also a deliberate widening of a boundary someone chose, so it needs its own
+argument.
+
 ---
 
 ## 4. What this deliberately does not fix
@@ -437,7 +497,7 @@ separate, mechanical change with its own risk of breaking the dev loop.
 | **1** ✅ | `by env list` / `get` / `doctor` — read-only, masked. | *"I set it and nothing happened"* becomes one command. Nothing can be broken by a read. |
 | **2** ✅ | `by env set` / `unset` / `import --file`, `0600`, the `.gitignore` guard. | The files become manageable without an editor. |
 | **3** ✅ | `agents/<agent>/.env` + `env-policy` merging it into `:vars`. | The per-agent secret that Phase 3 of the scoping note could scope but not store. |
-| **4** | `--env-file` on `run`/`ask`; the scoped `resolve-var` arity (pending Q4/§3.5). | |
+| **4** ◐ | The agent-scoped read shipped (as `env-files/resolve-for`, not a `resolve-var` arity — §3.7). `--env-file` on `run`/`ask` remains. | An agent's in-process reads and its children's environment stop disagreeing. |
 
 Phases 0–2 are about the project file and are useful with no agent scoping at
 all. Phase 3 is the one that answers the question this note was written for, and

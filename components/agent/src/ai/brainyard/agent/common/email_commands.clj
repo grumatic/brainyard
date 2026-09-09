@@ -9,6 +9,7 @@
    Registers defcommands for sending emails, verifying config, and listing templates.
    Uses the email Polylith component (soft dependency)."
   (:require [ai.brainyard.agent.core.tool :refer [defcommand]]
+            [ai.brainyard.agent.core.env-files :as env-files]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.string :as str]))
 
@@ -28,22 +29,29 @@
   (when (require-email)
     (resolve (symbol "ai.brainyard.email.interface" fn-name))))
 
+;; These read through `env-files/resolve-for`, not `System/getenv`: the calling
+;; agent's own `.env` supplies the sender identity when it has one, so an agent
+;; given a dedicated FROM address sends as that address here AND in anything it
+;; shells out to. `resolve-for` falls back to the process environment and the
+;; `.env` layer, so an installation that never sets a per-agent value behaves
+;; exactly as it did.
+
 (defn- get-ses-client []
   (when-let [create-fn (email-fn "create-client")]
-    (create-fn (or (System/getenv "AWS_REGION") "us-east-1"))))
+    (create-fn (or (env-files/resolve-for "AWS_REGION") "us-east-1"))))
 
 (defn- get-sender []
-  (let [email (or (System/getenv "MAIL_SENDER_EMAIL")
-                  (System/getenv "EMAIL_SENDER")
-                  (System/getenv "SES_SENDER_EMAIL")
+  (let [email (or (env-files/resolve-for "MAIL_SENDER_EMAIL")
+                  (env-files/resolve-for "EMAIL_SENDER")
+                  (env-files/resolve-for "SES_SENDER_EMAIL")
                   "noreply@example.com")
-        name  (System/getenv "MAIL_SENDER_NAME")]
+        name  (env-files/resolve-for "MAIL_SENDER_NAME")]
     (if name
       (str name " <" email ">")
       email)))
 
 (defn- get-reply-to []
-  (System/getenv "MAIL_REPLY_TO"))
+  (env-files/resolve-for "MAIL_REPLY_TO"))
 
 ;; =====================================================
 ;; Email Validation
@@ -147,7 +155,9 @@
               {:configured true
                :sender sender
                :sender-verified (boolean verified)
-               :region (or (System/getenv "AWS_REGION") "us-east-1")})
+               ;; Same read as `get-ses-client`, or the status would report a
+               ;; region the client is not using.
+               :region (or (env-files/resolve-for "AWS_REGION") "us-east-1")})
             (catch Exception e
               {:configured false :error (str "SES check failed: " (.getMessage e))}))))))
   :input-schema [:map]

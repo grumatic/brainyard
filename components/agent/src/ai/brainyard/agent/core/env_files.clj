@@ -109,6 +109,43 @@
   (reset! !cache {})
   nil)
 
+(defn resolve-for
+  "The value of `var-name` as THIS AGENT sees it: its own `.env` first, then the
+   process environment, then the `.env` layer in the property table.
+
+   **Why this is not an arity of `util/resolve-var`.** That function is
+   process-global by construction and is called from ~90 places where an agent
+   means nothing — 69 of them `:env-fn` startup knobs. A scope parameter there
+   would tax every one of them for the handful of readers that can supply one.
+   The scoped read belongs where the scope does.
+
+   **Why the agent file outranks the environment**, which is the opposite of
+   the global chain. `apply-policy!` puts a policy's `:vars` into a child's
+   environment unconditionally, overriding what the child inherited — so a
+   child ALREADY sees agent-scope-over-process-env. An in-process read ordering
+   them the other way would contradict the environment of the very children
+   that agent spawns.
+
+   **What it is for.** Without it a per-agent credential is split-brained: give
+   `explore-agent` a read-only `GH_TOKEN` and `gh` invoked as a subprocess uses
+   it while an in-process HTTP call from a tool uses the global one. One agent,
+   two identities, differing on whether the call happened to shell out — and
+   nothing announces it.
+
+   Only for readers with an agent genuinely in scope. A global question —
+   `/login`, the `/model` picker, `env-detect` asking whether this MACHINE is
+   configured — must keep getting the global answer, and calls `resolve-var`."
+  ([var-name] (resolve-for proto/*current-agent* var-name))
+  ([agent var-name]
+   (when-let [n (some-> var-name name not-empty)]
+     (let [v (get (agent-env agent) n)]
+       (if-not (str/blank? v)
+         v
+         ;; Blank falls through here too — the rule the whole tree shares, and
+         ;; the one that stops an accidental empty line in a `.env` masking a
+         ;; credential that is really set.
+         (util/resolve-var n))))))
+
 ;; ============================================================================
 ;; Writing — `by env set` / `unset` / `import`
 ;;

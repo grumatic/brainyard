@@ -401,7 +401,7 @@
 ;; ============================================================================
 
 (export-symbols ai.brainyard.agent.core.env-files
-                agent-env agent-env-path defagent-type
+                agent-env agent-env-path defagent-type resolve-for
                 scope-path read-file set-var! unset-var! import-file!
                 ensure-gitignore! invalidate-cache!)
 
