@@ -388,6 +388,12 @@
    :as "Tombstone L2 episodes older than N days that are not kept (default 30)"
    :type :int})
 
+(def run-env-file-opt
+  {:option "env-file"
+   :as (str "Pin .env discovery to this file for this invocation "
+            "(flag beats BY_ENV_FILE; a missing path is an error, not a fallback)")
+   :type :string})
+
 (def env-agent-opt
   {:option "agent" :short "A"
    :as "Per-agent scope: <project>/.brainyard/agents/<agent-id>/.env"
@@ -3107,9 +3113,13 @@
    labelled, rather than pretended into the loader's order."
   [opts]
   (let [sel        (env-sel opts)
-        agent-path (when (:agent sel) (agent/scope-path sel))]
-    (vec (for [p (distinct (concat (when agent-path [agent-path])
-                                   (map str (dotenv/candidate-paths))))
+        agent-path (when (:agent sel) (agent/scope-path sel))
+        ;; A pin REPLACES the walk, so reporting the walk would describe
+        ;; discovery that never happened for this process.
+        global     (if-let [pinned @dotenv/pinned-file]
+                     [pinned]
+                     (map str (dotenv/candidate-paths)))]
+    (vec (for [p (distinct (concat (when agent-path [agent-path]) global))
                :let [f    (io/file p)
                      ex   (.isFile f)
                      vars (when ex (agent/read-file p))]]
@@ -3460,7 +3470,8 @@
                                  :type :string :multiple true}
                                 {:option "sandbox-no-network"
                                  :as "Deny all network from the sandboxed session (blocks LLM calls; env BY_SANDBOX_NO_NETWORK)"
-                                 :type :with-flag :default false}]
+                                 :type :with-flag :default false}
+                                run-env-file-opt]
                   :runs        cmd-run}
                  {:command     "ask"
                   :description (str "Ask a question (non-interactive); repeat -q for a multi-turn "
@@ -3475,7 +3486,8 @@
                                 attach-opt
                                 ask-timeout-opt
                                 session-opt
-                                json-opt]
+                                json-opt
+                                run-env-file-opt]
                   :args        [{:arg "question" :as "Question to ask (or use -q, repeatably)" :type :string}]
                   :runs        cmd-ask}
                  {:command     "agents"
@@ -3843,6 +3855,46 @@
       :else
       {:unknown first-arg})))
 
+(defn env-file-arg
+  "The `--env-file` value in `args`, or nil. Accepts `--env-file P` and
+   `--env-file=P`.
+
+   Pre-scanned from argv rather than read from the parsed opts, because the
+   `.env` has to be loaded before ANYTHING reads config — `-dispatch` calls the
+   loader well before `cli/run-cmd`. A flag read after parsing would arrive too
+   late for the 69 `:env-fn` knobs it exists to supply.
+
+   Pure, so the argument rules can be tested without `System/exit` — the shape
+   `normalize-dispatch-args` and `parse-label-args` already use."
+  [args]
+  (loop [[a & more] (seq args)]
+    (when a
+      (cond
+        (str/starts-with? (str a) "--env-file=")
+        (not-empty (subs (str a) (count "--env-file=")))
+
+        (= "--env-file" (str a))
+        (not-empty (str (first more)))
+
+        :else (recur more)))))
+
+(defn strip-env-file-arg
+  "`args` without the `--env-file` flag and its value.
+
+   The scanner above runs BEFORE cli-matic, because the `.env` must be loaded
+   before anything reads config. Consuming the tokens afterwards is what lets
+   the flag work on EVERY subcommand while being declared only on the two where
+   it belongs in `--help`: cli-matic never sees it, so it cannot reject it as
+   unknown on `by env` or `by sessions`, and a flag that worked on some
+   subcommands and errored on others would be the worse outcome."
+  [args]
+  (loop [[a & more :as all] (seq args) acc []]
+    (cond
+      (nil? a) acc
+      (str/starts-with? (str a) "--env-file=") (recur more acc)
+      (= "--env-file" (str a))                 (recur (rest more) acc)
+      :else (recur more (conj acc a)))))
+
 (defn- exit-unknown-token!
   "A bare first argument that is neither a subcommand, a registered agent, nor
    the legacy `provider:model` shorthand.
@@ -3915,17 +3967,23 @@
   ;; Bridge project-local `.env` into JVM properties so the native `by`
   ;; binary picks up keys without the `bb` shell wrapper. Real env vars take
   ;; precedence; see dotenv.clj for resolution order.
-  (let [{:keys [paths loaded-count env-file-missing]} (dotenv/load-from-dotenv!)]
+  (let [{:keys [paths loaded-count env-file-missing env-file-from-flag?]}
+        (dotenv/load-from-dotenv! {:env-file (env-file-arg args)})]
     ;; Diagnostic banner → stderr, so stdout stays clean for piping
     ;; (`by ask`, `--json`, etc.). (Was a no-op `*err* *err*` binding that
     ;; left it on stdout.)
     (when env-file-missing
-      ;; Said out loud because the fallback is silent otherwise, and a typo'd
-      ;; BY_ENV_FILE that quietly loads a DIFFERENT .env is worse than one
-      ;; that loads nothing — the user believes they pinned a file.
-      (binding [*out* *err*]
-        (println (format "[dotenv] BY_ENV_FILE=%s does not exist; falling back to .env discovery"
-                         env-file-missing))))
+      ;; The two sources mean different things when the file is absent. A
+      ;; BY_ENV_FILE inherited from some other context is plausibly stale, so
+      ;; the walk still runs and we say so — a typo'd path that quietly loads a
+      ;; DIFFERENT .env is worse than one that loads nothing. A `--env-file`
+      ;; typed for THIS invocation is an assertion about this run, so it fails
+      ;; rather than silently reading somewhere else.
+      (if env-file-from-flag?
+        (exit-err! (format "Error: --env-file %s does not exist." env-file-missing))
+        (binding [*out* *err*]
+          (println (format "[dotenv] BY_ENV_FILE=%s does not exist; falling back to .env discovery"
+                           env-file-missing)))))
     (when (pos? loaded-count)
       (binding [*out* *err*]
         (println (format "[dotenv] loaded %d key(s) from %s"
@@ -3967,6 +4025,6 @@
   ;; rendered screen. Idempotent, so this is the only call site that has to
   ;; exist.
   (mulog/setup-slf4j-bridge!)
-  (let [{:keys [args unknown]} (normalize-dispatch-args args)
+  (let [{:keys [args unknown]} (normalize-dispatch-args (strip-env-file-arg args))
         _ (when unknown (exit-unknown-token! unknown))]
     (cli/run-cmd (inject-bare-resume-sentinel args) cli-config)))

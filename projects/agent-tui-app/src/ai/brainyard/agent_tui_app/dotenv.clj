@@ -36,17 +36,29 @@
             [clojure.string :as str]
             [ai.brainyard.util.interface :as util]))
 
+(defonce pinned-file
+  ;; The file `--env-file` / `BY_ENV_FILE` pinned for this process, or nil.
+  ;;
+  ;; Recorded because a pin REPLACES the walk: when one is in effect the
+  ;; discovery chain is that one file, and anything reporting on the chain
+  ;; (`by env list` / `doctor`) would otherwise describe a walk that never ran.
+  (atom nil))
+
 (defn- explicit-env-file
-  "The file named by `BY_ENV_FILE`, when it names one that exists.
+  "The file named by `--env-file` or `BY_ENV_FILE`, when it names one that exists.
+
+   The flag outranks the variable, which is the precedence every other `by`
+   flag uses. The two differ in how a MISSING file is treated, and that is a
+   decision rather than an oversight — see `load-from-dotenv!`.
 
    Set-but-missing falls through to the walk rather than failing, matching
    `by-wrapper.sh`'s `[ -n \"$BY_ENV_FILE\" ] && [ -f \"$BY_ENV_FILE\" ]` —
    but the caller is told, because a typo'd path that silently loads a
    different file is worse than one that loads nothing."
-  []
-  (when-let [p (util/resolve-var "BY_ENV_FILE")]
+  [flag-path]
+  (when-let [p (or (not-empty (str (or flag-path ""))) (util/resolve-var "BY_ENV_FILE"))]
     (let [f (io/file p)]
-      (if (.isFile f) f {:missing p}))))
+      (if (.isFile f) f {:missing p :from-flag? (boolean (not-empty (str (or flag-path ""))))}))))
 
 (defn candidate-paths
   "Every `.env` this process should consider, most specific first.
@@ -89,16 +101,27 @@
   "Scan `.env` candidate paths and merge into JVM System Properties. Real env
    vars are never overridden.
 
+   `opts` may carry `:env-file`, the `--env-file` flag pre-scanned from argv
+   before cli-matic runs — the `.env` has to be loaded before anything reads
+   config, so a flag parsed later would be too late for the `:env-fn` knobs it
+   is meant to supply.
+
    Returns `{:paths [{:path :keys [str]}] :loaded-count int}`, plus
    `:skipped :by-no-dotenv` when `BY_NO_DOTENV` suppressed the load, and
-   `:env-file-missing <path>` when `BY_ENV_FILE` named a file that is not
-   there (the walk still ran)."
-  []
-  (if (util/resolve-var "BY_NO_DOTENV")
+   `:env-file-missing <path>` (with `:env-file-from-flag?`) when the pinned
+   file is not there. The walk still ran; the CALLER decides what a miss means,
+   and it means different things for the two sources: a `BY_ENV_FILE` inherited
+   from some other context is plausibly stale, while a `--env-file` typed for
+   this invocation is an assertion."
+  ([] (load-from-dotenv! nil))
+  ([{:keys [env-file]}]
+   (if (util/resolve-var "BY_NO_DOTENV")
     {:paths [] :loaded-count 0 :skipped :by-no-dotenv}
-    (let [explicit (explicit-env-file)
+    (let [explicit (explicit-env-file env-file)
           missing  (:missing explicit)
-          paths    (if (and explicit (not missing)) [explicit] (candidate-paths))
+          pinned?  (and explicit (not missing))
+          _        (reset! pinned-file (when pinned? (.getPath ^java.io.File explicit)))
+          paths    (if pinned? [explicit] (candidate-paths))
           merged (atom {})
           loaded (atom [])]
       (doseq [^java.io.File f paths]
@@ -122,4 +145,5 @@
       (util/register-dotenv-keys! (keys @merged))
       (cond-> {:paths        @loaded
                :loaded-count (count @merged)}
-        missing (assoc :env-file-missing missing)))))
+        missing (assoc :env-file-missing missing
+                       :env-file-from-flag? (boolean (:from-flag? explicit))))))))

@@ -4,8 +4,9 @@
 > against the tree as it was; §3 is the design, with as-built notes at §3.7;
 > §7 phases it. Shipped: both `.env` locations, the per-agent loader and its
 > seam into `env-policy`, `by env` with six verbs, and the agent-scoped read —
-> which landed in a different shape than §3.5 proposed, see §3.7. Not shipped:
-> the `--env-file` flag on `run`/`ask`.
+> which landed in a different shape than §3.5 proposed, see §3.7. Phase 4's
+> `--env-file` shipped too, so the note is fully built. §5's question 2 is
+> resolved: per agent TYPE, as §3.2 chose.
 >
 > **Depends on:** `docs/design/environment-scoping-design.md` (Phases 0–4,
 > shipped). That note built the resolver, gave children the `.env` layer, and
@@ -405,6 +406,34 @@ use its own credential, which is arguably worth more than either call site above
 It is also a deliberate widening of a boundary someone chose, so it needs its own
 argument.
 
+**§3.4 — `--env-file` is pre-scanned from argv, then consumed.** The `.env` has
+to be loaded before anything reads config: `-dispatch` calls the loader well
+before `cli/run-cmd`, so a flag read from the parsed opts would arrive too late
+for the 69 `:env-fn` knobs it exists to supply. `env-file-arg` scans argv (both
+`--env-file P` and `--env-file=P`) and is pure, so the argument rules are
+testable without `System/exit` — the shape `normalize-dispatch-args` already
+uses.
+
+`strip-env-file-arg` then removes it before cli-matic sees it. That is what lets
+the flag work on EVERY subcommand while being declared only on `run` and `ask`,
+where it belongs in `--help`: without the strip, the pre-scan would already have
+acted on `by env doctor --env-file P` and cli-matic would then reject the flag as
+unknown. A flag that works on some subcommands and errors on others, having
+already taken effect, is the worse outcome.
+
+**A missing pin means different things from the two sources**, so it is handled
+differently. `BY_ENV_FILE` may be inherited from another context and is
+plausibly stale: the walk still runs and the fallback is announced. `--env-file`
+was typed for this invocation and is an assertion about this run, so it exits
+non-zero rather than silently reading somewhere else.
+
+**A pin REPLACES the walk, so `by env` reports the pin.** `load-from-dotenv!`
+records the resolved file in `dotenv/pinned-file`, and `env-candidates` uses it
+as the global chain when set — otherwise `by env list` and `doctor` would
+describe a discovery that never happened for this process. It also makes
+`by env doctor --env-file P` answer a genuinely useful question: what does *this*
+file give me?
+
 ---
 
 ## 4. What this deliberately does not fix
@@ -437,10 +466,11 @@ separate, mechanical change with its own risk of breaking the dev loop.
    `~/.brainyard/.env` is shared across every repo on the machine, and a
    deployment key pasted there reaches agents in projects the user was not
    thinking about. A warning is probably right; a refusal probably is not.
-2. **Per agent TYPE or per agent INSTANCE?** §3.2 chose type, matching every
-   existing artifact dir and `:config-extra`. Per instance (`agt-…`) would let
-   two live sessions of the same specialist hold different credentials, which is
-   either exactly what someone wants or a footgun with no discoverable UI.
+2. ~~**Per agent TYPE or per agent INSTANCE?**~~ **RESOLVED: type**, as §3.2
+   chose — matching every existing artifact dir and what `:config-extra` scopes.
+   Per instance (`agt-…`) would let two live sessions of one specialist hold
+   different credentials, but there is no discoverable way to say which instance
+   you are configuring, and the directory would be unreadable.
 3. **Does `by env` need a `--session` scope at all?** Session config is a real
    precedence layer (`resolve-config`, `config.clj:1649`) and has no file. It is
    also the one layer that vanishes on restart, which may make a file for it
@@ -497,7 +527,7 @@ separate, mechanical change with its own risk of breaking the dev loop.
 | **1** ✅ | `by env list` / `get` / `doctor` — read-only, masked. | *"I set it and nothing happened"* becomes one command. Nothing can be broken by a read. |
 | **2** ✅ | `by env set` / `unset` / `import --file`, `0600`, the `.gitignore` guard. | The files become manageable without an editor. |
 | **3** ✅ | `agents/<agent>/.env` + `env-policy` merging it into `:vars`. | The per-agent secret that Phase 3 of the scoping note could scope but not store. |
-| **4** ◐ | The agent-scoped read shipped (as `env-files/resolve-for`, not a `resolve-var` arity — §3.7). `--env-file` on `run`/`ask` remains. | An agent's in-process reads and its children's environment stop disagreeing. |
+| **4** ✅ | The agent-scoped read (as `env-files/resolve-for`, not a `resolve-var` arity) and `--env-file`. | An agent's in-process reads and its children's environment stop disagreeing; a single invocation can pin its own `.env`. |
 
 Phases 0–2 are about the project file and are useful with no agent scoping at
 all. Phase 3 is the one that answers the question this note was written for, and

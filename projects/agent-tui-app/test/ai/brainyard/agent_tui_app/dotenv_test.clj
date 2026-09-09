@@ -11,6 +11,7 @@
        cd projects/agent-tui-app && clojure -M:test"
   (:require [clojure.test :refer [deftest testing is]]
             [ai.brainyard.agent-tui-app.dotenv :as dotenv]
+            [ai.brainyard.agent-tui-app.main :as main]
             [clojure.java.io :as io]))
 
 (defn- rm-rf [^java.io.File f]
@@ -97,3 +98,73 @@
           (is (zero? (:loaded-count r)))
           (is (nil? (System/getProperty "BY_TEST_SUPPRESSED"))))
         (finally (clear! "BY_NO_DOTENV" "BY_TEST_SUPPRESSED"))))))
+
+;; ============================================================================
+;; --env-file — pinning discovery for one invocation
+;;
+;; The scanner is pure and pre-runs cli-matic, because the `.env` has to be
+;; loaded before anything reads config: a flag parsed later would arrive too
+;; late for the 69 `:env-fn` knobs it exists to supply.
+;; ============================================================================
+
+(def ^:private scan  main/env-file-arg)
+(def ^:private strip main/strip-env-file-arg)
+
+(deftest env-file-arg-accepts-both-forms
+  (is (= "/p/.env" (scan ["run" "--env-file" "/p/.env"])))
+  (is (= "/p/.env" (scan ["run" "--env-file=/p/.env"])))
+  (is (= "/p/.env" (scan ["ask" "-q" "hi" "--env-file" "/p/.env" "--json"])))
+  (testing "absent, or present with nothing after it"
+    (is (nil? (scan ["run"])))
+    (is (nil? (scan [])))
+    (is (nil? (scan ["run" "--env-file"])))
+    (is (nil? (scan ["run" "--env-file="])))))
+
+(deftest strip-removes-the-flag-and-its-value
+  ;; Consumed after scanning so cli-matic never sees it — which is what lets the
+  ;; flag work on EVERY subcommand while being declared only on the two where it
+  ;; belongs in --help. A flag that worked on some and errored on others would
+  ;; be the worse outcome.
+  (is (= ["run"] (strip ["run" "--env-file" "/p/.env"])))
+  (is (= ["run"] (strip ["run" "--env-file=/p/.env"])))
+  (is (= ["ask" "-q" "hi" "--json"] (strip ["ask" "-q" "hi" "--env-file" "/p/.env" "--json"])))
+  (testing "leaves everything else alone"
+    (is (= ["env" "list" "--json"] (strip ["env" "list" "--json"])))
+    (is (= [] (strip [])))))
+
+(deftest an-explicit-env-file-pins-discovery-and-beats-by-env-file
+  (with-project
+    (fn [root]
+      (let [pinned (io/file root "pinned.env")
+            other  (io/file root "other.env")]
+        (spit pinned "BY_TEST_PIN=from-flag\n")
+        (spit other  "BY_TEST_PIN=from-env-var\n")
+        (spit (io/file root ".brainyard" ".env") "BY_TEST_PIN=from-walk\n")
+        (clear! "BY_TEST_PIN")
+        (try
+          (System/setProperty "BY_ENV_FILE" (.getPath other))
+          (let [r (dotenv/load-from-dotenv! {:env-file (.getPath pinned)})]
+            (is (= [(.getPath pinned)] (mapv :path (:paths r)))
+                "the pin REPLACES the walk — one file, not a merge")
+            (is (= (.getPath pinned) @dotenv/pinned-file)
+                "and it is recorded, so anything reporting on the chain says so"))
+          (is (= "from-flag" (System/getProperty "BY_TEST_PIN")))
+          (finally (clear! "BY_ENV_FILE" "BY_TEST_PIN")
+                   (reset! dotenv/pinned-file nil)))))))
+
+(deftest a-missing-pin-is-reported-with-its-source
+  ;; The caller decides what a miss means, and it differs: a BY_ENV_FILE
+  ;; inherited from elsewhere is plausibly stale (warn, walk on), while a
+  ;; --env-file typed for this invocation is an assertion (error).
+  (with-project
+    (fn [root]
+      (let [gone (str root "/nope.env")]
+        (let [r (dotenv/load-from-dotenv! {:env-file gone})]
+          (is (= gone (:env-file-missing r)))
+          (is (true? (:env-file-from-flag? r))))
+        (try
+          (System/setProperty "BY_ENV_FILE" gone)
+          (let [r (dotenv/load-from-dotenv!)]
+            (is (= gone (:env-file-missing r)))
+            (is (false? (:env-file-from-flag? r))))
+          (finally (clear! "BY_ENV_FILE")))))))
