@@ -180,7 +180,7 @@
          :reason   (str "Ollama daemon is running with " (count chat) " chat model(s).")}))))
 
 (defn- can-pull?
-  "Rung (e) requires either: network egress to ollama.com (for `glm-5:cloud`)
+  "Rung (e) requires either: network egress to ollama.com (for the cloud id)
    OR egress to huggingface.co (for the local pull). If neither, skip."
   [detection profile]
   (let [{:keys [huggingface? ollama?]} (:network detection)

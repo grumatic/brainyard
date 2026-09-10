@@ -13,14 +13,34 @@
 
 (defn recommended-default-model
   "Centralised default model for rung (e). Changing this updates both the
-   bootstrap ladder and the docs that quote it."
+   bootstrap ladder and the docs that quote it.
+
+   Was `glm-4.5-air`, which ollama.com now 404s — the model was withdrawn from
+   the library, so the ladder's primary rung had been offering a pull that
+   could only fail. Nothing detects that on our side: rung (e) asks Ollama to
+   pull an id, and a withdrawn id is indistinguishable from a typo until the
+   pull runs."
   []
-  "glm-4.5-air")
+  "gemma4:latest")
 
 (defn cloud-fallback-model
-  "Disk-free fallback when local pull is too heavy. Requires `ollama signin`."
+  "Disk-free alternative when a local pull is too heavy.
+
+   NO LONGER FREE. This was `glm-5:cloud` on the premise, recorded in
+   docs/design/bootstrapping-design.md §5.2, that Ollama Cloud's free tier
+   needed `ollama signin` but no paid account — which made it a legitimate end
+   of a ladder whose whole purpose is getting from zero credentials to a
+   working agent. Both halves of that have since lapsed: glm-5 was retired
+   upstream (410, 2026-07-15) and every surviving cloud id now answers 402
+   \"requires a subscription or usage credits\" — measured against
+   glm-5.3-flash:cloud, the direct successor named here.
+
+   So this returns a REACHABLE id, not a free one, and a caller offering it as
+   a no-credentials path is now wrong. §11 of that design anticipated exactly
+   this and prescribes falling through to rung (f)/(g) instead; `applies-e?`
+   has not been changed to do so."
   []
-  "glm-5:cloud")
+  "glm-5.3-flash:cloud")
 
 ;; ============================================================================
 ;; OS detection helpers (kept local — providers.clj's `which` is private)
@@ -244,7 +264,8 @@
          :detail      (str "pull failed: " (.getMessage e))}))))
 
 ;; ============================================================================
-;; signin! — for the glm-5:cloud option
+;; signin! — for the cloud-model option (see cloud-fallback-model: signin is
+;;           now necessary but NOT sufficient; the account must also be paid)
 ;; ============================================================================
 
 (defn signin!

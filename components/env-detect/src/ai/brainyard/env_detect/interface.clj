@@ -92,7 +92,9 @@
   (ollama/pull-model! model on-progress))
 
 (defn ollama-signin!
-  "Run `ollama signin` for cloud-tier models (e.g. glm-5:cloud)."
+  "Run `ollama signin` for cloud-tier models (e.g. glm-5.3-flash:cloud).
+   Signin alone no longer buys access — Ollama Cloud bills every request; see
+   `ollama-install/cloud-fallback-model`."
   []
   (ollama/signin!))
 
@@ -101,7 +103,9 @@
   ollama/recommended-default-model)
 
 (def cloud-ollama-model
-  "Disk-free fallback model (Ollama Cloud free tier; requires signin)."
+  "Disk-free alternative model (Ollama Cloud). NOT free — requires a paid
+   subscription or usage credits, not just `ollama signin`; see
+   `ollama-install/cloud-fallback-model` for the measurement."
   ollama/cloud-fallback-model)
 
 (defn start-apple-fm-daemon!

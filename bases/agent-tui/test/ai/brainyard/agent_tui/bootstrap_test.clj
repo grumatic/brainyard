@@ -4,7 +4,17 @@
 
 (ns ai.brainyard.agent-tui.bootstrap-test
   (:require [clojure.test :refer [deftest is testing]]
-            [ai.brainyard.agent-tui.bootstrap :as boot]))
+            [ai.brainyard.agent-tui.bootstrap :as boot]
+            [ai.brainyard.env-detect.interface :as env]))
+
+;; These scenarios test RUNG SELECTION, so they assert the model against
+;; `env/recommended-ollama-model` / `env/cloud-ollama-model` rather than a
+;; literal id. Pinning the literal made three of them fail the moment the
+;; recommendation moved off `glm-4.5-air` — a red suite that said nothing
+;; about rung selection, which is the thing under test. The provider's roster
+;; is not ours to freeze: glm-4.5-air was withdrawn from ollama.com (404) and
+;; glm-5:cloud retired (410), and the next such change should not do this
+;; again.
 
 ;; ============================================================================
 ;; Detection fixture builder
@@ -103,7 +113,7 @@
                          :daemon? true :pulled ["nomic-embed-text"])
           out (boot/choose-rung det {} :dev)]
       (is (= :e (:rung out)))
-      (is (= "glm-4.5-air" (:model out))))))
+      (is (= (env/recommended-ollama-model) (:model out))))))
 
 (deftest scenario-7-nothing-but-egress
   (testing "(e) clean machine — offer install + pull"
@@ -111,7 +121,7 @@
           out (boot/choose-rung det {} :dev)]
       (is (= :e (:rung out)))
       (is (= :ollama (:provider out)))
-      (is (= "glm-4.5-air" (:model out)))
+      (is (= (env/recommended-ollama-model) (:model out)))
       (is (true? (:install? out)))
       (is (true? (:pull? out))))))
 
@@ -139,11 +149,13 @@
       (is (= :g (:rung (boot/choose-rung det-no {} :offline)))))))
 
 (deftest scenario-11-cloud-profile-prefers-cloud-model
-  (testing "cloud profile: rung (e) defaults to glm-5:cloud"
+  (testing "cloud profile: rung (e) defaults to the cloud model"
     (let [det (detection :ollama-installed? true :daemon? true)
           out (boot/choose-rung det {} :cloud)]
       (is (= :e (:rung out)))
-      (is (= "glm-5:cloud" (:model out))))))
+      (is (= (env/cloud-ollama-model) (:model out)))
+      (is (not= (env/recommended-ollama-model) (:model out))
+          "the :cloud profile must pick the cloud id, not the local default"))))
 
 (deftest scenario-12-apple-fm-below-ollama
   (testing "(f) Apple FM only fires when (e) is unavailable; rung-order check"

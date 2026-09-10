@@ -68,7 +68,12 @@
                  :auth-header          nil
                  :supports-json-schema? false
                  :message-format       :openai
-                 :default-model        "glm-5:cloud"}
+                 ;; A LOCAL model, not a `:cloud` one: this is the id used when
+                 ;; someone selects :ollama without naming a model, and Ollama Cloud
+                 ;; now bills every request (measured: 402 "requires a subscription
+                 ;; or usage credits"). A default that cannot run without a
+                 ;; purchase is not a default.
+                 :default-model        "gemma4:latest"}
    :free-llm    {:base-url             nil  ;; resolved from FREELLM_BASE_URL at create-lm time
                  :base-url-env         "FREELLM_BASE_URL"
                  :api-key-env          "FREELLM_API_KEY"  ;; optional — sent as Bearer if present
@@ -220,8 +225,11 @@
    ;; 2026-07-15". The refresh cannot catch this class of rot — a `:cloud`
    ;; model is a local POINTER manifest, so `/v1/models` keeps reporting it as
    ;; present long after the remote is gone. Only a real request says so.
-   [{:model "kimi-k2.7-code:cloud" :curated-rank 33 :description "Kimi K2.7 Code Cloud (Ollama; coding, 262K context)"}
-    {:model "gemma4:latest" :curated-rank 34 :description "Gemma 4 8B (Ollama, local; tools + thinking)"}]
+   ;; gemma4 leads: `bootstrap/default-model` takes the FIRST curated entry, so
+   ;; rank order here decides what `--auto` picks. A `:cloud` id would hand a
+   ;; fresh user a 402.
+   [{:model "gemma4:latest" :curated-rank 33 :description "Gemma 4 8B (Ollama, local; tools + thinking)"}
+    {:model "kimi-k2.7-code:cloud" :curated-rank 34 :description "Kimi K2.7 Code Cloud (Ollama; coding, 262K context; paid Ollama Cloud)"}]
    :bedrock
    ;; Anthropic on Bedrock — prefer the `global.` cross-region inference
    ;; profiles; `us.`/`eu.`/`apac.` variants exist per partition.
