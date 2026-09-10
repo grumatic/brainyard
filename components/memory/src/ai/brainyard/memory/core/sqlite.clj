@@ -428,6 +428,100 @@
   ["CREATE INDEX IF NOT EXISTS idx_edges_src ON graph_edges(user_id, src_id) WHERE t_invalid IS NULL"
    "CREATE INDEX IF NOT EXISTS idx_edges_dst ON graph_edges(user_id, dst_id) WHERE t_invalid IS NULL"])
 
+(def ^:private procedure-schema
+  "Schema for the PROCEDURAL graph (docs/design/procedural-graph-implementation.md).
+
+  A knowledge graph organizes (entity, relation, entity) to answer *what-is*;
+  a procedural graph organizes (procedure, relation, procedure) to answer
+  *what-to-do-next*. These are separate tables from `graph_nodes`/`graph_edges`
+  and that separation is load-bearing, not tidiness — §0.2 of the design:
+
+    - `graph/search-nodes` has no `node_type` predicate,
+    - `graph/search-nodes-semantic` keys the `graph_vec` kNN on `graph_nodes.id`
+      with no type discrimination,
+    - `graph/expand-edges` filters no relation AND walks UNDIRECTED,
+
+  so a `:procedure` node co-tenanted in `graph_nodes` would leak into relational
+  recall, the RRF fusion and the `## Related` briefing. Worse,
+  `graph/prune-nodes-to-budget!` hard-deletes low-retention nodes together with
+  their edges, so memory retention pressure would silently evict a validated
+  procedure graph.
+
+  Keyed by `graph_id`, NOT `user_id`: the database file is already per-user, and
+  naming the graph is what lets a procedure graph later be shared or shipped
+  (design §1.3) without a migration.
+
+  Bi-temporal like `graph_edges` — the paper's Delete is `invalidate-edge!`,
+  never a row delete, so an evolution post-mortem can reconstruct which graph
+  produced a given rollout."
+  ["CREATE TABLE IF NOT EXISTS proc_nodes (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     graph_id TEXT NOT NULL DEFAULT 'default',
+     name TEXT NOT NULL,
+     kind TEXT NOT NULL,
+     summary TEXT,
+     aliases TEXT,
+     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+     /* UNIQUE on (graph_id, name) and deliberately NOT (graph_id, kind, name)
+        as graph_nodes does: Match must resolve a tool id to exactly ONE node,
+        and there is no disambiguating information at the call site. */
+     UNIQUE(graph_id, name)
+   )"
+
+   "CREATE TABLE IF NOT EXISTS proc_edges (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     graph_id TEXT NOT NULL DEFAULT 'default',
+     src_id INTEGER NOT NULL REFERENCES proc_nodes(id),
+     dst_id INTEGER NOT NULL REFERENCES proc_nodes(id),
+     relation TEXT NOT NULL,
+     condition TEXT,
+     guidance TEXT,
+     pitfalls TEXT,
+     confidence REAL DEFAULT 0.85,
+     support INTEGER DEFAULT 0,
+     origin TEXT NOT NULL DEFAULT 'refiner',
+     gen INTEGER,
+     t_valid DATETIME DEFAULT CURRENT_TIMESTAMP,
+     t_invalid DATETIME,
+     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+     /* No table-level UNIQUE carrying t_valid — that key is both too weak
+        (t_valid defaults to now, so duplicate live rows slip through) and too
+        strong (it rejects legitimate re-assertion after supersession). The
+        constraint is `idx_proc_edges_live`, the partial index below. This is
+        the lesson graph_edges learned the hard way; see `rebuild-graph-edges!`. */
+   )"
+
+   "CREATE TABLE IF NOT EXISTS proc_graphs (
+     graph_id TEXT PRIMARY KEY,
+     gen INTEGER DEFAULT 0,
+     val_score REAL,
+     val_suite TEXT,
+     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+   )"
+
+   ;; Rejection memory is a SEPARATE table, not invalidated edges: a rejected
+   ;; candidate must never be REACHABLE by a traversal, and an invalidated row
+   ;; in proc_edges is one `t_invalid` predicate away from being walked. These
+   ;; are proposals that were never part of any graph.
+   "CREATE TABLE IF NOT EXISTS proc_rejections (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     graph_id TEXT NOT NULL,
+     gen INTEGER NOT NULL,
+     edits TEXT NOT NULL,
+     val_score REAL,
+     base_score REAL,
+     reason TEXT,
+     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+   )"
+
+   "CREATE UNIQUE INDEX IF NOT EXISTS idx_proc_edges_live
+      ON proc_edges(graph_id, src_id, dst_id, relation) WHERE t_invalid IS NULL"
+   "CREATE INDEX IF NOT EXISTS idx_proc_edges_src
+      ON proc_edges(graph_id, src_id) WHERE t_invalid IS NULL"
+   "CREATE INDEX IF NOT EXISTS idx_proc_nodes_name ON proc_nodes(graph_id, name)"
+   "CREATE INDEX IF NOT EXISTS idx_proc_rejections ON proc_rejections(graph_id, gen)"])
+
 (defn- vec-schema
   "DDL for the `graph_vec` vector index (CR-MEM-21), built when sqlite-vec
   is available. `+ref_kind`/`+ref_id` are auxiliary (retrievable) columns
@@ -664,6 +758,7 @@
                             audit-schema
                             graph-schema
                             graph-edge-indexes
+                            procedure-schema
                             ;; The vector index only exists when sqlite-vec
                             ;; loaded; otherwise recall falls back to FTS.
                             (when (resolve-vec-extension)
@@ -719,12 +814,15 @@
     ;; `idx_edges_live_unique` so edge re-assertion is idempotent, and is the
     ;; first version carrying a real DATA migration (`dedupe-live-edges!`)
     ;; rather than DDL alone — it collapses duplicate LIVE edges minted before
-    ;; the index existed. Everything else is IF NOT EXISTS (plus the guarded
-    ;; ALTER above), so existing databases still migrate transparently on open.
+    ;; the index existed. 2.4.0 adds the PROCEDURAL graph (proc_nodes,
+    ;; proc_edges, proc_graphs, proc_rejections) as tables of its own — pure
+    ;; addition, touching nothing the entity graph reads. Everything else is
+    ;; IF NOT EXISTS (plus the guarded ALTER above), so existing databases
+    ;; still migrate transparently on open.
     (try
       (jdbc/execute! ds
                      ["INSERT OR REPLACE INTO memory_metadata (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)"
-                      "schema_version" "2.3.0"])
+                      "schema_version" "2.4.0"])
       (catch Exception e
         (mulog/warn ::schema-version-store-failed :error (ex-message e)))))
 

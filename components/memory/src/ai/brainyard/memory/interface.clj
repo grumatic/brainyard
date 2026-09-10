@@ -35,6 +35,7 @@
             [ai.brainyard.memory.core.sqlite :as sqlite]
             [ai.brainyard.memory.core.unified-store :as us]
             [ai.brainyard.memory.core.graph :as graph]
+            [ai.brainyard.memory.core.procedure :as procedure]
             [ai.brainyard.memory.core.l1-store :as l1]
             [ai.brainyard.memory.core.capture.dispatcher :as capture-dispatcher]
             [ai.brainyard.memory.core.capture.sidecar :as capture-sidecar]
@@ -182,6 +183,89 @@
    (graph-as-of store-or-manager node-id timestamp {}))
   ([store-or-manager node-id timestamp opts]
    (proto/as-of (->store store-or-manager) node-id timestamp opts)))
+
+;; =====================================================
+;; Procedural graph (what-to-do-next)
+;; =====================================================
+;;
+;; Separate tables from the context graph above, and separate functions here
+;; on purpose: these answer "what is admissible after u", not "what is related
+;; to u". They share the database file and nothing else — see
+;; docs/design/procedural-graph-implementation.md §0.2 for the four recall
+;; paths a co-tenanted `:procedure` node type would have leaked into.
+;;
+;; Unlike the graph fns above, these take a `graph-id` rather than deriving a
+;; user from the store: the file is already per-user, and naming the graph is
+;; what lets one later be shipped or shared.
+
+(def procedure-relations
+  "Transition vocabulary for procedural edges. Disjoint from `relations`."
+  procedure/procedure-relations)
+
+(def procedure-node-kinds procedure/node-kinds)
+(def default-procedure-graph-id procedure/default-graph-id)
+
+(defn procedure-upsert-node!
+  "Insert or merge a procedure node by (graph-id, name).
+  `node`: {:name :kind :summary :aliases}. Returns the persisted node."
+  [store-or-manager graph-id node]
+  (procedure/upsert-node! (:ds (->store store-or-manager)) graph-id node))
+
+(defn procedure-find-node
+  "`Match(a, V)` — resolve a procedure node by exact name or exact alias.
+  Returns nil on a miss, which is the common and correct case."
+  [store-or-manager graph-id name]
+  (procedure/find-node (:ds (->store store-or-manager)) graph-id name))
+
+(defn procedure-upsert-edge!
+  "Insert or refresh a transition `(src)-[relation]->(dst)`.
+  `edge`: {:src-id :dst-id :relation :condition :guidance :pitfalls
+           :confidence :support :origin :gen :t-valid}. Idempotent."
+  [store-or-manager graph-id edge]
+  (procedure/upsert-edge! (:ds (->store store-or-manager)) graph-id edge))
+
+(defn procedure-invalidate-edge!
+  "Bi-temporal supersession (the paper's Delete). Never removes the row."
+  ([store-or-manager graph-id edge-id]
+   (procedure-invalidate-edge! store-or-manager graph-id edge-id nil))
+  ([store-or-manager graph-id edge-id t-invalid]
+   (procedure/invalidate-edge! (:ds (->store store-or-manager)) graph-id edge-id t-invalid)))
+
+(defn procedure-out-neighborhood
+  "`N_h(u)`: live edges reachable walking OUT from `node-id`, with Φ
+  attributes, endpoint names and `:depth`. opts: {:max-hops :limit}.
+  DIRECTED — see `procedure/out-neighborhood`."
+  ([store-or-manager graph-id node-id]
+   (procedure-out-neighborhood store-or-manager graph-id node-id {}))
+  ([store-or-manager graph-id node-id opts]
+   (procedure/out-neighborhood (:ds (->store store-or-manager)) graph-id node-id opts)))
+
+(defn procedure-snapshot
+  "Whole-graph dump: {:graph-id :meta :nodes :edges :counts}."
+  ([store-or-manager graph-id] (procedure-snapshot store-or-manager graph-id {}))
+  ([store-or-manager graph-id opts]
+   (procedure/snapshot (:ds (->store store-or-manager)) graph-id opts)))
+
+(defn procedure-graph-meta
+  "{:graph-id :gen :val-score :val-suite} — the retained graph's gate state."
+  [store-or-manager graph-id]
+  (procedure/graph-meta (:ds (->store store-or-manager)) graph-id))
+
+(defn procedure-set-graph-meta!
+  "Persist generation + CACHED validation score for the retained graph."
+  [store-or-manager graph-id m]
+  (procedure/set-graph-meta! (:ds (->store store-or-manager)) graph-id m))
+
+(defn procedure-record-rejection!
+  "Log a rejected candidate as negative evidence (H_rejected)."
+  [store-or-manager graph-id m]
+  (procedure/record-rejection! (:ds (->store store-or-manager)) graph-id m))
+
+(defn procedure-rejections
+  "Rejected candidates for a graph, newest first."
+  ([store-or-manager graph-id] (procedure-rejections store-or-manager graph-id 50))
+  ([store-or-manager graph-id limit]
+   (procedure/rejections (:ds (->store store-or-manager)) graph-id limit)))
 
 ;; =====================================================
 ;; Recall (cross-layer)

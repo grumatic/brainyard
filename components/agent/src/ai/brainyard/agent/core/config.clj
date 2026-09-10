@@ -272,6 +272,23 @@
                                            (= "true" v) ::env-unset)
                                 :default false
                                 :doc "Context-graph memory overlay: maintain a typed entity/relationship graph (graph_nodes/graph_edges) as an extra RRF recall signal over the L1/L2/L3 FTS store. Off by default; non-regressing (empty graph ⇒ recall == pure FTS). Read once when the memory manager is built — changing it mid-session takes effect only after restarting `by`. Env: BY_ENABLE_GRAPH_MEMORY."}
+   ;; Procedural graph (docs/design/procedural-graph-implementation.md).
+   ;; NOT gated on :enable-graph-memory — the procedural graph lives in its own
+   ;; tables (proc_nodes/proc_edges) and needs nothing from the entity graph.
+   :enable-procedure-guidance  {:type "boolean"
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_PROCEDURE_GUIDANCE")]
+                                           (= "true" v) ::env-unset)
+                                :default false
+                                :doc "Procedural-graph guidance: at each iteration, match the last procedure (tool id / code:<lang> / Start) to a node in the procedural graph, read its DIRECTED 2-hop out-neighborhood, and push the resulting transitions as an advisory `:notices` line the model reads next. Answers what-to-do-next, as opposed to the context graph's what-is. Off by default; non-regressing (a Match miss emits nothing and runs no query, which with a sparse graph is the common case). Seed a graph with `by procedures build --from-trajectories`. Env: BY_ENABLE_PROCEDURE_GUIDANCE."}
+   :procedure-graph-id         {:type "string" :default "default"
+                                :doc "Which procedural graph to read (only when :enable-procedure-guidance). Named rather than implicit so a graph can later be exported, shared or rolled back without a migration. Env: BY_PROCEDURE_GRAPH_ID."
+                                :env-fn #(or (env/resolve-var "BY_PROCEDURE_GRAPH_ID") ::env-unset)}
+   :procedure-guidance-hops    {:type "integer" :default 2
+                                :doc "Hop radius of the procedural out-neighborhood (clamped to 3 by the store). The paper uses h=2. Larger is NOT better: injecting the full graph instead of a localized subgraph measured 18.10 points WORSE than no graph at all on the benchmark closest to brainyard's task shape (ordered tool sequences with hard preconditions)."}
+   :procedure-guidance-max-edges {:type "integer" :default 12
+                                  :doc "Cap on transitions read per localization (only when :enable-procedure-guidance)."}
+   :procedure-guidance-max-chars {:type "integer" :default 600
+                                  :doc "Hard cap on the rendered guidance string (only when :enable-procedure-guidance). Guidance trades tokens for solver steps — measured at 33-55% more total tokens even while cutting steps — so this is the cost control and it is deliberately auditable. Truncation lands on a transition boundary, never mid-sentence."}
    :graph-embed-model          {:type "string"
                                 :env-fn #(if-some [v (env/resolve-var "BY_GRAPH_EMBED_MODEL")]
                                            v ::env-unset)

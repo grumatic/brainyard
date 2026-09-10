@@ -588,6 +588,22 @@
   (mcp-cmds/mcp-op agent opts))
 
 ;; ============================================================================
+;; Procedural graph — seeding + guidance
+;; ============================================================================
+;;
+;; The graph answers "what next"; it is seeded by MINING recorded trajectories
+;; rather than by authoring, because a hand-crafted frozen procedure graph
+;; measured 28.57 points below having no graph at all while a mined one beat
+;; the baseline. See docs/design/procedural-graph-implementation.md §4.6.
+
+(export-symbols ai.brainyard.agent.common.procedure-seed
+                mine-transitions seed-procedures!)
+
+(export-symbols ai.brainyard.agent.common.procedure-nudge
+                ensure-global-hooks! render-guidance probe-for-iteration
+                drain-iteration-notice!)
+
+;; ============================================================================
 ;; ============================================================================
 ;; Trajectory Recording — per-session append-only trajectory.edn
 ;; ============================================================================

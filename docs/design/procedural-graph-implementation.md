@@ -1,13 +1,21 @@
 # Procedural Graph — implementation design
 
-> Status: **design, not built** (2026-09-10, against `086f1bb`). The concrete
-> build plan for the recommendation in
+> Status: **Phase 1 BUILT and tested; the §8 step-2 gate says STOP before
+> Phase 2** (design 2026-09-10 against `086f1bb`; built and measured
+> 2026-09-10). The build plan for the recommendation in
 > `docs/design/procedural-graph-comparison.md` §6. Read that first: it carries
 > the paper's numbers, and every decision here cites a section of it.
 >
 > **This document corrects two claims in the comparison note.** Both were
 > wrong about the code, both changed the design, and §0 states them before
 > anything else depends on them.
+>
+> **What shipped and what the measurement said: §10.** The short version is
+> that steps 1–3 are built, gated off by default, and green (73 memory tests /
+> 15+ agent tests); mining this repo's 87 recorded turns yields **0 usable
+> transitions at min-support 3** against a stated threshold of ~20, so the
+> stopping rule fires and Phase 2 is not started. Mining also found a real bug
+> in the seeder that no unit test would have caught (§10.2).
 >
 > Related: `docs/design/context-graph-memory-design.md`,
 > `docs/design/evoharness-agent-design.md`, `docs/core/memory.md`.
@@ -603,3 +611,112 @@ other way.
   older turns collapse to `[Turn N]`. A notice on an evicted record is gone;
   whether guidance should be re-emitted on re-entry to a node is unexamined and
   the paper, whose solvers keep a flat window, does not address it.
+
+## 10. As built (2026-09-10)
+
+Steps 1–3 of §8 are implemented, tested and **off by default**. Step 4 (the
+measurement) was run and its verdict is **stop**.
+
+### 10.1 What shipped
+
+| Area | File | Notes |
+|---|---|---|
+| Schema | `memory/core/sqlite.clj` | `procedure-schema` — `proc_nodes`, `proc_edges`, `proc_graphs`, `proc_rejections` + 4 indexes. Memory schema **2.3.0 → 2.4.0**. All `IF NOT EXISTS`; pure addition. |
+| Store | `memory/core/procedure.clj` | `upsert-node!`, `find-node` (Match), `upsert-edge!`, `invalidate-edge!`, **`out-neighborhood`** (directed CTE), `snapshot`, `graph-meta`/`set-graph-meta!`, `record-rejection!`/`rejections`. |
+| Interface | `memory/interface.clj` | `procedure-*` fns; `procedure-relations`, `default-procedure-graph-id`. |
+| Locate/render/inject | `agent/common/procedure_nudge.clj` | `:agent.tool-use/post` hook → `:last-procedure`; `probe-for-iteration`; `render-guidance`; `drain-iteration-notice!`. |
+| Seed | `agent/common/procedure_seed.clj` | `mine-transitions`, `seed-procedures!`, `iteration->procedure`, `transitions`. |
+| Injection | `agent/common/coact_agent.clj` | one added element in `coact-accumulate-iteration-action`'s `parts` vector; the action now destructures `:agent`. |
+| Config | `agent/core/config.clj` | `:enable-procedure-guidance` (default **false**), `:procedure-graph-id`, `:procedure-guidance-hops`, `:procedure-guidance-max-edges`, `:procedure-guidance-max-chars`. |
+| CLI | `agent_tui_app/main.clj` | `by procedures list / show / build`. **`known-subcommands` also had to learn `"procedures"`** — the subcommand table alone does not register a family, and the dispatch gate rejects anything not in that set. |
+
+Deviations from the plan as written:
+
+- `mine` / `build!` were renamed **`mine-transitions` / `seed-procedures!`**.
+  `export-symbols` publishes a var under its own name, and `agent/build!` is
+  far too generic for the agent interface.
+- Φ is stored as first-class columns (§2.2 as designed), so nothing in the
+  entity graph moved and no `ALTER` was needed anywhere.
+
+Not verified: the live-LLM path. Guidance is unit-tested end-to-end against a
+real store through `drain-iteration-notice!`, and the coact suite (138 tests)
+passes with the injection wired in, but no turn has been run against a real
+model with the gate on — there is not yet a graph worth guiding from (§10.3).
+
+### 10.2 Mining real trajectories found a bug no unit test would have
+
+`project-iteration` populates `:tools` only for the **tool channel**. A Clojure
+block that calls a tool records as:
+
+```clojure
+{:channel "code" :code ["(aws$whoami)"] :lang ["clojure"]}   ; no :tools
+```
+
+But at runtime that iteration localizes on **`aws$whoami`**, because
+code-channel tool calls route through `tool/call-tool` into the
+`:agent.tool-use/post` hook the localizer reads. The seeder keyed it
+`code:clojure`. **Seeder and localizer disagreed, so every seeded node would
+have been unreachable — a populated graph that never matches.** Precisely the
+failure `iteration->procedure`'s docstring warns about, shipped in the function
+carrying the warning.
+
+The unit test suite passed throughout: it only covered code blocks with no
+inner tool call. Only mining the 87 real recorded turns exposed it — before the
+fix the whole corpus reduced to **5** distinct procedures
+(`code:bash`, `code:clojure`, and 3 tool names); after, **15**, with
+`config$apply`, `evo$*`, `mcp$clickhouse`, `usage$guide`, `llm$models`
+appearing. `iteration->procedure` now scans code text for `(family$verb …)`.
+
+The `$` requirement is deliberate: the SCI sandbox binds every visible tool as
+a callable fn, so matching a bare `(search …)` would also match `clojure.core`
+fns and locals. **A false positive is strictly worse than a miss** — a missed
+procedure means guidance does not fire, an invented one means guidance fires
+from a node that never existed.
+
+### 10.3 Step-2/step-4 measurement — the gate says stop
+
+`by procedures build` over this repo's 12 trajectory files (87 turns,
+15 sessions):
+
+| min-support | transitions kept | **usable** (self-loops dropped) |
+|---|---|---|
+| 2 | 7 | **3** |
+| 3 | 4 | **0** |
+| 5 | 2 | **0** |
+
+§8 step 2's threshold is "< ~20 edges at min-support 3 ⇒ there is no procedure
+to learn". The measured value is **0**. The gate fires; Phase 2 is not started.
+
+The distribution says why, and it is about the corpus rather than the code:
+
+```
+  20  code:bash    -> code:bash        <- self-loop, carries no transition
+   3  evo$episodes -> evo$episodes     <- self-loop
+   2  evo$tasks    -> code:bash
+   2  code:bash    -> evo$stats
+   2  evo$episodes -> evo$tasks
+   1  evo$suites -> evo$run -> evo$runs -> evo$episodes   <- a REAL procedure, seen once
+```
+
+A genuine procedure is visible in the `evo$*` chain — and it was observed
+exactly once. 87 turns of mixed exploratory sessions is far too little; the
+paper trains on batches of tasks built to exercise one domain. The honest
+reading is **not enough recorded execution**, not "the idea does not work
+here".
+
+This also answers §9's open question about `code:<lang>` granularity: of 41
+transitions, **23 are `code:bash → code:bash`**. At that granularity the code
+channel is mostly noise, and the tool-extraction fix in §10.2 is what makes the
+corpus legible at all.
+
+### 10.4 What would change the verdict
+
+- **More recorded execution on a repeating task shape.** The cheapest source is
+  evoharness rollouts, which are already assertion-scored and already replay a
+  suite — exactly the "batch of training tasks" the paper's loop assumes and
+  the one thing this corpus lacks.
+- **Re-run `by procedures build --min-support 3`** and check step 2 again
+  before writing any Phase-2 code.
+- If the graph does populate, the next number to collect is the **`::proc-miss`
+  rate** in a real session (§4.7) — still the measurement that decides whether
+  Phase 2 is worth building at all.

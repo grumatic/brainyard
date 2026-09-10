@@ -356,6 +356,23 @@
    :as "Explain a single (per-agent) turn id; omit to explain every turn in the session"
    :type :int})
 
+;; --- `by procedures` (procedural graph) ------------------------------------
+
+(def proc-graph-opt
+  {:option "graph"
+   :as "Which procedural graph to act on (default \"default\")"
+   :type :string})
+
+(def min-support-opt
+  {:option "min-support"
+   :as "Only mine transitions observed at least this many times (default 3)"
+   :type :int})
+
+(def hops-opt
+  {:option "hops"
+   :as "Hop radius of the out-neighborhood, clamped to 3 (default 2)"
+   :type :int})
+
 ;; Write-verb knobs for `memory forget/edit/keep/archive/promote/sweep/prune`
 ;; (Phase 2 management CLI). Mutations curate the user-scoped store in place.
 (def content-opt
@@ -1700,6 +1717,119 @@
           (print-json! {:success false :error (.getMessage e)
                         :user-id uid :enabled? enabled
                         :nodes [] :edges [] :counts {:nodes 0 :edges 0}})
+          (println "Error:" (.getMessage e)))
+        (System/exit 1)))))
+
+;; ---------------------------------------------------------------------------
+;; `by procedures` — the PROCEDURAL graph (what-to-do-next)
+;;
+;; Distinct from `by memory graph`, which dumps the CONTEXT graph (what-is).
+;; Separate tables, separate vocabulary, separate command family — see
+;; docs/design/procedural-graph-implementation.md.
+;; ---------------------------------------------------------------------------
+
+(defn cmd-procedures-list
+  "Dump a procedural graph: nodes, live transitions, counts and gate state."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json? (:json opts)
+        uid   (helpers/resolve-user-id (:user-id opts))
+        gid   (or (some-> (:graph opts) str/trim not-empty) "default")]
+    (try
+      (let [snap (with-memory-manager uid (fn [mm] (mem/procedure-snapshot mm gid)))]
+        (if json?
+          (print-json! (assoc snap :success true :user-id uid))
+          (do
+            (println (format "Procedures[%s/%s]: nodes=%s edges=%s gen=%s"
+                             uid gid
+                             (get-in snap [:counts :nodes])
+                             (get-in snap [:counts :edges])
+                             (get-in snap [:meta :gen])))
+            (doseq [e (:edges snap)]
+              (println (format "  %s —%s→ %s   (support %s, %s)"
+                               (:src_name e) (name (:relation e)) (:dst_name e)
+                               (:support e) (:origin e))))
+            (when (zero? (long (get-in snap [:counts :edges] 0)))
+              (println "  (empty — seed one with `by procedures build --from-trajectories`)")))))
+      (catch Exception e
+        (if json?
+          (print-json! {:success false :error (.getMessage e) :user-id uid :graph-id gid})
+          (println "Error:" (.getMessage e)))
+        (System/exit 1)))))
+
+(defn cmd-procedures-show
+  "The LOCALIZATION PROBE: exactly what `Match` + `out-neighborhood` would
+   return for a procedure, which is otherwise invisible from outside the
+   process. \"Why did this turn get no guidance?\" is the question this feature
+   generates most often, and a `Match` miss — the common case with a sparse
+   graph — is silent by design."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json? (:json opts)
+        uid   (helpers/resolve-user-id (:user-id opts))
+        gid   (or (some-> (:graph opts) str/trim not-empty) "default")
+        probe (some-> (:node opts) str/trim not-empty)
+        hops  (or (:hops opts) 2)
+        limit (or (:limit opts) 12)]
+    (if-not probe
+      (do (println "Error: --node <procedure> is required (e.g. --node edit$apply)")
+          (System/exit 1))
+      (try
+        (let [{:keys [node edges]}
+              (with-memory-manager
+                uid (fn [mm]
+                      (let [n (mem/procedure-find-node mm gid probe)]
+                        {:node n
+                         :edges (when n (mem/procedure-out-neighborhood
+                                         mm gid (:id n) {:max-hops hops :limit limit}))})))]
+          (cond
+            json? (print-json! {:success true :user-id uid :graph-id gid :probe probe
+                                :matched? (some? node) :node node :edges (vec edges)})
+            (nil? node)
+            (println (format "Procedures[%s/%s]: no node matches \"%s\" — a turn ending here emits NO guidance."
+                             uid gid probe))
+            :else
+            (do (println (format "Procedures[%s/%s] out-neighborhood of \"%s\" (%s transition(s), %s hop(s)):"
+                                 uid gid probe (count edges) hops))
+                (doseq [e edges]
+                  (println (format "  [depth %s] %s —%s→ %s"
+                                   (:depth e) (:src_name e) (name (:relation e)) (:dst_name e)))
+                  (doseq [[label v] [["when " (:condition e)] ["do   " (:guidance e)]
+                                     ["avoid" (:pitfalls e)]]]
+                    (when-not (str/blank? v) (println (format "             %s: %s" label v)))))
+                (when (empty? edges)
+                  (println "  (node exists but has no outgoing transitions — still no guidance)")))))
+        (catch Exception e
+          (if json?
+            (print-json! {:success false :error (.getMessage e) :probe probe})
+            (println "Error:" (.getMessage e)))
+          (System/exit 1))))))
+
+(defn cmd-procedures-build
+  "Seed a procedural graph by MINING recorded trajectories.
+
+   Mined, never authored: a hand-crafted frozen procedure graph measured 28.57
+   points BELOW having no graph at all, while a graph built from observed
+   execution beat the baseline. Seeded edges carry the observed support and
+   EMPTY guidance text — a bare topology asserts only that this order happened,
+   which is true."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json?   (:json opts)
+        uid     (helpers/resolve-user-id (:user-id opts))
+        gid     (or (some-> (:graph opts) str/trim not-empty) "default")
+        support (or (:min-support opts) 3)]
+    (try
+      (let [r (with-memory-manager
+                uid (fn [mm] (agent/seed-procedures! mm {:graph-id gid :min-support support})))]
+        (if json?
+          (print-json! (assoc r :success true :user-id uid :graph-id gid))
+          (println (format "Procedures[%s/%s]: mined %s turn(s) across %s session(s) → %s node(s), %s transition(s) (%s below min-support %s)"
+                           uid gid (:turns r) (:sessions r)
+                           (:nodes r) (:edges r) (:skipped r) support))))
+      (catch Exception e
+        (if json?
+          (print-json! {:success false :error (.getMessage e) :user-id uid :graph-id gid})
           (println "Error:" (.getMessage e)))
         (System/exit 1)))))
 
@@ -3810,6 +3940,20 @@
                                  :description "Rebuild the graph vector index for the current embedder (resume semantic recall)"
                                  :opts        [user-id-opt json-opt]
                                  :runs        cmd-memory-reembed}]}
+                 {:command     "procedures"
+                  :description "The procedural graph (what-to-do-next), as opposed to `memory graph` (what-is)"
+                  :subcommands [{:command     "list"
+                                 :description "Dump a procedural graph: nodes, live transitions, counts, gate state"
+                                 :opts        [user-id-opt proc-graph-opt json-opt]
+                                 :runs        cmd-procedures-list}
+                                {:command     "show"
+                                 :description "Localization probe: what guidance --node <procedure> would actually produce"
+                                 :opts        [user-id-opt proc-graph-opt node-opt hops-opt limit-opt json-opt]
+                                 :runs        cmd-procedures-show}
+                                {:command     "build"
+                                 :description "Seed the graph by mining recorded trajectories (never authored — see the design note)"
+                                 :opts        [user-id-opt proc-graph-opt min-support-opt json-opt]
+                                 :runs        cmd-procedures-build}]}
                  {:command     "events"
                   :description "Fire user-defined events into a live session over its ask channel"
                   :subcommands [{:command     "emit"
@@ -3844,7 +3988,7 @@
 ;; Entry point
 ;; ============================================================================
 
-(def ^:private known-subcommands #{"run" "ask" "agents" "models" "config" "sessions" "projects" "scripts" "memory" "events" "a2a" "env"})
+(def ^:private known-subcommands #{"run" "ask" "agents" "models" "config" "sessions" "projects" "scripts" "memory" "procedures" "events" "a2a" "env"})
 (def ^:private help-flags #{"--help" "-?" "-h"})
 ;; `-v` is taken by `run --verbose`, so the short version flag is capital `-V`.
 (def ^:private version-flags #{"--version" "-V"})

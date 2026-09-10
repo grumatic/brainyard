@@ -49,6 +49,7 @@
             [ai.brainyard.agent.common.skill-refine :as skill-refine]
             [ai.brainyard.agent.common.skill-watch :as skill-watch]
             [ai.brainyard.agent.common.usage-nudge :as usage-nudge]
+            [ai.brainyard.agent.common.procedure-nudge :as procedure-nudge]
             [ai.brainyard.agent.common.schema :as acs]
             [selmer.parser :as selmer]
             [ai.brainyard.agent.common.trace :as trace]
@@ -5057,7 +5058,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
    thought output. It is capped here, not where :last-reasoning is written,
    so the TUI still displays the full reasoning while only the
    prompt-replayed copy is bounded."
-  [{:keys [st-memory]}]
+  [{:keys [st-memory agent]}]
   (let [{:keys [iteration-count last-reasoning last-channel
                 last-tool-results last-code-results]} @st-memory
         thought (truncate-thought last-reasoning)
@@ -5108,6 +5109,11 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
         (if record-for-model
           (let [parts (->> [(usage-nudge/drain-iteration-notices! st-memory)
                             (self-improve-nudge/drain-iteration-notice! st-memory)
+                            ;; Procedural-graph guidance for the NEXT action:
+                            ;; localize on this iteration's last procedure, read
+                            ;; its directed out-neighborhood, render. nil unless
+                            ;; :enable-procedure-guidance and Match resolves.
+                            (procedure-nudge/drain-iteration-notice! agent st-memory)
                             fmt-guide]
                            (remove str/blank?))]
             (if (seq parts)
