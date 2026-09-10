@@ -83,8 +83,11 @@
              :install-allowed? false
              :pull-allowed?    false
              :ollama-model-preference :local}
+   ;; NOTE: rung (e) no longer applies to this profile — Ollama Cloud bills
+   ;; every request, and (e) is the free rung. With :d and :f also excluded,
+   ;; :cloud is effectively "API keys or stop" until a free tier returns.
    :cloud   {:name :cloud
-             :description "Disk-constrained, ok with cloud calls."
+             :description "Disk-constrained, ok with cloud calls (needs a paid Ollama Cloud account or an API-key provider)."
              :allowed-rungs #{:a :b :c :e :g}
              :install-allowed? true
              :pull-allowed?    true
@@ -192,16 +195,33 @@
            (or huggingface? ollama?)))))
 
 (defn applies-e?
-  "Rung (e): install Ollama (if missing) and pull a free model. The interactive
-   shell still asks the user; this predicate only says we _can_ offer it."
+  "Rung (e): install Ollama (if missing) and pull a FREE model. The interactive
+   shell still asks the user; this predicate only says we _can_ offer it.
+
+   `free` is the load-bearing word. This rung is the end of a ladder whose
+   purpose is getting from no credentials to a working agent, so a model the
+   user must buy does not qualify — offering one turns the last rung into a
+   dead end that looks like an answer. Ollama Cloud has since started billing
+   every request (`env/ollama-cloud-free?`), which retires the `:cloud`
+   preference's branch until that changes: it falls through instead, exactly
+   as docs/design/bootstrapping-design.md §11 prescribed for this case. The
+   `:local` branch is unaffected — a local pull costs disk, not money."
   [detection _existing-config profile]
   (when (allowed? profile :e)
     (let [{:keys [installed?]} (:ollama-install detection)
           pref (:ollama-model-preference profile)
-          model (if (= :cloud pref)
+          cloud? (= :cloud pref)
+          model (if cloud?
                   (env/cloud-ollama-model)
                   (env/recommended-ollama-model))]
       (cond
+        ;; The cloud tier is no longer free, so it cannot serve a free rung.
+        ;; Deliberately NOT a silent downgrade to the local model: the :cloud
+        ;; preference exists because the user is disk-constrained, and handing
+        ;; them a multi-GB pull answers a question they did not ask.
+        (and cloud? (not (env/ollama-cloud-free?)))
+        nil
+
         ;; Need install but profile forbids it
         (and (not installed?) (not (:install-allowed? profile)))
         nil

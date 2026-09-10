@@ -108,6 +108,11 @@
    `ollama-install/cloud-fallback-model` for the measurement."
   ollama/cloud-fallback-model)
 
+(def ollama-cloud-free?
+  "True when the Ollama Cloud tier is callable without a paid account.
+   Currently false — see ollama-install/cloud-tier-free? for the measurement."
+  ollama/cloud-tier-free?)
+
 (defn start-apple-fm-daemon!
   "Run `apfel --serve --port 11435` in the background and poll /health up to 10s.
    Returns {:ok? :elapsed-ms :detail}. Caller must confirm with the user first."

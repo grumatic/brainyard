@@ -148,14 +148,38 @@
       (is (= :d (:rung (boot/choose-rung det-ok {} :offline))))
       (is (= :g (:rung (boot/choose-rung det-no {} :offline)))))))
 
-(deftest scenario-11-cloud-profile-prefers-cloud-model
-  (testing "cloud profile: rung (e) defaults to the cloud model"
+(deftest scenario-11-cloud-profile-falls-through-while-cloud-is-paid
+  (testing "rung (e) is the FREE rung, so a billed cloud tier disqualifies it"
     (let [det (detection :ollama-installed? true :daemon? true)
           out (boot/choose-rung det {} :cloud)]
+      (is (= :g (:rung out))
+          "with (d) and (f) outside the :cloud profile, (e) declining lands on (g)")
+      (is (nil? (:provider out)))))
+
+  (testing "it must NOT silently downgrade to the local model"
+    ;; The :cloud preference exists because the user is disk-constrained.
+    ;; Answering it with a multi-GB pull would be a different failure, and a
+    ;; quieter one than stopping.
+    (let [det (detection :ollama-installed? true :daemon? true)
+          out (boot/choose-rung det {} :cloud)]
+      (is (not= (env/recommended-ollama-model) (:model out)))))
+
+  (testing "the paywall is the ONLY thing holding it back — restore a free
+            tier and the rung works again, unchanged"
+    (with-redefs [env/ollama-cloud-free? (constantly true)]
+      (let [det (detection :ollama-installed? true :daemon? true)
+            out (boot/choose-rung det {} :cloud)]
+        (is (= :e (:rung out)))
+        (is (= (env/cloud-ollama-model) (:model out)))
+        (is (not= (env/recommended-ollama-model) (:model out))
+            "the :cloud profile must pick the cloud id, not the local default")))))
+
+(deftest cloud-gate-does-not-touch-the-local-rung
+  (testing "a local-preference profile still reaches (e) — a pull costs disk, not money"
+    (let [det (detection)
+          out (boot/choose-rung det {} :dev)]
       (is (= :e (:rung out)))
-      (is (= (env/cloud-ollama-model) (:model out)))
-      (is (not= (env/recommended-ollama-model) (:model out))
-          "the :cloud profile must pick the cloud id, not the local default"))))
+      (is (= (env/recommended-ollama-model) (:model out))))))
 
 (deftest scenario-12-apple-fm-below-ollama
   (testing "(f) Apple FM only fires when (e) is unavailable; rung-order check"

@@ -42,6 +42,23 @@
   []
   "glm-5.3-flash:cloud")
 
+(defn cloud-tier-free?
+  "Can a signed-in account call `cloud-fallback-model` without paying?
+
+   FALSE, measured 2026-09-10: a freshly pulled `glm-5.3-flash:cloud` pointer
+   answers 402 \"this model requires a subscription or usage credits\", as does
+   every other surviving `:cloud` id. Ollama Cloud had a free tier when the
+   bootstrap ladder was designed, and rung (e) exists to carry someone from no
+   credentials to a working agent — a rung that ends in a paywall does not do
+   that, so `applies-e?` skips the cloud branch while this is false.
+
+   Deliberately a PREDICATE rather than a deleted code path: if Ollama restores
+   free access this becomes `true` and the rung works again, with no other
+   edit. Deleting the branch would make that a re-implementation, and would
+   also throw away the record of why it went."
+  []
+  false)
+
 ;; ============================================================================
 ;; OS detection helpers (kept local — providers.clj's `which` is private)
 ;; ============================================================================
