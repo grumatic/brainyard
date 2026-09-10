@@ -73,7 +73,7 @@
                  ;; now bills every request (measured: 402 "requires a subscription
                  ;; or usage credits"). A default that cannot run without a
                  ;; purchase is not a default.
-                 :default-model        "gemma4:latest"}
+                 :default-model        "gemma4:12b"}
    :free-llm    {:base-url             nil  ;; resolved from FREELLM_BASE_URL at create-lm time
                  :base-url-env         "FREELLM_BASE_URL"
                  :api-key-env          "FREELLM_API_KEY"  ;; optional — sent as Bearer if present
@@ -228,7 +228,7 @@
    ;; gemma4 leads: `bootstrap/default-model` takes the FIRST curated entry, so
    ;; rank order here decides what `--auto` picks. A `:cloud` id would hand a
    ;; fresh user a 402.
-   [{:model "gemma4:latest" :curated-rank 33 :description "Gemma 4 8B (Ollama, local; tools + thinking)"}
+   [{:model "gemma4:12b" :curated-rank 33 :description "Gemma 4 12B (Ollama, local; tools + vision + thinking, 262K context)"}
     {:model "kimi-k2.7-code:cloud" :curated-rank 34 :description "Kimi K2.7 Code Cloud (Ollama; coding, 262K context; paid Ollama Cloud)"}]
    :bedrock
    ;; Anthropic on Bedrock — prefer the `global.` cross-region inference

@@ -122,7 +122,7 @@
                         ;; A LOCAL id. Every `:cloud` model now bills (402), and
                         ;; the previous default here (glm-5:cloud) was retired
                         ;; upstream (410) — so this fallback could only fail.
-                        :ollama      "gemma4:latest"
+                        :ollama      "gemma4:12b"
                         :apple-fm    "apple-foundationmodel"}
         resolved-model (or model (get default-models provider))
         ;; ONLY the primary (API-key) var is read here. An alternate credential

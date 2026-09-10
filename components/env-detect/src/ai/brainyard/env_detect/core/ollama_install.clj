@@ -21,7 +21,7 @@
    pull an id, and a withdrawn id is indistinguishable from a typo until the
    pull runs."
   []
-  "gemma4:latest")
+  "gemma4:12b")
 
 (defn cloud-fallback-model
   "Disk-free alternative when a local pull is too heavy.
