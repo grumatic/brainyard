@@ -8,11 +8,18 @@
 > what to do next.
 >
 > **This is a comparison and a proposal, not an implementation log.** Nothing
-> here is built. The phases in §6 are a recommendation whose Phase 0 is
-> deliberately inert; §7 lists the things this paper argues *against* doing,
-> and they are the tempting ones.
+> here is built. §7 lists the things this paper argues *against* doing, and
+> they are the tempting ones.
 >
-> Related: `docs/design/context-graph-memory-design.md`,
+> **Two claims in §6 below were WRONG and are corrected in place** (marked
+> ⚠ CORRECTION), after the build plan checked them against the code:
+> `graph_edges` has no `metadata` column, and Phase 0 is not inert because
+> three recall paths filter by neither node type nor relation. Both changed
+> the design. The corrected build plan is
+> `docs/design/procedural-graph-implementation.md` §0.
+>
+> Related: **`docs/design/procedural-graph-implementation.md`** (the build
+> plan), `docs/design/context-graph-memory-design.md`,
 > `docs/design/evoharness-rl-comparison.md`,
 > `docs/design/evoharness-agent-design.md`,
 > `docs/design/router-agent-design.md`, `docs/design/self-improve-design.md`,
@@ -252,7 +259,7 @@ Related` briefing section. Every relation in the vocabulary answers *what-is*.
 
 | PG requirement | Brainyard today | Gap |
 |---|---|---|
-| Bounded-hop typed graph store | `GraphStore/expand` (`:max-hops` default 2, clamped <= 3), `neighbors`, `as-of`; bi-temporal edges; `:metadata` JSON per edge | vocabulary is what-is only |
+| Bounded-hop typed graph store | `GraphStore/expand` (`:max-hops` default 2, clamped <= 3), `neighbors`, `as-of`; bi-temporal edges; live-edge partial unique index | vocabulary is what-is only; `expand-edges` is undirected and edges carry no attribute map (⚠ §6 Phase 0 correction) |
 | Per-step guidance injection slot | **`:notices` on `::iteration`** (`coact_agent.clj:148`) — *"Advisory; read and act on it"* — with a shipping producer (`common/usage_nudge.clj`, JIT on first use of a tool family) | nothing computes it from a graph |
 | `Match(a_{t-1}, V)` anchor | `:tool-name` on every `::tool-result-entry`; `:channel` on every `::iteration`; tool ids are stable symbols | trivial — the cheapest part of the build |
 | Diagnostic rollouts | `trajectory.edn`, append-only, one EDN record per turn with all iterations + final answer (`:enable-trajectory-recording`, default **true**) | not partitioned by score, not fed to a refiner |
@@ -374,12 +381,50 @@ post-mortem wants.
 This phase is pure addition and cannot regress anything, including recall: with
 no procedure nodes written, every existing query behaves identically.
 
+> ⚠ **CORRECTION.** Both paragraphs above are wrong, and the build plan
+> replaced the approach because of it. See
+> `docs/design/procedural-graph-implementation.md` §0.
+>
+> 1. **`graph_edges` has no `metadata` column** (`sqlite.clj:399` — it carries
+>    `fact`, `confidence`, `t_valid`, `t_invalid`, `ingested_at`,
+>    `source_entry_ids`). `graph_nodes` has one; edges do not. There is nowhere
+>    to put Φ without a migration.
+> 2. **Co-tenanting procedure nodes in `graph_nodes` is not inert.** The claim
+>    is true only while nothing is written, which is the state in which the
+>    feature does nothing. The moment Phase 1 writes a node, three shipping
+>    recall paths pick it up, because none filter by node type or relation:
+>    `search-nodes` (no `node_type` predicate), `search-nodes-semantic` (the
+>    `graph_vec` kNN keys on `graph_nodes.id`, untyped), and `expand-edges` (no
+>    relation filter, and **undirected**, so any shared node bridges the two
+>    graphs). All three feed `related` → RRF → the `## Related` briefing.
+>    Worse, `prune-nodes-to-budget!` hard-deletes low-retention nodes and their
+>    edges, so memory retention pressure would **silently evict a validated
+>    procedure graph**.
+>
+> The build plan therefore uses **separate tables** (`proc_nodes`/`proc_edges`)
+> in the same database, with Φ as first-class columns. That also fixes a
+> mismatch this section missed: `expand-edges` is undirected, while `N_h(u_t)`
+> is the directed *out*-neighborhood — "what is admissible AFTER u".
+
 ### Phase 1 — locate + guide. Graph frozen, default off.
 
 `BY_ENABLE_PROCEDURE_GUIDANCE` / `:enable-procedure-guidance`, default
 **false**, and inert unless `:enable-graph-memory` is on (a procedure graph with
 no graph store is not a thing). Gate it off for the `:light` tier and for
 `by ask` per §5.3.
+
+> ⚠ **CORRECTION** (both halves), per
+> `docs/design/procedural-graph-implementation.md` §1.2 and §4.5.
+>
+> - **The `:enable-graph-memory` dependency disappears.** With separate tables
+>   PG needs nothing from the entity graph, and the memory database is open
+>   whenever memory is on. The two gates are independent.
+> - **The `by ask` gate was wrong reasoning** — it conflated *headless* with
+>   *short*. A `by ask` running fifteen iterations is exactly the long-horizon
+>   case where the paper's margins are largest. The real discriminator is
+>   trajectory length, and a `Match` miss already approximates it: a short turn
+>   calling no catalogued tool localizes nowhere and costs nothing. The
+>   `:light`-tier exclusion stands, since a tier is actually resolved there.
 
 In `coact-inc-iter-action` (`coact_agent.clj:3091` — already the iteration-start
 hook that harvests pending evals):
@@ -432,7 +477,10 @@ worse than no edits.
 - **Do not reuse `:mentions` / `:depends_on` for procedure edges.** Recall fuses
   graph results into RRF; mixing what-is and what-to-do into one ranking
   corrupts both, and the `## Related` briefing is a what-is surface with a
-  what-is renderer.
+  what-is renderer. ⚠ **This mitigation is insufficient on its own** — a
+  disjoint relation vocabulary does not stop `search-nodes` (which matches node
+  text) or `expand-edges` (which walks every relation). Keeping the two graphs
+  apart takes separate tables; see the correction in §6 Phase 0.
 - **Do not enable it for `by ask` or the `:light` tier.** Short QA showed no
   gain and guidance costs tokens unconditionally. (§5.3)
 - **Do not use top-k similarity retrieval over edge attributes** as a shortcut
@@ -453,10 +501,13 @@ worse than no edits.
   large, partly foreign tool namespace => frequent misses. Mitigated by making
   the miss branch silent (§6 Phase 1), but it caps how much of the trajectory
   guidance can ever cover.
-- **Rejection memory shares a table with the retained graph.** Bi-temporal edges
-  invalidate rather than delete, so rejected candidates and superseded edges
-  need a discriminator in `:metadata` or they will be indistinguishable in an
-  `as-of` audit.
+- ~~**Rejection memory shares a table with the retained graph.**~~ **Resolved
+  in the build plan** (`procedural-graph-implementation.md` §2.4): rejections
+  get their own table, not invalidated edges. A rejected candidate must never
+  be *reachable* by a traversal, and an invalidated row is one `t_invalid`
+  predicate away from being walked — worse than merely indistinguishable in an
+  audit. Retained edges carry `origin` + `gen` columns as the provenance
+  discriminator.
 - **Token overhead is real, measured, and unavoidable** — but visible, via the
   usage tracker's `:by-agent` rollup.
 - **Who owns the graph across projects?** The memory DB is partitioned by
