@@ -80,30 +80,44 @@
    every seeded edge becomes unreachable — the graph is populated and `Match`
    never hits — the quiet failure this feature is most exposed to.
 
-   **A code iteration that calls a tool must key on the TOOL, not on
-   `code:<lang>`.** At runtime the localizer reads the `:agent.tool-use/post`
-   hook, and code-channel tool calls route through `tool/call-tool` into that
-   same chain — so an iteration whose block is `(aws$whoami)` localizes on
-   `aws$whoami`. But the trajectory record for that iteration is
-   `{:channel \"code\" :code [\"(aws$whoami)\"] :lang [\"clojure\"]}` with NO
-   `:tools` key, because `project-iteration` only populates `:tools` for the
-   tool CHANNEL. Keying it `code:clojure` would seed a graph the localizer can
-   never reach. Measured on this repo's 87 recorded turns before the fix: every
-   tool called from a Clojure block was invisible to the seeder.
+   **A code iteration that calls a tool keys on the TOOL.** At runtime the
+   localizer reads the `:agent.tool-use/post` hook, and code-channel tool calls
+   route through `tool/call-tool` into that same chain — so an iteration whose
+   block is `(aws$whoami)` localizes on `aws$whoami`. But the trajectory record
+   for it is `{:channel \"code\" :code [\"(aws$whoami)\"] :lang [\"clojure\"]}`
+   with NO `:tools` key, because `project-iteration` only populates `:tools`
+   for the tool CHANNEL. Keying it `code:clojure` would seed a graph the
+   localizer can never reach. Measured on this repo's 87 recorded turns before
+   the fix: every tool called from a Clojure block was invisible to the seeder.
+
+   **A code iteration that calls NOTHING names no procedure.** It used to key
+   `code:<lang>`; measured, that carried no signal — 23 of 41 mined transitions
+   were `code:bash -> code:bash`, a retry loop rather than a transition. Since
+   `transitions` chains across iterations that name nothing, dropping it
+   REWIRES rather than deletes: `evo$tasks -> code:bash -> evo$stats` becomes
+   `evo$tasks -> evo$stats`, which is the transition worth recording. See
+   `memory.core.procedure/node-kinds`, which no longer has a `:code` kind.
 
    Trajectory records are v2 or v3 (append-only files hold both)."
-  [{:keys [channel tools lang code] :as _iteration}]
+  [{:keys [channel tools code] :as _iteration}]
   (cond
     (seq tools)        (some-> (last tools) :name str not-empty)
-    (= "code" channel) (or (tool-in-code code)
-                           (some-> (last lang) str not-empty (->> (str "code:"))))
+    (= "code" channel) (tool-in-code code)
     :else nil))
 
 (defn transitions
   "Consecutive `(from -> to)` procedure pairs across a turn's iterations.
+
    Iterations that performed no nameable procedure are DROPPED rather than
-   breaking the chain: a pure-reasoning iteration between two tool calls does
-   not make the second stop following the first."
+   breaking the chain: a pure-reasoning step, or a shell block that invoked no
+   tool, between two tool calls does not make the second stop following the
+   first. This is what makes excluding `code:<lang>` a rewiring rather than a
+   loss.
+
+   The bridge is unbounded — a turn with twenty intervening shell blocks still
+   pairs the tools on either side. The min-support threshold is the guard: a
+   spuriously long-range pair has to recur before it becomes an edge, which an
+   accident does not."
   [record]
   (let [names (keep iteration->procedure (:iterations record))]
     (map vector names (rest names))))
@@ -128,12 +142,10 @@
    (session-ids)))
 
 (defn- kind-for
-  "A probe beginning `code:` abstracts a code channel; everything else is a
-   tool. `Start` is a state."
+  "Every mined name is a tool call except the `Start` marker. There is no
+   `:code` kind any more — see `memory.core.procedure/node-kinds`."
   [nm]
-  (cond (str/starts-with? nm "code:") :code
-        (= nm "Start")                :state
-        :else                         :tool))
+  (if (= nm "Start") :state :tool))
 
 (defn seed-procedures!
   "Write mined transitions into the procedural graph.

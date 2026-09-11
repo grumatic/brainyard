@@ -50,8 +50,22 @@
     :repairs})  ; dst is the recovery path when src failed
 
 (def node-kinds
-  "What a procedure node abstracts."
-  #{:tool :code :state :skill})
+  "What a procedure node abstracts.
+
+   There is deliberately **no `:code` kind**. A `code:<lang>` node was the
+   original plan's way of saying 'a block ran here', and measured against 87
+   real recorded turns it carried no procedural signal: 23 of 41 mined
+   transitions were `code:bash -> code:bash`, which is a retry loop, not a
+   transition. A tool called from inside a block keys on the TOOL (the seeder
+   reads it out of the code text), so the only thing `code:<lang>` ever named
+   was a block that invoked nothing — at which point the language is a fact
+   about syntax, not about procedure.
+
+   Excluding it is not merely a deletion: `procedure-seed/transitions` chains
+   ACROSS iterations that name no procedure, so dropping the code node rewires
+   `evo$tasks -> code:bash -> evo$stats` into `evo$tasks -> evo$stats`, which
+   is the transition that was actually worth recording."
+  #{:tool :state :skill})
 
 (defn valid-relation? [r] (contains? procedure-relations (keyword r)))
 (defn valid-kind?     [k] (contains? node-kinds (keyword k)))
@@ -105,6 +119,12 @@
   [ds graph-id {:keys [name kind summary aliases]}]
   (when (str/blank? (str name))
     (throw (ex-info "upsert-node! requires :name" {:name name})))
+  ;; Validated at the store boundary, the way `upsert-edge!` validates its
+  ;; relation. Without this, dropping `:code` from `node-kinds` would be a
+  ;; convention rather than a guarantee, and the next caller to pass `:code`
+  ;; would repopulate the graph with nodes carrying no procedural signal.
+  (when-not (valid-kind? (or kind :tool))
+    (throw (ex-info "unknown procedure node kind" {:kind kind :known node-kinds})))
   (let [gid (or graph-id default-graph-id)
         knd (clojure.core/name (or kind :tool))]
     (jdbc/execute-one!

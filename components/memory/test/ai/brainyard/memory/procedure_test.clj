@@ -88,6 +88,30 @@
     (is (nil? (p/find-node *ds* nil "")))
     (is (nil? (p/find-node *ds* nil "   ")))))
 
+(deftest no-code-node-kind-test
+  (testing "there is no :code kind — a code:<lang> node carried no signal"
+    ;; Measured over 87 real recorded turns: 23 of 41 mined transitions were
+    ;; code:bash -> code:bash, a retry loop rather than a transition. A tool
+    ;; called from inside a block keys on the TOOL, so code:<lang> only ever
+    ;; named a block that invoked nothing.
+    (is (not (contains? p/node-kinds :code)))
+    (is (= #{:tool :state :skill} p/node-kinds)))
+
+  (testing "the store REFUSES one, so the exclusion is a guarantee not a habit"
+    ;; Without validation in `upsert-node!`, dropping :code from the set would
+    ;; be a convention and the next caller to pass it would repopulate the
+    ;; graph with signal-free nodes.
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (p/upsert-node! *ds* nil {:name "code:bash" :kind :code})))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (p/upsert-node! *ds* nil {:name "x" :kind :nonsense}))))
+
+  (testing "the surviving kinds still work"
+    (is (= :tool  (:kind (p/upsert-node! *ds* nil {:name "edit$apply" :kind :tool}))))
+    (is (= :state (:kind (p/upsert-node! *ds* nil {:name "Start" :kind :state}))))
+    (is (= :skill (:kind (p/upsert-node! *ds* nil {:name "s" :kind :skill}))))
+    (is (= :tool  (:kind (p/upsert-node! *ds* nil {:name "defaulted"}))))))
+
 ;; =====================================================
 ;; Edges
 ;; =====================================================

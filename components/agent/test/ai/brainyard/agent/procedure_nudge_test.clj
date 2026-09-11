@@ -64,12 +64,17 @@
   (testing "a tool recorded by the hook wins"
     (is (= "edit$apply" (pn/probe-for-iteration (atom {:last-procedure "edit$apply"})))))
 
-  (testing "with no tool, the last code block's language becomes code:<lang>"
-    (is (= "code:bash"
-           (pn/probe-for-iteration
-            (atom {:last-code-results [{:lang "clojure"} {:lang "bash"}]})))))
+  (testing "a code block that invoked NO tool localizes NOWHERE"
+    ;; It used to probe code:<lang>. Measured over 87 real recorded turns that
+    ;; named no procedure -- 23 of 41 transitions were code:bash -> code:bash,
+    ;; a retry loop -- so the graph has no such node and the probe could only
+    ;; ever miss.
+    (is (nil? (pn/probe-for-iteration
+               (atom {:last-code-results [{:lang "clojure"} {:lang "bash"}]}))))
+    (is (nil? (pn/probe-for-iteration
+               (atom {:last-code-results [{:lang "bash"}] :iteration-count 4})))))
 
-  (testing "a tool beats a code block in the same iteration"
+  (testing "a tool called FROM a code block still localizes -- the hook saw it"
     (is (= "task$wait"
            (pn/probe-for-iteration
             (atom {:last-procedure "task$wait" :last-code-results [{:lang "bash"}]})))))
@@ -246,10 +251,11 @@
            (seed/iteration->procedure {:channel "tool"
                                        :tools [{:name "read-file"} {:name "edit$apply"}]}))))
 
-  (testing "a code iteration with no tool call names its last language"
-    (is (= "code:bash"
-           (seed/iteration->procedure {:channel "code" :lang ["clojure" "bash"]
-                                       :code ["(+ 1 2)" "ls -la"]}))))
+  (testing "a code iteration with no tool call names NO procedure"
+    ;; The seeder half of the same decision; must agree with
+    ;; `probe-for-iteration` or the seeded graph is unreachable.
+    (is (nil? (seed/iteration->procedure {:channel "code" :lang ["clojure" "bash"]
+                                          :code ["(+ 1 2)" "ls -la"]}))))
 
   (testing "a code iteration that CALLS a tool names the TOOL, not code:<lang>"
     ;; The seeder/localizer agreement bug, found by mining this repo's own 87
@@ -276,9 +282,8 @@
     ;; `search`/`filter`/`map` are clojure.core or locals as often as tools.
     ;; A missed procedure means guidance does not fire; an invented one means
     ;; guidance fires WRONG.
-    (is (= "code:clojure"
-           (seed/iteration->procedure {:channel "code" :lang ["clojure"]
-                                       :code ["(search \"aws\" :type \"tool\")"]}))))
+    (is (nil? (seed/iteration->procedure {:channel "code" :lang ["clojure"]
+                                          :code ["(search \"aws\" :type \"tool\")"]}))))
 
   (testing "an answer or reasoning-only iteration names no procedure"
     (is (nil? (seed/iteration->procedure {:channel "answer" :answer "done"})))
@@ -365,20 +370,27 @@
   ;; localizer keying nodes differently, so the graph is populated and Match
   ;; never hits.
   ;;
-  ;; Both halves are exercised — a code:<lang> probe here, and the
-  ;; tool-inside-a-code-block case in `iteration->procedure-test`, which is the
-  ;; one that was actually broken until mining this repo's own trajectories
-  ;; surfaced it.
-  (with-redefs [seed/mine-transitions (fn [] {:counts {["code:bash" "edit$apply"] 4}
+  ;; The tool-inside-a-code-block case in `iteration->procedure-test` is the
+  ;; one that was actually broken, until mining this repo's own trajectories
+  ;; surfaced it. Here the end-to-end round trip is pinned: a name the seeder
+  ;; writes must be a name the localizer probes for.
+  (with-redefs [seed/mine-transitions (fn [] {:counts {["aws$whoami" "edit$apply"] 4}
                                               :procedures #{} :turns 1 :sessions 1})]
     (seed/seed-procedures! *store* {:min-support 3}))
   (let [ag (stub-agent)]
+    ;; A Clojure block that called `(aws$whoami)`: the hook recorded the tool,
+    ;; and the code-results are present but must NOT change the probe.
     (swap! (proto/get-bt-st-memory ag) assoc
-           :last-code-results [{:lang "bash"}])
+           :last-procedure "aws$whoami"
+           :last-code-results [{:lang "clojure"}])
     (with-config {}
       (fn []
         (let [probe (pn/probe-for-iteration (proto/get-bt-st-memory ag))]
-          (is (= "code:bash" probe))
+          (is (= "aws$whoami" probe))
           (is (some? (mem/procedure-find-node *store* nil probe)))
           (is (str/includes? (pn/drain-iteration-notice! ag (proto/get-bt-st-memory ag))
-                             "`code:bash` —precedes→ `edit$apply`")))))))
+                             "`aws$whoami` —precedes→ `edit$apply`"))))))
+
+  (testing "and no code:<lang> node was created by the seeder"
+    (is (nil? (mem/procedure-find-node *store* nil "code:clojure")))
+    (is (nil? (mem/procedure-find-node *store* nil "code:bash")))))

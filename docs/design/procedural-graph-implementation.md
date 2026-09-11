@@ -303,9 +303,9 @@ Resolution order for `u_t`:
 
 | Situation | Node name | Notes |
 |---|---|---|
-| Tool called this iteration | the tool id, e.g. `edit$apply` | from the hook |
-| Code block, no tool call | `code:<lang>`, e.g. `code:bash` | coarse but real: "after a bash block, check the exit code" is a genuine transition |
-| Iteration 1, nothing yet | `Start` | the paper's `a_0` initialization marker |
+| Tool called this iteration | the tool id, e.g. `edit$apply` | from the hook; covers tools called from inside a code block too |
+| Code block, no tool call | **nil** | originally `code:<lang>`; excluded 2026-09-11 — see §10.5 |
+| Iteration 1, nothing yet | `Start` | the paper's `a_0` marker; nothing seeds it today |
 | Anything else | **nil** | emit nothing |
 
 ### 4.2 Extract — a new directed edge walk
@@ -602,9 +602,8 @@ other way.
 - **`:template` vs `:llm` for `Ψ`.** §4.3 defaults to template on gate-integrity
   grounds, but the paper only ever measured the LLM form. The comparison is a
   clean A/B once step 4 exists.
-- **Does `code:<lang>` carry real procedural signal**, or is it too coarse to be
-  anything but noise in the seed? Answerable from step 2's mined support counts
-  before any of it ships.
+- ~~**Does `code:<lang>` carry real procedural signal?**~~ **ANSWERED: no, and
+  worse than noise.** Excluded 2026-09-11; see §10.5.
 - **Graph scope** (§1.3) — deferred until an evolved graph exists to test
   portability against.
 - **Interaction with compaction.** `:iterations` is capped at the last 10 and
@@ -720,3 +719,64 @@ corpus legible at all.
 - If the graph does populate, the next number to collect is the **`::proc-miss`
   rate** in a real session (§4.7) — still the measurement that decides whether
   Phase 2 is worth building at all.
+
+### 10.5 `code:<lang>` excluded — it was a hub, not a node (2026-09-11)
+
+§9's open question is answered: **no**, and the reason is worse than "noise".
+
+The original plan gave a code block that invoked no tool a `code:<lang>` node,
+on the reasoning that "after a bash block, check the exit code" is a genuine
+transition. Measured over the same 87 recorded turns, it is not. Two findings,
+the second of which is the real one:
+
+**1. It is overwhelmingly self-transition.** 23 of 41 mined transitions were
+`code:bash → code:bash` — a retry loop, which carries no information about what
+to do next.
+
+**2. It was a many-to-many HUB that manufactured support it had not earned.**
+This is what settles it. Before exclusion:
+
+```
+  2  evo$tasks -> code:bash          2  code:bash -> evo$stats
+```
+
+Both look like a procedure observed twice. After exclusion — and remembering
+that `transitions` chains ACROSS iterations that name nothing, so these should
+have merged into `evo$tasks → evo$stats` — they did not merge. They dispersed:
+
+```
+  1  evo$tasks  -> evo$runs          1  evo$suites -> evo$stats
+  1  evo$tasks  -> evo$episodes      1  evo$runs   -> evo$stats
+```
+
+`code:bash` had in-degree from `{evo$suites, evo$runs, evo$tasks,
+evo$episodes}` and out-degree to `{evo$stats, evo$runs}`. It was a junction
+through which unrelated procedures were routed, and the support of 2 on either
+side was two *different* things that each happened to run a shell block next.
+A support threshold is the only defence this design has against noise, and a
+hub node defeats it by inflating counts — precisely the failure mode that
+would have made a seeded graph look trustworthy while being wrong.
+
+Corpus totals moved 15 → 13 procedures, 17 → 12 transitions, and usable edges
+at min-support 2 from 3 to **1**. The count went DOWN and the graph got
+*better*: every remaining transition is tool-to-tool, and the one survivor
+(`evo$episodes → evo$tasks`) is real.
+
+Enforced structurally rather than by convention:
+
+- `procedure/node-kinds` is now `#{:tool :state :skill}` — no `:code`.
+- `procedure/upsert-node!` VALIDATES kind, the way `upsert-edge!` validates
+  relation. Without that, removing the kind from the set would be a habit, and
+  the next caller passing `:code` would repopulate the graph.
+- `procedure-seed/iteration->procedure` and
+  `procedure-nudge/probe-for-iteration` both drop the fallback, in lockstep —
+  these two must key every event identically or the graph is unreachable, which
+  has already gone wrong once (§10.2).
+
+Unchanged and still load-bearing: a tool called from *inside* a code block
+keys on the TOOL (§10.2), so excluding `code:<lang>` costs no tool coverage. It
+only drops blocks that invoked nothing, where the language is a fact about
+syntax rather than about procedure.
+
+The step-2 verdict is unchanged and slightly firmer: **0 usable edges at
+min-support 3**. §10.4 still describes what would change it.

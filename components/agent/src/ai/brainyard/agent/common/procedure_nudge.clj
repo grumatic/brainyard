@@ -118,17 +118,31 @@
 (defn probe-for-iteration
   "Resolve the node name to localize on, from the per-turn state.
 
-   | situation                    | probe          |
-   |------------------------------|----------------|
-   | a tool ran this iteration    | the tool id    |
-   | a code block ran, no tool    | `code:<lang>`  |
-   | first iteration, nothing yet | `Start`        |
-   | anything else                | nil            |"
+   | situation                                 | probe       |
+   |-------------------------------------------|-------------|
+   | a tool ran this iteration (either channel)| the tool id |
+   | first iteration, nothing done yet         | `Start`     |
+   | anything else                             | nil         |
+
+   `Start` is the paper's `a_0` initialization marker. Nothing SEEDS it today —
+   `procedure-seed` never emits it — so the probe currently always misses and
+   costs one `find-node`. It is kept because a Phase-2 refiner or a manual edge
+   can give the graph an entry point, and because a miss is already the
+   designed-for common case.
+
+   A code block that invoked NO tool deliberately localizes nowhere. It used to
+   probe `code:<lang>`; measured against 87 real turns that named no procedure
+   — 23 of 41 mined transitions were `code:bash -> code:bash`, a retry loop —
+   so the graph no longer has such nodes to match (`procedure/node-kinds` has
+   no `:code` kind) and probing for one could only ever miss.
+
+   MUST stay in lockstep with `procedure-seed/iteration->procedure`. If the two
+   key the same event differently, every seeded node becomes unreachable and
+   the feature is silently inert; that has already happened once, in the
+   tool-inside-a-code-block case."
   [st-memory]
   (let [m (some-> st-memory deref)]
     (or (:last-procedure m)
-        (when-let [lang (some-> (:last-code-results m) last :lang not-empty)]
-          (str "code:" lang))
         (when (= 1 (:iteration-count m)) "Start"))))
 
 ;; =====================================================
