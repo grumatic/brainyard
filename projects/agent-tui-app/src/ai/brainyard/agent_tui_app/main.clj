@@ -4234,11 +4234,21 @@
     :else
     (-dispatch args)))
 
+(defn- fmt-key-list
+  "Render env-var NAMES for the dotenv diagnostic, capped so one crowded file
+   cannot turn a startup banner into a wall. Names only — never values."
+  [ks]
+  (let [n 4
+        shown (take n ks)
+        extra (- (count ks) (count shown))]
+    (str (str/join ", " shown)
+         (when (pos? extra) (format " (+%d more)" extra)))))
+
 (defn- -dispatch [args]
   ;; Bridge project-local `.env` into JVM properties so the native `by`
   ;; binary picks up keys without the `bb` shell wrapper. Real env vars take
   ;; precedence; see dotenv.clj for resolution order.
-  (let [{:keys [paths loaded-count env-file-missing env-file-from-flag?]}
+  (let [{:keys [paths loaded-count env-file-missing env-file-from-flag? shadowed]}
         (dotenv/load-from-dotenv! {:env-file (env-file-arg args)})]
     ;; Diagnostic banner → stderr, so stdout stays clean for piping
     ;; (`by ask`, `--json`, etc.). (Was a no-op `*err* *err*` binding that
@@ -4259,7 +4269,24 @@
       (binding [*out* *err*]
         (println (format "[dotenv] loaded %d key(s) from %s"
                          loaded-count
-                         (str/join ", " (map :path paths)))))))
+                         (str/join ", " (map :path paths))))))
+    ;; A `.env` that was READ and contributed nothing used to appear nowhere:
+    ;; `:paths` lists only contributors, so a fully-overridden file looked
+    ;; exactly like one that was never found. That is the file most worth
+    ;; naming — editing it changes nothing, and the user has no way to tell.
+    ;; Names only; a key NAME is not a secret, and no value is ever printed.
+    (doseq [{:keys [path keys env-keys]} shadowed]
+      (binding [*out* *err*]
+        (println (format "[dotenv] %s read but ignored — %s"
+                         path
+                         (str/join "; "
+                                   (cond-> []
+                                     (seq keys)
+                                     (conj (format "%s already set by an earlier .env"
+                                                   (fmt-key-list keys)))
+                                     (seq env-keys)
+                                     (conj (format "%s already set in the environment"
+                                                   (fmt-key-list env-keys))))))))))
   ;; The app log belongs to the PROCESS, not to a subcommand. It used to be
   ;; started inside `cmd-ask` and `with-memory-manager` only, so every other
   ;; path ran unlogged — `by a2a serve` emitted `::server-started` (carrying

@@ -106,8 +106,24 @@
    config, so a flag parsed later would be too late for the `:env-fn` knobs it
    is meant to supply.
 
-   Returns `{:paths [{:path :keys [str]}] :loaded-count int}`, plus
-   `:skipped :by-no-dotenv` when `BY_NO_DOTENV` suppressed the load, and
+   Returns `{:paths [{:path :keys [str]}] :loaded-count int}`, where `:paths`
+   names only the files that CONTRIBUTED a key.
+
+   `:shadowed` names the files that were read and contributed NOTHING, because
+   every key in them was already set. Without it such a file vanishes from
+   every report — and a `.env` that exists, is read, and is entirely overridden
+   is exactly the one a user needs told about, since editing it changes
+   nothing. `candidate-paths` deliberately orders `.brainyard/.env` ahead of an
+   application `.env` so the former wins; this is what keeps that win from
+   happening \"silently, with nothing to see\".
+
+   Each entry is `{:path :keys [str] :env-keys [str]}`, split by WHY the keys
+   lost: `:keys` were already set by an earlier file in the walk, `:env-keys`
+   by a real environment variable. The two call for different fixes — reorder
+   or edit the winning file, versus unset a shell export — so they are not
+   merged.
+
+   Also `:skipped :by-no-dotenv` when `BY_NO_DOTENV` suppressed the load, and
    `:env-file-missing <path>` (with `:env-file-from-flag?`) when the pinned
    file is not there. The walk still ran; the CALLER decides what a miss means,
    and it means different things for the two sources: a `BY_ENV_FILE` inherited
@@ -116,34 +132,46 @@
   ([] (load-from-dotenv! nil))
   ([{:keys [env-file]}]
    (if (util/resolve-var "BY_NO_DOTENV")
-    {:paths [] :loaded-count 0 :skipped :by-no-dotenv}
-    (let [explicit (explicit-env-file env-file)
-          missing  (:missing explicit)
-          pinned?  (and explicit (not missing))
-          _        (reset! pinned-file (when pinned? (.getPath ^java.io.File explicit)))
-          paths    (if pinned? [explicit] (candidate-paths))
-          merged (atom {})
-          loaded (atom [])]
-      (doseq [^java.io.File f paths]
-        (when-let [m (util/parse-env-file f)]
-          (let [new-keys (remove (fn [[k _]]
-                                   (or (contains? @merged k)
-                                       ;; a REAL env var wins; the property
-                                       ;; table is what we are about to write
-                                       (System/getenv k)))
-                                 m)]
-            (when (seq new-keys)
-              (swap! merged into new-keys)
-              (swap! loaded conj {:path (.getAbsolutePath f)
-                                  :keys (mapv first new-keys)})))))
-      (doseq [[k v] @merged]
-        (System/setProperty k v))
+     {:paths [] :loaded-count 0 :skipped :by-no-dotenv}
+     (let [explicit (explicit-env-file env-file)
+           missing  (:missing explicit)
+           pinned?  (and explicit (not missing))
+           _        (reset! pinned-file (when pinned? (.getPath ^java.io.File explicit)))
+           paths    (if pinned? [explicit] (candidate-paths))
+           merged (atom {})
+           loaded (atom [])
+           shadowed (atom [])]
+       (doseq [^java.io.File f paths]
+         (when-let [m (util/parse-env-file f)]
+           (let [lost?    (fn [[k _]]
+                            (or (contains? @merged k)
+                                ;; a REAL env var wins; the property
+                                ;; table is what we are about to write
+                                (System/getenv k)))
+                 new-keys (remove lost? m)]
+             (if (seq new-keys)
+               (do (swap! merged into new-keys)
+                   (swap! loaded conj {:path (.getAbsolutePath f)
+                                       :keys (mapv first new-keys)}))
+               ;; Read, parsed, and contributed nothing. RECORDED rather than
+               ;; dropped: dropping it is what let a fully-overridden `.env`
+               ;; vanish from every report, so a file that had been found and
+               ;; beaten looked exactly like one that was never found.
+               (when (seq m)
+                 (let [by-env (into #{} (comp (map first) (filter #(System/getenv %))) m)]
+                   (swap! shadowed conj
+                          {:path     (.getAbsolutePath f)
+                           :keys     (into [] (remove by-env) (map first m))
+                           :env-keys (vec by-env)})))))))
+       (doseq [[k v] @merged]
+         (System/setProperty k v))
       ;; Tell the resolver WHICH properties are environment values. It cannot
       ;; work that out — the property table also holds ~60 standard JVM entries
       ;; — and `util/child-env` needs the answer to hand a spawned child the
       ;; `.env` layer it would otherwise never see.
-      (util/register-dotenv-keys! (keys @merged))
-      (cond-> {:paths        @loaded
-               :loaded-count (count @merged)}
-        missing (assoc :env-file-missing missing
-                       :env-file-from-flag? (boolean (:from-flag? explicit))))))))
+       (util/register-dotenv-keys! (keys @merged))
+       (cond-> {:paths        @loaded
+                :loaded-count (count @merged)}
+         (seq @shadowed) (assoc :shadowed @shadowed)
+         missing (assoc :env-file-missing missing
+                        :env-file-from-flag? (boolean (:from-flag? explicit))))))))

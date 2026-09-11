@@ -211,3 +211,77 @@
       (let [chain (policy-chain {:agent "coact-agent"})]
         (is (= 2 (count chain)) "a named agent adds its own layer, root first"))
       (agent/invalidate-global-config!))))
+
+;; ============================================================================
+;; Shadowed files — a `.env` that was read and beaten must still be reported
+;; ============================================================================
+
+(deftest a-fully-shadowed-env-is-reported-not-dropped
+  ;; `:paths` lists only CONTRIBUTORS, so a file whose every key was already
+  ;; set used to appear nowhere at all — indistinguishable from one that was
+  ;; never found. That is the file most worth naming: it exists, it is read,
+  ;; and editing it changes nothing.
+  (with-project
+    (fn [root]
+      (spit (io/file root ".env")              "SHADOW_A=from-project-env\nSHADOW_B=from-project-env\n")
+      (spit (io/file root ".brainyard" ".env") "SHADOW_A=from-brainyard\nSHADOW_B=from-brainyard\n")
+      (clear! "SHADOW_A" "SHADOW_B")
+      (try
+        (let [r         (dotenv/load-from-dotenv!)
+              app-env   (.getPath (io/file root ".env"))
+              by-env    (.getPath (io/file root ".brainyard" ".env"))
+              contrib   (set (map :path (:paths r)))
+              shadowed  (first (filter #(= app-env (:path %)) (:shadowed r)))]
+          (testing "the winning file is a contributor"
+            (is (contains? contrib by-env)))
+          (testing "the beaten file is NOT a contributor"
+            (is (not (contains? contrib app-env))))
+          (testing "but it IS reported as shadowed, with the keys that lost"
+            (is (some? shadowed))
+            (is (= #{"SHADOW_A" "SHADOW_B"} (set (:keys shadowed)))))
+          (testing "and attributed to the earlier file, not to the environment"
+            (is (empty? (:env-keys shadowed))))
+          (testing "the values really did come from the winner"
+            (is (= "from-brainyard" (System/getProperty "SHADOW_A")))))
+        (finally (clear! "SHADOW_A" "SHADOW_B"))))))
+
+(deftest shadowing-by-a-real-env-var-is-attributed-separately
+  ;; Different cause, different fix: unset a shell export, rather than reorder
+  ;; or edit a `.env`. Merging the two would name the wrong remedy.
+  (with-project
+    (fn [root]
+      (let [k (first (keys (into {} (System/getenv))))]
+        (spit (io/file root ".env") (str k "=from-project-env\n"))
+        (let [r        (dotenv/load-from-dotenv!)
+              app-env  (.getPath (io/file root ".env"))
+              shadowed (first (filter #(= app-env (:path %)) (:shadowed r)))]
+          (is (some? shadowed) "a file beaten only by the environment is still reported")
+          (is (= [k] (:env-keys shadowed)))
+          (is (empty? (:keys shadowed))))))))
+
+(deftest a-contributing-env-is-never-listed-as-shadowed
+  ;; The quiet cost of getting this wrong would be a warning on every launch.
+  (with-project
+    (fn [root]
+      (spit (io/file root ".env")              "UNIQ_APP=a\n")
+      (spit (io/file root ".brainyard" ".env") "UNIQ_BY=b\n")
+      (clear! "UNIQ_APP" "UNIQ_BY")
+      (try
+        (let [r (dotenv/load-from-dotenv!)]
+          (is (= 2 (count (filter (comp #{(.getPath (io/file root ".env"))
+                                          (.getPath (io/file root ".brainyard" ".env"))}
+                                        :path)
+                                  (:paths r)))))
+          (is (nil? (:shadowed r)) "no shadowed key at all when both files contribute"))
+        (finally (clear! "UNIQ_APP" "UNIQ_BY"))))))
+
+(deftest an-absent-or-empty-env-is-not-reported-as-shadowed
+  ;; Only a file that EXISTS and lost is interesting; a missing one is silence.
+  (with-project
+    (fn [root]
+      (spit (io/file root ".brainyard" ".env") "SOLO_KEY=x\n")
+      (clear! "SOLO_KEY")
+      (try
+        (let [r (dotenv/load-from-dotenv!)]
+          (is (nil? (:shadowed r))))
+        (finally (clear! "SOLO_KEY"))))))
