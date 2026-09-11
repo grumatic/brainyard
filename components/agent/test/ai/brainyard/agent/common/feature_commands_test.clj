@@ -58,7 +58,7 @@
     (fn []
       (let [v (fc/feature$list :family "memory")]
         (is (= "memory" (:family v)))
-        (is (= 6 (count (:features v))))
+        (is (= 7 (count (:features v))))  ;; +1: memory/procedure
         (is (every? :feature (:features v))))))
   (is (:error (fc/feature$list :family "nope"))))
 
@@ -223,7 +223,7 @@
 (deftest set-family-reports-member-states
   (let [[r _] (capture-set {:enable-memory false}
                            #(fc/feature$set :feature "memory" :state "off"))]
-    (is (= 6 (count (:features r))))
+    (is (= 7 (count (:features r))))  ;; +1: memory/procedure
     (is (every? #(false? (:on? %)) (:features r))
         "with the switch off every gated member reports off")))
 
