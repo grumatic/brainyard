@@ -1126,7 +1126,16 @@
    that thunk resolves project-dir fresh on every persistence call. So this just
    needs to install the working-dir override (which `sessions-root` reads via
    `resolve-project-dir`) before any persistence happens. Re-exec'd
-   --web/--sandbox children re-enter through this path with `-C` forwarded."
+   --web/--sandbox children re-enter through this path with `-C` forwarded.
+
+   **Moving the working dir INVALIDATES the cached project config.**
+   `!global-config` caches `<project>/.brainyard/config.edn` on first read, and
+   `set-working-dir-override!` only moves the override — so a `-C` installed
+   after anything had already read config left the cache pointing at the
+   PREVIOUS project. The flag then moved the project without moving its config:
+   `project-dir` reported the new repo while every `get-config` kept answering
+   for the old one. Re-reading costs one small file, and only when the resolved
+   directory actually changed."
   [opts]
   (try (agent/set-working-dir-override! (:working-dir opts))
        (catch clojure.lang.ExceptionInfo e
@@ -1728,13 +1737,32 @@
 ;; docs/design/procedural-graph-implementation.md.
 ;; ---------------------------------------------------------------------------
 
+(defn- resolve-procedure-graph-id
+  "`--graph` > project config `:procedure-graph-id` > \"default\".
+
+   MUST match how the runtime localizer resolves it
+   (`procedure-nudge/drain-iteration-notice!` reads `:procedure-graph-id`
+   through `get-config`). Hardcoding \"default\" here instead would let a
+   project set the key in `.brainyard/config.edn` and then have the agent guide
+   from one graph while `by procedures list` reported another — the CLI and the
+   runtime disagreeing about which graph is live, which is unanswerable from
+   the outside.
+
+   Reads project config, so every caller must run `install-working-dir!` FIRST
+   or `-C` resolves against the wrong project."
+  [opts]
+  (or (some-> (:graph opts) str/trim not-empty)
+      (some-> (agent/get-config :procedure-graph-id) str/trim not-empty)
+      "default"))
+
 (defn cmd-procedures-list
   "Dump a procedural graph: nodes, live transitions, counts and gate state."
   [opts]
   (helpers/suppress-jul-cookie-warnings!)
+  (install-working-dir! opts)   ;; so project config resolves to THIS project
   (let [json? (:json opts)
         uid   (helpers/resolve-user-id (:user-id opts))
-        gid   (or (some-> (:graph opts) str/trim not-empty) "default")]
+        gid   (resolve-procedure-graph-id opts)]
     (try
       (let [snap (with-memory-manager uid (fn [mm] (mem/procedure-snapshot mm gid)))]
         (if json?
@@ -1765,9 +1793,10 @@
    graph — is silent by design."
   [opts]
   (helpers/suppress-jul-cookie-warnings!)
+  (install-working-dir! opts)   ;; so project config resolves to THIS project
   (let [json? (:json opts)
         uid   (helpers/resolve-user-id (:user-id opts))
-        gid   (or (some-> (:graph opts) str/trim not-empty) "default")
+        gid   (resolve-procedure-graph-id opts)
         probe (some-> (:node opts) str/trim not-empty)
         hops  (or (:hops opts) 2)
         limit (or (:limit opts) 12)]
@@ -1815,9 +1844,14 @@
    which is true."
   [opts]
   (helpers/suppress-jul-cookie-warnings!)
+  ;; MUST precede the mine: the trajectories being read are PROJECT-scoped
+  ;; (`<project>/.brainyard/sessions/*/trajectory.edn` via `config/sessions-root`
+  ;; → `resolve-project-dir`), so without this `-C` is ignored and the command
+  ;; silently mines whichever project the shell happens to be sitting in.
+  (install-working-dir! opts)
   (let [json?   (:json opts)
         uid     (helpers/resolve-user-id (:user-id opts))
-        gid     (or (some-> (:graph opts) str/trim not-empty) "default")
+        gid     (resolve-procedure-graph-id opts)
         support (or (:min-support opts) 3)]
     (try
       (let [r (with-memory-manager
@@ -3942,17 +3976,20 @@
                                  :runs        cmd-memory-reembed}]}
                  {:command     "procedures"
                   :description "The procedural graph (what-to-do-next), as opposed to `memory graph` (what-is)"
+                  ;; `-C` on all three: `build` reads PROJECT-scoped
+                  ;; trajectories, and all three resolve :procedure-graph-id
+                  ;; from project config the way the runtime localizer does.
                   :subcommands [{:command     "list"
                                  :description "Dump a procedural graph: nodes, live transitions, counts, gate state"
-                                 :opts        [user-id-opt proc-graph-opt json-opt]
+                                 :opts        [user-id-opt proc-graph-opt working-dir-opt json-opt]
                                  :runs        cmd-procedures-list}
                                 {:command     "show"
                                  :description "Localization probe: what guidance --node <procedure> would actually produce"
-                                 :opts        [user-id-opt proc-graph-opt node-opt hops-opt limit-opt json-opt]
+                                 :opts        [user-id-opt proc-graph-opt node-opt hops-opt limit-opt working-dir-opt json-opt]
                                  :runs        cmd-procedures-show}
                                 {:command     "build"
-                                 :description "Seed the graph by mining recorded trajectories (never authored — see the design note)"
-                                 :opts        [user-id-opt proc-graph-opt min-support-opt json-opt]
+                                 :description "Seed the graph by mining this project's recorded trajectories (never authored — see the design note)"
+                                 :opts        [user-id-opt proc-graph-opt min-support-opt working-dir-opt json-opt]
                                  :runs        cmd-procedures-build}]}
                  {:command     "events"
                   :description "Fire user-defined events into a live session over its ask channel"
