@@ -990,7 +990,7 @@
    ["/capture"          " PATH"                   "Save scrollback buffer to file"]
    ["/clear"            ""                        "Start a new session: empty context; the old one stays resumable"]
    ["/compact"          " [ratio]"                "Compact context to ratio of max tokens (default 0.2)"]
-   ["/config"           " [key [val]]"            "Show/set runtime config"]
+   ["/config"           " [key [val]|unset key]"  "Show/set/unset runtime config"]
    ["/continue"         " [N]"                    "Keep going: unpark a paused run, or re-ask with N more iterations"]
    ["/copy"             " [code [N]]"             "Copy the last answer (or one of its code blocks) to the clipboard"
     {:completions [["code" "Copy the last fenced code block (add N for the Nth)"]]}]

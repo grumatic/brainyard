@@ -311,7 +311,7 @@
 ;; ============================================================================
 
 (defcommand agent-runtime$config
-  "Read a curated config overview (no args: keys that differ from defaults + how to drill in), browse one feature family (:feature, e.g. 'memory'), search keys by substring (:query), or set one entry (pair :key + :value). Pass :all true to dump the full effective snapshot. Valid keys: see agent.core.config/config-schema.
+  "Read a curated config overview (no args: keys that differ from defaults + how to drill in), browse one feature family (:feature, e.g. 'memory'), search keys by substring (:query), or set one entry (pair :key + :value), or reset one to its default (:key + :unset true). Pass :all true to dump the full effective snapshot. Valid keys: see agent.core.config/config-schema.
    Setting writes both the per-agent override (effective immediately) and the persisted global config in .brainyard/config.edn."
   (fn [& {:as args}]
     (if-let [agent proto/*current-agent*]
@@ -320,6 +320,7 @@
             q-raw    (:query args)
             f-raw    (:feature args)
             all?     (contains? #{true "true"} (:all args))
+            unset?   (contains? #{true "true"} (:unset args))
             has-key? (not (str/blank? (str k-raw)))
             has-val? (not (str/blank? (str v-str)))
             has-q?   (not (str/blank? (str q-raw)))
@@ -340,6 +341,41 @@
           (let [matches (feature/annotate-hits (config/search-config-keys agent q-raw))]
             {:matches matches :count (count matches)})
 
+          ;; Unset mode: remove the persisted + per-agent write so the key falls
+          ;; back to its baseline (schema default). The only way back to nil for
+          ;; a nil-default key such as :sub-lm-config, since a :value string
+          ;; cannot say nil (the string nil coerces to itself).
+          unset?
+          (let [k (when has-key? (keyword (str/trim (str k-raw))))]
+            (cond
+              (nil? k)
+              {:error-message "'unset' requires 'key' (the config key to reset to its default)"}
+
+              has-val?
+              {:error-message "Pass either 'value' (set) or 'unset' true (reset to default), not both"}
+
+              (not (contains? config/config-keys k))
+              {:error-message (format "Invalid config key '%s'. Valid: %s"
+                                      (name k) (str/join ", " (map name config/config-keys)))}
+
+              (config/read-only-key? k)
+              {:error-message (format "Config '%s' is read-only and cannot be unset here (runtime-derived)."
+                                      (name k))}
+
+              :else
+              (let [_      (config/unset-config! agent k)
+                    v      (config/get-config agent k)
+                    source (config/config-source agent k)]
+                (merge {:result (str (format "Config '%s' unset: override removed from .brainyard/config.edn and this agent. Effective value is now %s (source: %s)."
+                                             (name k) (pr-str v) (name source))
+                                     (case source
+                                       :env     " An environment variable still overrides it; unset that variable for the default to apply."
+                                       :session " A session-level value still applies for this session."
+                                       "")
+                                     (when (feature/requires-restart-key? k)
+                                       " It is read once at startup, so RESTART `by` for the change to take effect."))}
+                       (config/config-overview agent)))))
+
           ;; Read mode: curated overview by default (non-default settings + hint),
           ;; or the full effective snapshot when :all true is requested.
           (and (not has-key?) (not has-val?))
@@ -348,7 +384,7 @@
             (config/config-overview agent))
 
           (not= has-key? has-val?)
-          {:error-message "Both 'key' and 'value' are required to set config; omit both to read"}
+          {:error-message "Both 'key' and 'value' are required to set config (or 'key' + 'unset' true to reset it to its default); omit both to read"}
 
           :else
           (let [k (keyword k-raw)]
@@ -375,7 +411,8 @@
                   [:feature {:optional true} [:string {:desc "Feature family to browse: memory, self-improve, automation, context, exec, agents, reasoning, tools, analytics, ui. Read-only; returns each feature's gate, deps and member keys."}]]
                   [:query {:optional true} [:string {:desc "Substring to find matching config keys (searches key name + description); read-only discovery. Omit :key/:value when searching."}]]
                   [:key {:optional true} [:string {:desc "Config key to set (omit :key/:value/:query to read the overview; see agent.core.config/config-schema)"}]]
-                  [:value {:optional true} [:string {:desc "Config value to set, e.g. 'true', 'false', '3' (required with :key)"}]]
+                  [:value {:optional true} [:string {:desc "Config value to set, e.g. 'true', 'false', '3' (required with :key unless :unset true)"}]]
+                  [:unset {:optional true} [:boolean {:desc "With :key and no :value: remove the override so the key falls back to its schema default. The only way to reset a nil-default key (e.g. sub-lm-config) to nil"}]]
                   [:all {:optional true} [:boolean {:desc "Read mode only: return the full effective config snapshot instead of the curated overview"}]]]
   :output-schema [:map
                   [:total {:optional true} [:int {:desc "Total number of config keys (overview/set responses)"}]]
@@ -385,7 +422,7 @@
                   [:count {:optional true} [:int {:desc "Number of search matches (with :query)"}]]
                   [:family {:optional true} [:string {:desc "Feature family name (from :feature)"}]]
                   [:features {:optional true} [:string {:desc "From :feature: vector of {:feature :title :gate :gate-value :lifecycle :keys} per feature in the family, plus :requires/:implies/:requires-partial where declared"}]]
-                  [:result {:optional true} [:string {:desc "Confirmation when a value was set"}]]
+                  [:result {:optional true} [:string {:desc "Confirmation when a value was set or unset"}]]
                   [:config {:optional true} [:string {:desc "Full effective config snapshot (only when :all true), secrets redacted"}]]
                   [:error-message {:optional true} [:string {:desc "Error if invalid key, partial args, or agent not running"}]]])
 

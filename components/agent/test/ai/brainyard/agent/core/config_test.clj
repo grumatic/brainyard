@@ -725,6 +725,46 @@
     (is (= 77 (cfg/get-config ag :max-iterations)))))
 
 ;; ============================================================================
+;; unset-config!
+;; ============================================================================
+
+(deftest unset-config-restores-nil-default-and-removes-persisted-leaf
+  (cfg/invalidate-global-config!)
+  (cfg/set-config! :sub-lm-config "free-llm/auto")
+  (cfg/set-config! :max-iterations 42)
+  (is (= "free-llm/auto" (cfg/get-config :sub-lm-config)))
+  (is (nil? (cfg/unset-config! :sub-lm-config)))
+  (is (nil? (cfg/get-config :sub-lm-config)))
+  (testing "leaf removed from config.edn, siblings preserved"
+    (let [m (edn/read-string (slurp (io/file *tmp-project* ".brainyard" "config.edn")))]
+      (is (not (contains? (get-in m [:agent :config]) :sub-lm-config)))
+      (is (= 42 (get-in m [:agent :config :max-iterations])))))
+  (testing "stays unset after a cache reload"
+    (cfg/invalidate-global-config!)
+    (is (nil? (cfg/get-config :sub-lm-config)))))
+
+(deftest unset-config-2-arity-drops-agent-override
+  (cfg/invalidate-global-config!)
+  (let [smi (atom {:config {:max-refinements 3}})
+        ag  (reify
+              clojure.lang.ILookup
+              (valAt [_ k] (when (= k :!state) (atom {:st-memory-init smi}))))]
+    (cfg/set-config! ag :sub-lm-config "free-llm/auto")
+    (is (= "free-llm/auto" (cfg/get-config ag :sub-lm-config)))
+    (cfg/unset-config! ag :sub-lm-config)
+    (is (not (contains? (:config @smi) :sub-lm-config)))
+    (is (= 3 (get-in @smi [:config :max-refinements])))
+    (is (nil? (cfg/get-config ag :sub-lm-config)))))
+
+(deftest unset-config-without-a-file-writes-nothing
+  (cfg/invalidate-global-config!)
+  (is (= (:max-iterations cfg/default-config) (cfg/unset-config! :max-iterations)))
+  (is (not (.exists (io/file *tmp-project* ".brainyard" "config.edn")))))
+
+(deftest unset-config-rejects-unknown-key
+  (is (thrown? AssertionError (cfg/unset-config! :not-a-real-key))))
+
+;; ============================================================================
 ;; valid-config-value? — schema-type check
 ;; ============================================================================
 

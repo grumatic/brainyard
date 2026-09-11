@@ -444,62 +444,107 @@
             "  Model:    " (ansi/style (str cur-model) ansi/bold ansi/bright-white) "\n\n"
             (ansi/muted "Tip: type /model then Space to browse models interactively."))))))
 
+(defn- config-unset!
+  "`/config unset KEY`: drop KEY's persisted and per-agent override so it falls
+   back to its default. The TUI twin of `agent-runtime$config :unset true`:
+   same refusals (missing, unknown or read-only key) and the same notes when an
+   env var or session value still wins, or the key is read only at startup.
+   The only way back to nil for a nil-default key such as `sub-lm-config`,
+   since `/config KEY nil` stores the string nil."
+  [ag key-str]
+  (let [k-str (some-> key-str str/trim)
+        k     (when-not (str/blank? k-str) (keyword k-str))]
+    (cond
+      (nil? k)
+      (tui-session/emit!
+       (ansi/warning "Usage: /config unset KEY  (reset KEY to its default)"))
+
+      (not (contains? agent/config-keys k))
+      (tui-session/emit!
+       (ansi/warning (str "Unknown config key: " k-str
+                          ". Valid: " (str/join ", " (sort (map name agent/config-keys))))))
+
+      (agent/read-only-key? k)
+      (tui-session/emit!
+       (ansi/warning (str "Config '" (name k) "' is read-only and cannot be unset (runtime-derived).")))
+
+      :else
+      (let [_      (agent/unset-config! ag k)
+            v      (agent/get-config ag k)
+            source (agent/config-source ag k)]
+        (tui-session/emit!
+         (ansi/success (str (name k) " unset = " (pr-str v)
+                            "  (source: " (some-> source name) ")")))
+        (case source
+          :env     (tui-session/emit!
+                    (ansi/warning "  An environment variable still overrides it; unset that variable for the default to apply."))
+          :session (tui-session/emit!
+                    (ansi/warning "  A session-level value still applies for this session."))
+          nil)
+        (when (agent/requires-restart-key? k)
+          (tui-session/emit!
+           (ansi/warning "  It is read once at startup: restart `by` for the change to take effect.")))))))
+
 (defn- handle-config-command
-  "Handle /config with optional key/value arguments.
-   No args → show all. One arg → show key. Two args → set key value."
+  "Handle /config with optional arguments.
+   No args → show all. One arg → show key. `unset KEY` → reset KEY to its
+   default (see `config-unset!`). Two args → set key value."
   [args]
   (let [ag (tui-session/get-active-agent)]
     (if-not ag
       (tui-session/emit! (ansi/warning "No TUI agent running."))
       (let [parts (when-not (str/blank? args)
                     (str/split (str/trim args) #"\s+" 2))]
-        (case (count (or parts []))
-          ;; No args: show all config (merged snapshot: defaults < global < per-agent)
-          0 (let [current (agent/get-config-snapshot ag)]
-              (tui-session/emit! (str (ansi/header "Runtime Config")))
-              (doseq [[k {:keys [type default]}] (sort-by key agent/config-schema)]
-                (let [val (get current k default)
-                      changed? (not= val default)]
-                  (tui-session/emit!
-                   (str "  " (ansi/style (format "%-30s" (name k)) ansi/bold ansi/bright-white)
-                        (ansi/style (format "%-8s" (str val)) (if changed? ansi/bright-cyan ansi/dim))
-                        (ansi/muted (str "    (" type
-                                         (if changed?
-                                           (str ", default: " default)
-                                           "")
-                                         ")")))))))
+        ;; `unset` is not a schema key, so this form cannot shadow a real one.
+        (if (= "unset" (first parts))
+          (config-unset! ag (second parts))
+          (case (count (or parts []))
+            ;; No args: show all config (merged snapshot: defaults < global < per-agent)
+            0 (let [current (agent/get-config-snapshot ag)]
+                (tui-session/emit! (str (ansi/header "Runtime Config")))
+                (doseq [[k {:keys [type default]}] (sort-by key agent/config-schema)]
+                  (let [val (get current k default)
+                        changed? (not= val default)]
+                    (tui-session/emit!
+                     (str "  " (ansi/style (format "%-30s" (name k)) ansi/bold ansi/bright-white)
+                          (ansi/style (format "%-8s" (str val)) (if changed? ansi/bright-cyan ansi/dim))
+                          (ansi/muted (str "    (" type
+                                           (if changed?
+                                             (str ", default: " default)
+                                             "")
+                                           ")")))))))
 
-          ;; One arg: show single key
-          1 (let [k (keyword (first parts))]
+            ;; One arg: show single key
+            1 (let [k (keyword (first parts))]
+                (if-not (contains? agent/config-keys k)
+                  (tui-session/emit!
+                   (ansi/warning (str "Unknown config key: " (first parts)
+                                      ". Valid: " (str/join ", " (sort (map name agent/config-keys))))))
+                  (let [{:keys [type default]} (get agent/config-schema k)
+                        val (agent/get-config ag k)
+                        changed? (not= val default)]
+                    (tui-session/emit!
+                     (str "  " (ansi/style (name k) ansi/bold ansi/bright-white) " = "
+                          (ansi/style (str val) ansi/bright-cyan)
+                          (ansi/muted (str "  (" type
+                                           (if changed?
+                                             (str ", default: " default)
+                                             "")
+                                           ")")))))))
+
+            ;; Two args: set key value. `set-config!` writes the per-agent
+            ;; override AND persists to .brainyard/config.edn so the value
+            ;; survives future sessions.
+            (let [k     (keyword (first parts))
+                  v-str (second parts)]
               (if-not (contains? agent/config-keys k)
                 (tui-session/emit!
                  (ansi/warning (str "Unknown config key: " (first parts)
                                     ". Valid: " (str/join ", " (sort (map name agent/config-keys))))))
-                (let [{:keys [type default]} (get agent/config-schema k)
-                      val (agent/get-config ag k)
-                      changed? (not= val default)]
+                (let [coerced (agent/coerce-config-value k v-str)]
+                  (agent/set-config! ag k coerced)
                   (tui-session/emit!
-                   (str "  " (ansi/style (name k) ansi/bold ansi/bright-white) " = "
-                        (ansi/style (str val) ansi/bright-cyan)
-                        (ansi/muted (str "  (" type
-                                         (if changed?
-                                           (str ", default: " default)
-                                           "")
-                                         ")")))))))
-
-          ;; Two args: set key value. `set-config!` writes the per-agent
-          ;; override AND persists to .brainyard/config.edn so the value
-          ;; survives future sessions.
-          (let [k     (keyword (first parts))
-                v-str (second parts)]
-            (if-not (contains? agent/config-keys k)
-              (tui-session/emit!
-               (ansi/warning (str "Unknown config key: " (first parts)
-                                  ". Valid: " (str/join ", " (sort (map name agent/config-keys))))))
-              (let [coerced (agent/coerce-config-value k v-str)]
-                (agent/set-config! ag k coerced)
-                (tui-session/emit!
-                 (ansi/success (str (name k) " = " coerced)))))))))))
+                   (ansi/success (str (name k) " = " coerced))))))))))))
 
 ;; ============================================================================
 ;; /feature — the capability view over config

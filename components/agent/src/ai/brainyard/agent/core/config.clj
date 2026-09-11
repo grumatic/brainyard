@@ -2083,6 +2083,44 @@
      (swap! smi assoc-in [:config k] v))
    v))
 
+(defn- remove-persisted-key!
+  "Remove the `[:agent :config k]` leaf from `.brainyard/config.edn` at
+   `:auto` scope, preserving the rest of the file. Writes nothing when the
+   leaf is absent (no file is created). Returns true when a leaf was removed."
+  [k]
+  (let [dirs     (resolve-dirs)
+        existing (read-edn-config dirs :auto)]
+    (if (contains? (get-in existing [:agent :config]) k)
+      (do (write-edn-config! dirs (update-in existing [:agent :config] dissoc k) :auto)
+          true)
+      false)))
+
+(defn unset-config!
+  "Undo a config write so `k` falls back to its baseline: the feature-profile
+   value or the schema `:default`. The inverse of `set-config!`, and the only
+   way to return a nil-default key (`:sub-lm-config`, `:eval-lm-config`, ...)
+   to nil, because a `:value` string cannot express nil (the string nil
+   coerces to itself).
+
+   - 1-arity `(unset-config! k)`: removes `[:agent :config k]` from
+     `.brainyard/config.edn` and reloads `!global-config`.
+   - 2-arity `(unset-config! agent k)`: does (1-arity) plus dissocs the
+     per-agent override so the running agent sees the baseline immediately.
+
+   The session layer and a set environment variable still win over the
+   baseline; check `config-source` afterwards. Asserts `k` is in
+   `config-keys`. Returns the new global value of `k`."
+  ([k]
+   (assert (contains? config-keys k) (str "Unknown config key: " k))
+   (remove-persisted-key! k)
+   (load-global-config!)
+   (get @!global-config k))
+  ([agent-or-st k]
+   (let [v (unset-config! k)]
+     (when-let [smi (some-> (resolve-agent agent-or-st) :!state deref :st-memory-init)]
+       (swap! smi update :config dissoc k))
+     v)))
+
 ;; ============================================================================
 ;; Agent Directory Helpers
 ;; ============================================================================

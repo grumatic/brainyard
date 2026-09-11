@@ -263,6 +263,24 @@
                       (str " (default: " default ")")))]))
           (sort-by key agent/config-schema))))
 
+(defn- config-unset-menu-items
+  "Build [[display desc] ...] for the /config unset submenu. Read-only keys are
+   left out; keys whose value differs from the default come first, since those
+   are the ones an unset actually changes."
+  []
+  (let [agent-obj (:agent @tui-session/!tui-state)
+        snapshot  (when agent-obj (agent/get-config-snapshot agent-obj))
+        rows      (for [[k {:keys [default]}] (sort-by key agent/config-schema)
+                        :when (not (agent/read-only-key? k))
+                        :let  [current  (get snapshot k default)
+                               changed? (not= current default)]]
+                    {:changed? changed?
+                     :item     [(str "/config unset " (name k))
+                                (if changed?
+                                  (str "= " current " (default: " (pr-str default) ")")
+                                  (str "already default (" (pr-str default) ")"))]})]
+    (mapv :item (concat (filter :changed? rows) (remove :changed? rows)))))
+
 (defn- kw->str
   "Convert a keyword to its full string representation (without colon).
    Handles namespaced keywords: :ns/name → \"ns/name\"."
@@ -351,7 +369,9 @@
   "Register submenus that need runtime data."
   []
   (register-submenu! "/model" {:items-fn model-menu-items})
-  (register-submenu! "/config" {:items-fn config-menu-items})
+  (register-submenu! "/config" {:items-fn #(into [["/config unset" "Reset a key to its default: /config unset KEY"]]
+                                                 (config-menu-items))})
+  (register-submenu! "/config unset" {:items-fn config-unset-menu-items})
   (register-submenu! "/sandbox" {:items-fn (fn []
                                              (into [["/sandbox eval" "Eval Clojure code in sandbox"]]
                                                    agent/sandbox-menu-items))})

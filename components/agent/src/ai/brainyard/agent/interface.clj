@@ -330,7 +330,7 @@
                 coerce-config-value valid-config-value?
                 migrate-legacy-edn-shape
                 !global-config load-global-config! invalidate-global-config!
-                get-config get-config-snapshot set-config!
+                get-config get-config-snapshot set-config! unset-config!
                 config-overview search-config-keys redact-config-snapshot
                 config-source
                 resolve-sub-lm resolve-sandbox-interop)

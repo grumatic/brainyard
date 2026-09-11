@@ -161,7 +161,7 @@ opens the completion menu; commands with sub-verbs open a submenu.
 | `/usage` | | Token/cost summary + per-call latency |
 | `/todo` | | Show the TODO list |
 | `/model` | `[name\|#]` | Model picker / switch model |
-| `/config` | `[key [val]]` | Show/set runtime config |
+| `/config` | `[key [val]]` or `unset key` | Show/set runtime config; `unset key` resets a key to its default (the only way back to nil for keys like `sub-lm-config`) |
 | `/feature` | `[name [on\|off]]` | Capabilities — config grouped by feature |
 | `/effort` | `[low\|medium\|high]` | Effort level (finalize + refinement passes) |
 | `/display-format` | `[quiet\|normal\|verbose]` | Display detail level |
