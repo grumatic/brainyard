@@ -360,7 +360,7 @@
 
 (def proc-graph-opt
   {:option "graph"
-   :as "Which procedural graph to act on (default \"default\")"
+   :as "Which procedural graph to act on (default: this project's registry slug)"
    :type :string})
 
 (def min-support-opt
@@ -1738,18 +1738,18 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- resolve-procedure-graph-id
-  "`--graph` > project config `:procedure-graph-id` > \"default\".
+  "`--graph` > `:procedure-graph-id` (env, then project config, then the
+   schema's `:default-fn` = THIS PROJECT'S registry slug) > \"default\".
 
-   MUST match how the runtime localizer resolves it
-   (`procedure-nudge/drain-iteration-notice!` reads `:procedure-graph-id`
-   through `get-config`). Hardcoding \"default\" here instead would let a
-   project set the key in `.brainyard/config.edn` and then have the agent guide
-   from one graph while `by procedures list` reported another — the CLI and the
-   runtime disagreeing about which graph is live, which is unanswerable from
-   the outside.
+   Everything but the flag comes from ONE `get-config` call, which is the point:
+   the runtime localizer resolves the same key the same way, so the CLI and the
+   agent cannot name different graphs. Deriving a name on either side
+   independently is how this feature has already produced two silent-inertness
+   bugs. The literal \"default\" is a last resort for when no path resolves at
+   all.
 
-   Reads project config, so every caller must run `install-working-dir!` FIRST
-   or `-C` resolves against the wrong project."
+   Reads project config and the project path, so every caller must run
+   `install-working-dir!` FIRST or `-C` resolves against the wrong project."
   [opts]
   (or (some-> (:graph opts) str/trim not-empty)
       (some-> (agent/get-config :procedure-graph-id) str/trim not-empty)

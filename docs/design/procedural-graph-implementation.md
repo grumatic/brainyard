@@ -116,19 +116,31 @@ Two consequences worth stating, because they simplify the committed plan:
 - **The retention sweep cannot touch it.** `prune-nodes-to-budget!` and
   `prune-graph-to-budget!` name `graph_nodes` explicitly.
 
-### 1.3 Scope: per-user for now, portable by export
+### 1.3 Scope: per-user file, per-PROJECT graph
 
-The database is partitioned by `BY_USER_ID`, so a procedure graph is per-user.
-Procedural knowledge about *Brainyard's own tools* is arguably user- and
-project-independent (comparison note §8), and Phase 2 would pool evidence
-better if it were shared.
+The database is partitioned by `BY_USER_ID`, so the file is per-user. The graph
+INSIDE it is per-project: `:procedure-graph-id` defaults to the project
+registry slug (`<sanitized-basename>-<8 hex of SHA-256(canonical path)>`, e.g.
+`brainyard-3aecf41a`).
 
-Deferred deliberately. `graph_id TEXT` is on every row from day one so a shared
-graph is a value change rather than a migration, and `export`/`import` (§6)
-makes a graph a diffable, shippable artifact now. Revisit when Phase 2 has
-produced a graph worth sharing — not before, since the answer depends on
-whether evolved graphs turn out to be portable at all, which nothing currently
-knows.
+That default is not cosmetic. The graph is seeded from PROJECT-scoped
+trajectories but stored in a USER-scoped file, so a single shared `"default"`
+graph would merge every repo the user works in — and an unrelated project's
+tool order would then guide this one. A procedural graph describes one
+codebase's procedures; pooling them is not "more evidence", it is noise with
+the same shape as signal (the lesson §10.5 already paid for once).
+
+**The derivation lives in exactly one place**: the schema's `:default-fn` on
+`:procedure-graph-id`, backed by `config/project-graph-id`. Both the CLI and
+the runtime localizer resolve that one key, so they cannot name different
+graphs. A `:default-fn` rather than each side computing a slug, because two
+components deriving the same key independently is precisely how this feature
+produced its two silent-inertness bugs (§10.2, §10.5).
+
+Set the key explicitly to share a graph across repos, or to pin a rolled-back
+one; `--graph` overrides per invocation. Sharing a graph between USERS is still
+deferred — `export`/`import` (§6) makes one a diffable artifact, and whether
+evolved graphs turn out to be portable at all is a Phase-2 question.
 
 ## 2. Schema (memory schema version 2.3.0 → 2.4.0)
 
@@ -780,3 +792,45 @@ syntax rather than about procedure.
 
 The step-2 verdict is unchanged and slightly firmer: **0 usable edges at
 min-support 3**. §10.4 still describes what would change it.
+
+
+### 10.6 The default graph id is the project slug (2026-09-11)
+
+Two bugs and one design gap, in the order they surfaced.
+
+**`-C` was ignored by `procedures build`.** It mines PROJECT-scoped
+trajectories (`<project>/.brainyard/sessions/*/trajectory.edn` via
+`sessions-root` → `resolve-project-dir`) but declared no `working-dir-opt` and
+never called `install-working-dir!`, so it silently mined whichever project the
+shell was sitting in. All three commands now declare `-C` and install it first.
+
+**The CLI and the runtime could name different graphs.** The localizer resolves
+`:procedure-graph-id` through `get-config`, which is project-config aware; the
+CLI hardcoded `"default"`. A project setting the key would have had the agent
+guiding from one graph while `procedures list` reported another. Both now
+resolve the same key through one helper.
+
+**And the default itself was wrong.** `"default"` is shared, so seeding in two
+repos merged them into one graph inside the per-user database. The default is
+now `config/project-graph-id` — the project registry slug — wired as the
+schema's `:default-fn`, which is the single derivation point both sides read.
+Verified: same user, two projects, `brainyard-3aecf41a` and `proj-b-b6c1d466`,
+no bleed in either direction.
+
+`project-graph-id` resolves from `resolve-project-dir` / `resolve-working-dir`
+rather than `project-dir`, which reads `:dirs` through `get-config` — this runs
+INSIDE a `get-config` fallback, and a `:default-fn` that re-enters config
+resolution is a hazard not worth taking for what is just a path.
+
+**Migration:** anything seeded before this under `"default"` is still reachable
+with `--graph default`, and is worth re-seeding rather than migrating, since
+seeding is idempotent and cheap.
+
+**Also fixed here, and it had been broken since §10.1:** the five
+procedural-graph config keys were never registered in `core/feature.clj`, whose
+registry requires every schema key to be classified. `bb test` had been red
+since `27f1100` on three `feature-test` assertions, and running only the
+namespaces I judged affected never touched it. They now form the
+`:memory/procedure` feature — deliberately NOT `:requires :memory/graph`, since
+the procedural graph shares a database file with the entity graph and nothing
+else.

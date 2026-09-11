@@ -203,6 +203,41 @@
         (testing "and the probe is still cleared"
           (is (nil? (:last-procedure @(proto/get-bt-st-memory ag)))))))))
 
+(deftest drain-reads-the-configured-graph-id-test
+  ;; The funnel the whole feature rests on: the CLI and the runtime must name
+  ;; the same graph. They agree by BOTH resolving `:procedure-graph-id` — whose
+  ;; `:default-fn` is the project slug — rather than by each deriving a name.
+  ;; Two components computing the same key independently is how this feature
+  ;; has already produced two silent-inertness bugs.
+  (let [a (mem/procedure-upsert-node! *store* "g-custom" {:name "alpha$one" :kind :tool})
+        b (mem/procedure-upsert-node! *store* "g-custom" {:name "beta$two"  :kind :tool})]
+    (mem/procedure-upsert-edge! *store* "g-custom"
+                                {:src-id (:id a) :dst-id (:id b) :relation :precedes}))
+  (let [ag (stub-agent)]
+    (swap! (proto/get-bt-st-memory ag) assoc :last-procedure "alpha$one")
+    (with-config {:procedure-graph-id "g-custom"}
+      (fn []
+        (testing "guidance comes from the graph the config names"
+          (is (str/includes? (pn/drain-iteration-notice! ag (proto/get-bt-st-memory ag))
+                             "`alpha$one` —precedes→ `beta$two`")))))
+    (swap! (proto/get-bt-st-memory ag) assoc :last-procedure "alpha$one")
+    (with-config {:procedure-graph-id "g-other"}
+      (fn []
+        (testing "and a different graph id sees nothing — the id is not decorative"
+          (is (nil? (pn/drain-iteration-notice! ag (proto/get-bt-st-memory ag)))))))))
+
+(deftest procedure-graph-id-defaults-to-the-project-slug-test
+  (testing "the schema default is the project registry slug, not a shared constant"
+    ;; Two repos seeding into one \"default\" graph would let an unrelated
+    ;; project's tool order guide this one. The slug is <basename>-<8 hex of
+    ;; SHA-256(canonical path)>.
+    (let [slug (config/project-graph-id)]
+      (is (some? slug))
+      (is (not= "default" slug))
+      (is (re-matches #".+-[0-9a-f]{8}" slug))
+      (testing "and get-config resolves to exactly that, with no env/config override"
+        (is (= slug (config/get-config :procedure-graph-id)))))))
+
 (deftest drain-respects-the-gate-test
   (let [a (node! "edit$apply") b (node! "read-file")]
     (edge! a b :verifies))

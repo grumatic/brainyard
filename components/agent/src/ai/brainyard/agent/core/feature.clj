@@ -147,6 +147,22 @@
     :doc       "Typed entity/relationship graph + vector index layered over the
                 L1/L2/L3 FTS store as extra RRF recall signals."}
 
+   ;; Deliberately does NOT `:requires :memory/graph`. The procedural graph
+   ;; lives in its own tables (proc_nodes/proc_edges) and needs nothing from the
+   ;; entity graph — they share a database file and nothing else. It is under
+   ;; :memory because that is where the store is, not because it is a recall
+   ;; signal; it answers what-to-do-next rather than what-is, and never enters
+   ;; the RRF fusion.
+   :memory/procedure
+   {:title     "Procedural-graph guidance"
+    :family    :memory
+    :gate      :enable-procedure-guidance
+    :keys      [:procedure-graph-id :procedure-guidance-hops
+                :procedure-guidance-max-edges :procedure-guidance-max-chars]
+    :lifecycle :live
+    :doc       "Match the last procedure to a node and push its directed 2-hop
+                out-neighborhood into the next iteration's advisory notice."}
+
    :memory/project
    {:title     "Project memory"
     :family    :memory

@@ -43,7 +43,7 @@
 ;; Config Schema
 ;; ============================================================================
 
-(declare resolve-dirs user-config-dir default-allowed-dirs)
+(declare resolve-dirs user-config-dir default-allowed-dirs project-graph-id)
 
 (def env-unset
   "Sentinel an `:env-fn` returns when its environment variable is absent — so a
@@ -280,8 +280,9 @@
                                            (= "true" v) ::env-unset)
                                 :default false
                                 :doc "Procedural-graph guidance: at each iteration, match the last procedure (tool id / code:<lang> / Start) to a node in the procedural graph, read its DIRECTED 2-hop out-neighborhood, and push the resulting transitions as an advisory `:notices` line the model reads next. Answers what-to-do-next, as opposed to the context graph's what-is. Off by default; non-regressing (a Match miss emits nothing and runs no query, which with a sparse graph is the common case). Seed a graph with `by procedures build --from-trajectories`. Env: BY_ENABLE_PROCEDURE_GUIDANCE."}
-   :procedure-graph-id         {:type "string" :default "default"
-                                :doc "Which procedural graph to read (only when :enable-procedure-guidance). Named rather than implicit so a graph can later be exported, shared or rolled back without a migration. Env: BY_PROCEDURE_GRAPH_ID."
+   :procedure-graph-id         {:type "string"
+                                :default-fn #(project-graph-id)
+                                :doc "Which procedural graph to read/write (only when :enable-procedure-guidance). Defaults to THIS PROJECT'S registry slug (e.g. brainyard-3f9a1c2d), so two repos never merge their procedures into one graph — a procedural graph describes one codebase's tool order, and pooling them would let an unrelated project's transitions guide this one. Set it explicitly to share a graph across repos, or to pin a rolled-back one. A `:default-fn` rather than a static default BECAUSE both the CLI and the runtime localizer must derive it identically: they resolve through this one key, so they cannot drift. Env: BY_PROCEDURE_GRAPH_ID."
                                 :env-fn #(or (env/resolve-var "BY_PROCEDURE_GRAPH_ID") ::env-unset)}
    :procedure-guidance-hops    {:type "integer" :default 2
                                 :doc "Hop radius of the procedural out-neighborhood (clamped to 3 by the store). The paper uses h=2. Larger is NOT better: injecting the full graph instead of a localized subgraph measured 18.10 points WORSE than no graph at all on the benchmark closest to brainyard's task shape (ordered tool sequences with hard preconditions)."}
@@ -1022,6 +1023,37 @@
     {:user-dir    user-dir
      :project-dir project-dir
      :working-dir working-dir}))
+
+;; `core.projects` requires THIS namespace, so the dependency can only be taken
+;; at runtime — same shape as the `env-files` / `runtime` delays further down.
+(def ^:private !project-slug
+  (delay (requiring-resolve 'ai.brainyard.agent.core.projects/project-slug)))
+
+(defn project-graph-id
+  "Default procedural-graph id for the current project: its registry slug
+   (`<sanitized-basename>-<8 hex of SHA-256(canonical path)>`, e.g.
+   `brainyard-3f9a1c2d`).
+
+   Backs `:procedure-graph-id`'s `:default-fn`, which is the ONE place both the
+   CLI and the runtime localizer resolve the graph from. That single funnel is
+   the point: a procedural graph is keyed by a name, and the two sides deriving
+   that name differently would leave the agent guiding from one graph while
+   `by procedures list` reported another — the same class of silent divergence
+   that has already cost this feature two bugs.
+
+   Resolved from the pure path helpers rather than `project-dir`, which reads
+   `:dirs` through `get-config` — this runs INSIDE a `get-config` fallback, and
+   a `:default-fn` that re-enters config resolution is a hazard not worth
+   taking for a value that is just a path.
+
+   Returns nil when no path resolves; callers fall back to the literal
+   \"default\"."
+  []
+  (try
+    (some-> (@!project-slug (resolve-project-dir (resolve-working-dir)))
+            str/trim
+            not-empty)
+    (catch Exception _ nil)))
 
 (defn user-config-dir
   "Derive the user-level .brainyard/ config dir from a dirs map."

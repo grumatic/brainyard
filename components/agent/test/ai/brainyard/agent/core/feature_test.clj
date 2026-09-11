@@ -44,22 +44,22 @@
       "a quarantined key must not also be owned by a feature"))
 
 (deftest partition-counts-match-the-design
-  (testing "36 feature gates + 9 family gates + 110 knobs + 18 presentation + 14 ambient = 187"
+  (testing "37 feature gates + 9 family gates + 114 knobs + 18 presentation + 14 ambient = 192"
     (let [knobs (->> feat/all-features
                      (mapcat :keys)
                      (remove feat/presentation-key?)
                      count)
           pres  (->> feat/all-features (filter :presentation) (mapcat :keys) count)]
-      (is (= 36 (count feat/gate-keys)) "+1: :enable-script-bridge (exec/script-bridge)")
+      (is (= 37 (count feat/gate-keys)) "+1: :enable-procedure-guidance (memory/procedure)")
       (is (= 9 (count feat/family-gate-keys)) "one per capability family; :ui has none")
-      (is (= 110 knobs)
-          "+3 permission (:tool-approval-patterns :tool-allow-tools :tool-deny-tools), +3 environment (:env-allow :env-deny :env-vars)")
+      (is (= 114 knobs)
+          "+4 procedural graph (:procedure-graph-id :procedure-guidance-hops :procedure-guidance-max-edges :procedure-guidance-max-chars)")
       (is (= 18 pres) "+1: :enable-mouse (ui/mouse)")
       (is (= 14 (count feat/ambient-keys))
           "+1: :permission-timeout-ms, beside :permission-mode")
       (is (= 0 (count feat/unclassified-keys))
           "no schema key is currently unreadable")
-      (is (= 187 (count cfg/config-keys)))
+      (is (= 192 (count cfg/config-keys)))
       (testing "the partition still balances"
         ;; The real invariant behind the hardcoded numbers: every schema key
         ;; lands in exactly one bucket. Asserting the sum catches a
@@ -253,11 +253,11 @@
   (is (= (set feat/families) (set (map :family feat/all-features))))
   (is (= (count feat/feature-registry)
          (reduce + (map (comp count feat/family->features) feat/families))))
-  (testing "nine capability families hold 49 features — 36 gated, 13 ungated groupings"
+  (testing "nine capability families hold 50 features — 37 gated, 13 ungated groupings"
     (let [capability (remove :presentation feat/all-features)]
       (is (= 9 (count (disj (set feat/families) :ui))))
-      (is (= 49 (count capability)) "+1: :tools/environment")
-      (is (= 36 (count (filter :gate capability)))
+      (is (= 50 (count capability)) "+1: :memory/procedure")
+      (is (= 37 (count (filter :gate capability)))
           "every gated feature now has a real schema key")
       (is (= 13 (count (remove :gate capability)))
           "an ungated grouping exists so its knobs have a discoverable home;
@@ -290,7 +290,7 @@
   (let [v     (feat/family-view nil :memory)
         graph (first (filter #(= "memory/graph" (:feature %)) (:features v)))]
     (is (= "memory" (:family v)))
-    (is (= 6 (count (:features v))))
+    (is (= 7 (count (:features v))))  ;; +1: memory/procedure
     (is (= "enable-graph-memory" (:gate graph)))
     (is (= :startup (:lifecycle graph)))
     (is (= ["memory/consolidation"] (:implies graph)))
