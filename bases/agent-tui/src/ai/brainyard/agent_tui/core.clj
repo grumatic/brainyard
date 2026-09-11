@@ -2312,6 +2312,33 @@
                       {:session-id agent-session-id :label label})))))
         (sessions/session-list)))
 
+(defonce ^:private !parting-printed?
+  ;; Both exit routes end here and only one of them may print. `/quit` runs
+  ;; `stop!`, and the JVM shutdown hook then runs too; double-Ctrl-C and
+  ;; SIGTERM reach the hook alone. A latch is what lets the hook cover the
+  ;; second case without doubling the first.
+  (atom false))
+
+(defn print-parting!
+  "The parting line and resume hint, printed ONCE, on the shell.
+
+   Must run AFTER `layout/teardown!` — that is what leaves the alt screen and
+   replays the scrollback into the terminal's own history, so anything written
+   before it is discarded with the alternate buffer and anything written after
+   it lands where the user will still be looking.
+
+   Guarded on a real terminal: it is addressed to a person about to lose their
+   scrollback, and a `--serve` daemon has no one to read it.
+
+   `resumable` is snapshotted by the caller, because `resumable-tabs` needs the
+   agents still open to read their session ids."
+  [resumable]
+  (when (and (terminal/stdout-terminal?)
+             (compare-and-set! !parting-printed? false true))
+    (tui-session/emit! (str "\n" (ansi/muted "TUI session ended.")))
+    (when-let [hint (try (fmt/format-resume-hint resumable) (catch Throwable _ nil))]
+      (tui-session/emit! hint))))
+
 (defn stop!
   "Stop TUI session. Closes all sessions, detaches watches, tears down hooks,
    shuts down task manager and queue."
@@ -2418,10 +2445,7 @@
     ;; stays fully silent on stdout. The resume hint rides the same guard: it is
     ;; addressed to a person about to lose their scrollback, and a `--serve`
     ;; daemon has no one to read it.
-    (when (terminal/stdout-terminal?)
-      (tui-session/emit! (str "\n" (ansi/muted "TUI session ended.")))
-      (when-let [hint (try (fmt/format-resume-hint resumable) (catch Throwable _ nil))]
-        (tui-session/emit! hint)))
+    (print-parting! resumable)
     :ok))
 
 ;; ============================================================================
@@ -2618,9 +2642,17 @@
           use-raw? (and (not force-inline?) (layout/fullscreen?) (terminal/stdin-terminal?))
           reader   (when-not use-raw?
                      (BufferedReader. (InputStreamReader. System/in)))]
-      (let [cleanup-hook (Thread. ^Runnable (fn []
+      (let [hook-resumable (fn [] (try (resumable-tabs) (catch Throwable _ nil)))
+            cleanup-hook (Thread. ^Runnable (fn []
+                                              (let [resumable (hook-resumable)]
                                               ;; Double-Ctrl-C / SIGTERM / crash bypass `stop!`,
                                               ;; so this hook is the only teardown they get.
+                                              ;; Snapshot the resumable tabs FIRST, while the
+                                              ;; agents that hold the session ids are still open
+                                              ;; (see `resumable-tabs`). On the /quit path this
+                                              ;; reads empty — `stop!` has already closed them
+                                              ;; and already printed — and the latch inside
+                                              ;; `print-parting!` keeps that from printing twice.
                                               ;; Kill any detached task subprocesses first —
                                               ;; without this a `npm run dev`-style background
                                               ;; task is orphaned as a live OS process after the
@@ -2646,7 +2678,15 @@
                                               (try (tmux-side/uninstall!) (catch Exception _))
                                               (when use-raw?
                                                 (terminal/restore-cooked-mode!))
-                                              (layout/teardown!)))]
+                                              (layout/teardown!)
+                                              ;; AFTER teardown, so it lands on the shell rather
+                                              ;; than inside the alt screen that was just torn
+                                              ;; down. This is the only place a Ctrl-C exit can
+                                              ;; learn its session id: the session IS saved, and
+                                              ;; without this the id is unguessable and the user
+                                              ;; has to go hunting in `by sessions list`.
+                                              (try (print-parting! resumable)
+                                                   (catch Throwable _)))))]
         (.addShutdownHook (Runtime/getRuntime) cleanup-hook)
         (try
           (when use-raw? (terminal/set-raw-mode!))
