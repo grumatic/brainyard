@@ -91,6 +91,7 @@
             [ai.brainyard.agent.common.evoharness-agent]
             [ai.brainyard.agent.common.rag-agent]
             [ai.brainyard.agent.common.tsf-agent]
+            [ai.brainyard.agent.common.auth-agent]
             [ai.brainyard.agent.common.init-agent]
             ;; ACP-driven agent. Soft-coupled to ai.brainyard/acp-client via
             ;; requiring-resolve — consumers must add the dep at runtime if
