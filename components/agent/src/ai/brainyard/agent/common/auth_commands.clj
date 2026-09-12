@@ -74,8 +74,28 @@
   []
   (str/trim (or (System/getenv "BY_APP_REALM") "")))
 
-(defn- delegation []
-  (str/trim (or (System/getenv "BY_AUTH_DELEGATION") "")))
+(defn- delegation
+  "The handle authorising this agent, read FRESH on every call.
+
+   Read from a file, not from the environment, and that is the whole point. A
+   handle dies with the browser session it was minted from, and that session has
+   a thirty-minute idle timeout while this agent runs for hours — so the handle
+   an owner process was launched with goes stale, and nothing inside a running
+   process can change its own environment. Every call used to fail from then on,
+   permanently, and relaunching the session to fix it threw away the conversation.
+
+   Reading the file per call means someone pressing `Re-authorise` in the
+   workspace revives this agent before its next command. `BY_AUTH_DELEGATION` is
+   still honoured for a workspace that predates the file — it simply cannot be
+   revived."
+  []
+  (let [f (str/trim (or (System/getenv "BY_AUTH_DELEGATION_FILE") ""))
+        from-file (when-not (str/blank? f)
+                    (try
+                      (str/trim (slurp f))
+                      (catch Exception _ nil)))]
+    (or (not-empty from-file)
+        (str/trim (or (System/getenv "BY_AUTH_DELEGATION") "")))))
 
 (defn- encode ^String [v]
   (URLEncoder/encode (str v) (.name StandardCharsets/UTF_8)))
@@ -94,9 +114,10 @@
 
 (defn- no-delegation-error []
   {:error (str "This agent holds no delegation, so it cannot act for anyone. "
-               "BY_AUTH_DELEGATION is set on an owner process when the workspace launches it "
-               "with authentication on; a session started before authentication was turned on "
-               "carries none. Relaunch this session from the Auth section.")})
+               "One is given to an owner process when the workspace launches it with "
+               "authentication on; a session started before authentication was turned on "
+               "carries none. Open the Auth section and press Re-authorise — that hands this "
+               "session your authority without restarting it.")})
 
 (defn- unreachable-error [ex]
   {:error (str "The auth sidecar is not reachable at " (base-url) " (" (.getMessage ^Exception ex) "). "
@@ -129,7 +150,12 @@
               {:error (str "The auth sidecar returned " status ": "
                            (or (when (string? detail) detail)
                                (some-> body (subs 0 (min 300 (count (str body)))))
-                               "no detail"))}))
+                               "no detail")
+                           (when (= status 401)
+                             (str " — this usually means the delegation expired, which happens when the "
+                                  "browser session it came from idled out. Press Re-authorise in the "
+                                  "workspace's Auth section and ask again; this session keeps its "
+                                  "conversation.")))}))
           (catch Exception e
             (mulog/log ::auth-request-failed :url url :error (.getMessage e))
             (unreachable-error e)))))))
