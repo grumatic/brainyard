@@ -6,6 +6,7 @@
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.string :as str]
             [ai.brainyard.clj-sandbox.core.chat :as chat]
+            [ai.brainyard.clj-sandbox.core.sandbox :as sandbox]
             [ai.brainyard.clj-llm.interface :as clj-llm]))
 
 ;; ============================================================================
@@ -164,3 +165,63 @@
       (is (= 1 (:total-iterations result)))
       (is (= "answer: 3" (:answer result)))
       (is (= :final (:terminated-by result))))))
+
+;; ============================================================================
+;; System message assembly
+;; ============================================================================
+
+(defn- capture-system-message
+  "Run one completion and return the system message content the loop sent."
+  [& completion-opts]
+  (let [captured (atom nil)]
+    (with-redefs [clj-llm/chat-completion
+                  (fn [_lm messages & _]
+                    (reset! captured (:content (first (filter #(= "system" (:role %)) messages))))
+                    (mock-response "```clojure\n(FINAL \"done\")\n```"))
+                  clj-llm/extract-content (fn [r _] (-> r :choices first :message :content))]
+      (apply chat/completion "q" (first completion-opts) (rest completion-opts))
+      @captured)))
+
+(deftest context-access-docs-are-gated-on-the-accessors-existing-test
+  (testing "a nil context binds no accessors, so the section is omitted"
+    (let [content (capture-system-message nil)]
+      (is (string? content))
+      ;; create-sandbox builds the accessors `(when clean-context)` — with none,
+      ;; `(context-index)` answers "Could not resolve symbol", so documenting it
+      ;; is six paragraphs of misdirection.
+      (is (not (str/includes? content "Context Access")))
+      (is (not (str/includes? content "context-index")))))
+
+  (testing "a supplied context map binds them, so the section is included"
+    (let [content (capture-system-message {:rows [1 2 3]})]
+      (is (str/includes? content "Context Access"))
+      (is (str/includes? content "context-index"))))
+
+  (testing "a handed-in sandbox is asked, not this call's context arg"
+    ;; :context is nil here, but the sandbox already carries the accessors —
+    ;; the shape CoAct produces by calling update-context! on a reused sandbox.
+    (let [sb (sandbox/create-sandbox :context nil)]
+      (sandbox/update-context! sb {:rows [1 2 3]})
+      (is (str/includes? (capture-system-message nil :sandbox sb) "Context Access"))))
+
+  (testing "the Execution Model matches the sandbox's own interop level"
+    ;; chat.clj forwarded no :interop at all, so build-system-prompt fell to its
+    ;; :restricted default and a :full sandbox was told "only WHITELISTED classes
+    ;; resolve ... there is no import to add" about interop it actually had.
+    (let [restricted (capture-system-message nil)
+          full       (capture-system-message nil :interop :full)]
+      (is (str/includes? restricted "Limited interop"))
+      (is (not (str/includes? restricted "Full Java interop")))
+      (is (str/includes? full "Full Java interop"))
+      (is (not (str/includes? full "Limited interop")))))
+
+  (testing "a handed-in sandbox's interop wins over the call's opt"
+    ;; The opt is ignored for sandbox creation when :sandbox is supplied, so
+    ;; reading it rather than the sandbox would describe the wrong machine.
+    (let [full-sb (sandbox/create-sandbox :context nil :interop :full)]
+      (is (str/includes? (capture-system-message nil :sandbox full-sb)
+                         "Full Java interop"))))
+
+  (testing "the iteration budget the caller passed is what the model is told"
+    (is (str/includes? (capture-system-message nil :max-iterations 3)
+                       "Budget: 3 iterations"))))

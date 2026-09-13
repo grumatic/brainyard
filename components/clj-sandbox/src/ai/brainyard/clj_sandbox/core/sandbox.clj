@@ -667,6 +667,9 @@
                 eval-code call now uses its own per-eval writer>
       :history <atom of [{:code :result :output :error}]>}
 
+   Whether the context-* accessors ended up bound is NOT recorded here — ask
+   `context-accessors-bound?`, which reads the live env. See its docstring.
+
    Note: pre-Step-G this fn also accepted `:max-pending` and built a
    `:pending-evals` registry powering eval-code's soft-timeout-survives
    branch. That registry was unified into the agent task manager (see
@@ -1180,6 +1183,33 @@
   [sci-ctx sym val]
   (swap! (:env sci-ctx) assoc-in [:namespaces 'user sym]
          (sci/new-var sym val)))
+
+(defn bound-symbols
+  "The set of symbols currently resolvable in the sandbox's `user` namespace.
+
+   A prompt builder needs this because what a sandbox can DO is decided by its
+   caller, not by this component: `bash`, `read-file`, `write-file`, `grep` and
+   `usage$guide` are agent-registered tools passed in as `:bindings`, so a bare
+   `create-sandbox` binds none of them. Prompt text naming a tool the sandbox
+   does not have is an instruction the model cannot follow — it spends an
+   iteration discovering `Could not resolve symbol` instead."
+  [sandbox]
+  (set (keys (get-in @(:env @(:sci-ctx sandbox)) [:namespaces 'user]))))
+
+(defn context-accessors-bound?
+  "True when `context-index` & the other context-* accessors resolve in this
+   sandbox — i.e. when code may actually call them.
+
+   Read from the live env rather than recorded at creation, because creation is
+   not the only thing that decides it: `create-sandbox` binds the accessors only
+   `(when clean-context)`, but `update-context!` binds them unconditionally on
+   whatever sandbox it is handed — which is how the resume seed, created with no
+   `:context` at all, acquires them one turn later. A boolean stamped at create
+   time is therefore false on a sandbox where `(context-index)` works, and a
+   caller gating prompt text on it would withhold the docs for functions the
+   model can call. Derived at the read site, it cannot drift."
+  [sandbox]
+  (some? (get-in @(:env @(:sci-ctx sandbox)) [:namespaces 'user 'context-index])))
 
 (defn update-context!
   "Update the context variable and rebuild context-accessor bindings in a live sandbox.

@@ -125,30 +125,88 @@
     (is (false? (prompt/verbatim-lang? "bash")))))
 
 (deftest build-system-prompt-test
-  (testing "builds raw mode prompt with critical rules and context discovery"
-    (let [content (prompt/build-system-prompt :mode :raw)]
+  (testing "builds the prompt with critical rules and workflow"
+    (let [content (prompt/build-system-prompt)]
       (is (string? content))
       (is (str/includes? content "writing and executing code"))
       (is (str/includes? content "Critical Rules"))
-      (is (str/includes? content "Context & Functions"))
       (is (str/includes? content "Workflow"))))
 
-  (testing "builds structured mode prompt with FINAL rules"
-    (let [content (prompt/build-system-prompt :mode :structured)]
-      (is (str/includes? content "FINAL"))
-      (is (str/includes? content "REPL sandbox"))))
+  (testing "describes no context section when it carries neither directory nor briefing"
+    (let [content (prompt/build-system-prompt)]
+      (is (not (str/includes? content "Context & Functions"))
+          "a bare prompt must not point at sections it does not carry")
+      (is (not (str/includes? content "Context Briefing")))
+      (is (not (str/includes? content "usage$guide"))
+          "usage$guide is an agent-registered binding, absent from a standalone sandbox")))
+
+  (testing "describes the function directory only when one is supplied"
+    (let [content (prompt/build-system-prompt :function-directory "(foo [x])")]
+      (is (str/includes? content "Context & Functions"))
+      (is (str/includes? content "Function Directory"))
+      (is (str/includes? content "(foo [x])"))
+      (is (not (str/includes? content "Context Briefing")))
+      (is (str/includes? content "usage$guide"))))
+
+  (testing "describes the briefing only when the caller says it supplies one"
+    (let [content (prompt/build-system-prompt :briefing? true)]
+      (is (str/includes? content "Context Briefing"))
+      (is (not (str/includes? content "Function Directory")))))
+
+  (testing "a blank function directory counts as absent"
+    (let [content (prompt/build-system-prompt :function-directory "   ")]
+      (is (not (str/includes? content "Function Directory")))
+      (is (not (str/includes? content "Context & Functions")))))
+
+  (testing "states the caller's iteration budget"
+    (is (str/includes? (prompt/build-system-prompt :max-iterations 5)
+                       "Budget: 5 iterations"))
+    (is (str/includes? (prompt/build-system-prompt :max-iterations 1)
+                       "Budget: 1 iteration total")
+        "singular when the budget is one")
+    (is (str/includes? (prompt/build-system-prompt) "Budget: 20 iterations")
+        "default budget is stated too"))
 
   (testing "includes optional sections"
-    (let [content (prompt/build-system-prompt :mode :raw
-                                              :instruction "Do X"
+    (let [content (prompt/build-system-prompt :instruction "Do X"
                                               :agent-context "You are Y"
                                               :tool-context "Use Z")]
       (is (str/includes? content "Do X"))
       (is (str/includes? content "You are Y"))
       (is (str/includes? content "Use Z"))))
 
+  (testing "critical rules ask for the only fence this loop executes"
+    (let [content (prompt/build-system-prompt)]
+      (is (str/includes? content "```clojure fenced block"))
+      (is (str/includes? content "is ignored, not run"))))
+
+  (testing "states what actually ends the run, and that prose does not"
+    (let [content (prompt/build-system-prompt)]
+      ;; Measured on claude-code/opus: following the old "Rich markdown text
+      ;; ONLY, no code blocks" cost a whole round trip — the prose answer was
+      ;; bounced by handle-no-code-feedback and re-sent inside (FINAL …).
+      (is (not (str/includes? content "Rich markdown text ONLY")))
+      (is (str/includes? content "prose does NOT end it"))
+      (is (str/includes? content "(FINAL \"your answer\")"))
+      (is (str/includes? content "```markdown block"))
+      (is (str/includes? content "defer the FINAL by one iteration")
+          "split-code-at-final defers a FINAL that shares its block")))
+
+  (testing "names a caller-supplied tool only when the sandbox has it"
+    (let [bare   (prompt/build-system-prompt)
+          tooled (prompt/build-system-prompt
+                  :available '#{bash write-file list-plans query$llm})]
+      (doseq [t ["write-file" "list-plans" "query$llm" "/tmp/script.sh"]]
+        (is (not (str/includes? bare t))
+            (str t " is not bound in a bare sandbox"))
+        (is (str/includes? tooled t)
+            (str t " should be offered when bound)")))
+      (is (str/includes? bare "`bash` is not bound in this sandbox")
+          "the shell clause says so outright rather than going silent")
+      (is (str/includes? tooled "(bash :command") )))
+
   (testing "return-breakdown returns map with content and token-breakdown"
-    (let [result (prompt/build-system-prompt :mode :raw :return-breakdown? true)]
+    (let [result (prompt/build-system-prompt :return-breakdown? true)]
       (is (map? result))
       (is (string? (:content result)))
       (is (map? (:token-breakdown result)))
@@ -160,7 +218,14 @@
     (let [msg (prompt/build-initial-user-message "What is 2+2?")]
       (is (= "user" (:role msg)))
       (is (str/includes? (:content msg) "What is 2+2?"))
-      (is (str/includes? (:content msg) "Write code")))))
+      (is (str/includes? (:content msg) "Write Clojure code"))))
+
+  (testing "asks for the only fence this loop executes"
+    (let [content (:content (prompt/build-initial-user-message "q"))]
+      (is (str/includes? content "```clojure"))
+      (is (not (str/includes? content "```python"))
+          "extract-code-blocks matches clojure/clj only — a python fence is silently ignored")
+      (is (not (str/includes? content "```bash"))))))
 
 (deftest build-feedback-message-test
   (testing "builds feedback from successful eval"
@@ -184,3 +249,15 @@
 
 ;; Usage-guide content + registry moved to the agent component — coverage lives
 ;; in ai.brainyard.agent.core.usage-test and agent.common.commands-test.
+
+(deftest context-access-prompt-content-test
+  (testing "documents only what a standalone sandbox actually has"
+    (is (str/includes? prompt/context-access-prompt "context-index"))
+    (is (str/includes? prompt/context-access-prompt ":user-vars"))
+    ;; All agent constructs: the agent injects :agent-state into the context it
+    ;; passes and registers trajectory$search as a tool. A standalone loop has
+    ;; neither, and neither has previous turns to recall.
+    (is (not (str/includes? prompt/context-access-prompt ":agent-state")))
+    (is (not (str/includes? prompt/context-access-prompt "trajectory$search")))
+    (is (not (str/includes? prompt/context-access-prompt "Previous Turns")))
+    (is (not (str/includes? prompt/context-access-prompt "Recalled Memory")))))

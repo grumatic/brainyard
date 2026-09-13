@@ -3,7 +3,7 @@
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
 (ns ai.brainyard.clj-sandbox.core.chat
-  "RLM chat loop and rlm-query factory.
+  "The RLM chat loop and the rlm-query factory.
 
    Combines the main iteration loop (LLM ↔ sandbox conversation) and the
    factory function for `rlm-query` injected into the sandbox. The
@@ -12,7 +12,40 @@
    chat-completion wrappers and have nothing sandbox-specific about them.
 
    Main entry point: `completion`
-   Sub-call factory: `create-rlm-query-fn`"
+   Sub-call factory: `create-rlm-query-fn`
+
+   ## What this loop IS — and what it is not
+
+   It is the engine behind ONE production feature: `session$analytics :deep true`
+   → `analytics/analyze-trajectory :lm-config` → `pqs/score-pqs-llm` and the
+   three LLM waste detectors → `completion` (soft-resolved, so clj-sandbox stays
+   optional on the classpath). `:deep` defaults false; with it off nothing here
+   runs. Those two call sites pass `:max-iterations`, `:lm-config` and
+   `:usage-tracker` — nothing else.
+
+   It is NOT the agent runtime, and reading it as a second one is what let six
+   defects accumulate in the prompt it builds. CoAct assembles its own system
+   prompt through behavior-tree's `dspy-action` and carries its own rules and
+   footer; what it shares with this component is the SANDBOX (create/fork/eval/
+   update-bindings), `build-function-directory` / `build-function-index`,
+   `extract-all-code-blocks-multi` and `truncate-to-file`. It reaches nothing in
+   this namespace and nothing in the standalone half of `core.prompt`.
+
+   Two consequences worth keeping in view:
+
+   - The prompt is built for a BARE sandbox. `bash`, `read-file`, `write-file`,
+     `grep` and `usage$guide` are caller-supplied tools, absent unless passed as
+     `:bindings`; the builder is told what exists via `:available`
+     (`sandbox/bound-symbols`) and stays silent about the rest. Adding prompt
+     text here that names a tool without gating it re-introduces the bug.
+   - The options shaped for an agent caller — `:system-prompt`, `:initial-messages`,
+     `:initial-bindings`, `:sandbox`, `:max-depth`/`:sub-lm-config`,
+     `:enable-parallel`, `:compaction-opts`, `:budget-opts`, `:feedback-opts` —
+     plus `build-system-prompt`'s `:briefing?`, `:function-directory`,
+     `:instruction`, `:agent-context`, `:tool-context`, `:brainyard-instructions`
+     and `:return-breakdown?`, have no production caller today. They are
+     exercised only by tests. Treat them as a surface to shrink, not a contract
+     to extend."
   (:require [ai.brainyard.clj-sandbox.core.sandbox :as sandbox]
             [ai.brainyard.clj-sandbox.core.prompt :as prompt]
             [ai.brainyard.clj-sandbox.core.feedback :as feedback]
@@ -315,11 +348,16 @@
 ;; ============================================================================
 
 (defn completion
-  "Execute an RLM completion.
+  "Execute an RLM completion — the analytics deep-scoring loop.
 
-   The LLM writes Clojure code that runs in a sandboxed REPL.
-   Context is stored as a variable, not in the prompt. The LLM
-   inspects and processes it via code, calling FINAL when done.
+   The LLM writes Clojure code that runs in a sandboxed REPL. Context is stored
+   as a variable, not in the prompt: the LLM inspects and processes it via code,
+   then ends the run with `(FINAL …)` or a ```markdown block (see the Critical
+   Rules in `core.prompt` — plain prose does NOT end it).
+
+   Reached in production only from `session$analytics :deep true`; see the ns
+   docstring for the full path and for which options have no caller. Not the
+   agent runtime — CoAct builds its own prompt and shares only the sandbox.
 
    Args:
      query   - The user's question
@@ -336,7 +374,11 @@
      :on-iteration    - (fn [{:keys [iteration code output error]}]) callback
      :on-chunk        - Streaming callback for LLM responses
      :system-prompt   - Override system message (string or {:role \"system\" :content ...}).
-                         When nil, builds a lean system prompt with context-access docs.
+                         When nil (every production call), builds a lean system prompt
+                         sized to what the sandbox actually has: context-access docs only
+                         when the context-* accessors are bound, tool advice only for
+                         tools in `sandbox/bound-symbols`, and the Execution Model matched
+                         to the sandbox's own `:interop`.
      :bindings        - Additional sandbox bindings {symbol value}, passed to create-sandbox.
      :interop         - SCI interop level for a freshly created sandbox: :restricted
                         (default) or :full. Ignored when reusing a passed-in :sandbox.
@@ -388,26 +430,37 @@
              (sandbox/create-sandbox :context context
                                      :bindings (merge bindings initial-bindings llm-bindings)
                                      :interop interop))
-        ;; Standalone completion appends context-access docs (agent mode gets
-        ;; these via the context briefing, but standalone has no briefing)
+        ;; Standalone completion appends context-access docs — but ONLY when the
+        ;; sandbox actually HAS the accessors: `create-sandbox` builds them
+        ;; `(when clean-context)`, so on a nil-context call `(context-index)` and
+        ;; its five siblings are unbound and the section is pure misdirection.
+        ;; Asked of the live sandbox, not of the `context` arg: a caller may hand
+        ;; us a ready `:sandbox` whose accessors came from ITS context, or one
+        ;; that acquired them later via `update-context!`.
+        ;;
+        ;; The `nil?` and `:else` arms used to hold byte-identical copies of this
+        ;; — with string? and map? handled between them, `:else` means "non-nil,
+        ;; non-string, non-map", which is the nil behaviour anyway. One default now.
         system-msg (cond
-                     (nil? system-prompt)
-                     {:role "system"
-                      :content (str (prompt/build-system-prompt :mode :raw
-                                                                :max-iterations max-iterations)
-                                    "\n\n" prompt/context-access-prompt)}
-
-                     (string? system-prompt)
-                     {:role "system" :content system-prompt}
-
-                     (map? system-prompt)
-                     system-prompt
-
+                     (string? system-prompt) {:role "system" :content system-prompt}
+                     (map? system-prompt)    system-prompt
                      :else
                      {:role "system"
-                      :content (str (prompt/build-system-prompt :mode :raw
-                                                                :max-iterations max-iterations)
-                                    "\n\n" prompt/context-access-prompt)})
+                      :content (cond-> (prompt/build-system-prompt
+                                        :max-iterations max-iterations
+                                        :available (sandbox/bound-symbols sb)
+                                        ;; From the SANDBOX, not the `interop`
+                                        ;; opt: a passed-in `:sandbox` carries its
+                                        ;; own level and the opt is ignored for it.
+                                        ;; Forwarding nothing at all (the previous
+                                        ;; state) pinned the Execution Model to
+                                        ;; ":restricted", so a `:full` sandbox was
+                                        ;; told "only WHITELISTED classes resolve
+                                        ;; … there is no import to add" about
+                                        ;; interop it actually had.
+                                        :interop (:interop sb :restricted))
+                                 (sandbox/context-accessors-bound? sb)
+                                 (str "\n\n" prompt/context-access-prompt))})
         user-msg (prompt/build-initial-user-message query)
         ;; These three are `?`-suffixed on purpose. They were :enable-compaction,
         ;; :enable-structure-aware and :enable-budget — names that read like

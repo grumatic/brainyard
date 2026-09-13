@@ -13,9 +13,19 @@
    to inspect, decompose, and recursively call sub-LLMs — handling inputs
    100x beyond typical context windows.
 
-   Main entry point: `completion` — reached in production from the
-   analytics component's LLM-based detectors (`analytics$*` with `:deep`),
-   which resolve it dynamically so it stays optional on the classpath.
+   Main entry point: `completion` — reached in production from exactly one
+   place: `session$analytics :deep true` (the flag defaults false), which runs
+   `pqs/score-pqs-llm` and the three LLM waste detectors in the analytics
+   component. They soft-resolve `completion`, so clj-sandbox stays optional on
+   the classpath. There is no `analytics$*` command family — this docstring
+   named one for a while, which is the kind of drift the narrowed contract in
+   `core.chat`'s ns docstring exists to stop.
+
+   `completion` is NOT the agent runtime. CoAct builds its own system prompt via
+   behavior-tree's `dspy-action`; from here it uses the sandbox lifecycle,
+   `build-function-directory` / `build-function-index`,
+   `extract-all-code-blocks-multi` and `truncate-to-file` — nothing in
+   `core.chat` and nothing in the standalone half of `core.prompt`.
 
    There is deliberately NO BT integration here. `rlm-action` existed for
    years with no behavior tree referencing it, and it was the ONLY reason
@@ -252,13 +262,13 @@
 ;; ============================================================================
 
 (def build-system-prompt
-  "Build lean system prompt for both standalone and agent modes.
+  "Build the lean system prompt for the code-writing loop.
    See ai.brainyard.clj-sandbox.core.prompt/build-system-prompt for options."
   prompt/build-system-prompt)
 
 (def build-user-message
-  "Build the first user message for any mode (:structured or :raw).
-   Options: :mode, :briefing"
+  "Build the first user message for the code-writing loop.
+   Options: :briefing, :iterations-text"
   prompt/build-user-message)
 
 (def extract-markdown-block

@@ -885,3 +885,26 @@
 
         (testing "so a SECOND resume off that snapshot restores them again"
           (is (= 5 (count (sandbox-state/build-restore-bindings (:kept s))))))))))
+
+(deftest context-accessors-bound?-tracks-the-live-env-test
+  (testing "false on a sandbox created with no context"
+    (is (false? (sandbox/context-accessors-bound? (sandbox/create-sandbox :context nil)))))
+
+  (testing "true on a sandbox created with a context map"
+    (is (true? (sandbox/context-accessors-bound? (sandbox/create-sandbox :context {:a 1})))))
+
+  (testing "true after update-context! installs them on a context-less sandbox"
+    ;; The resume seed is created with no :context and acquires the accessors a
+    ;; turn later — CoAct's path. A boolean stamped at create time reads false
+    ;; here while (context-index) works, which is the drift this fn exists to
+    ;; avoid.
+    (let [sb (sandbox/create-sandbox :context nil)]
+      (is (false? (sandbox/context-accessors-bound? sb)))
+      (sandbox/update-context! sb {:rows [1 2 3]})
+      (is (true? (sandbox/context-accessors-bound? sb)))
+      (is (nil? (:error (sandbox/eval-code sb "(context-index)")))
+          "and they really do resolve")))
+
+  (testing "a fork inherits them with the parent's env"
+    (let [sb (sandbox/create-sandbox :context {:a 1})]
+      (is (true? (sandbox/context-accessors-bound? (sandbox/fork-sandbox sb)))))))

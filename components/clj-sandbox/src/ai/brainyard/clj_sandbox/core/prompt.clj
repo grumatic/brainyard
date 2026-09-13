@@ -3,14 +3,25 @@
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
 (ns ai.brainyard.clj-sandbox.core.prompt
-  "Prompt construction, code extraction, and system prompt assembly for RLM.
+  "Prompt construction, code extraction, and system prompt assembly.
+
+   Two halves with different audiences — worth knowing which one you are in:
+
+   - **Standalone RLM loop only** (`core.chat`, i.e. `session$analytics :deep`):
+     the sandbox environment description, the message builders, the context-access
+     section and `build-system-prompt`. Nothing outside this component calls them.
+     Every claim these make is gated on being true of the target sandbox — see
+     `build-system-prompt`'s `:available` / `:briefing?` and `context-discovery`.
+   - **Shared with CoAct**: `build-function-directory`, `build-function-index`,
+     `extract-all-code-blocks-multi` and the usage-guide registry below. The agent
+     assembles its own prompt and reaches only these.
 
    Contains:
-   - Shared sandbox environment description (standalone + agent mode)
-   - Standalone RLM system prompt builder
-   - Agent-mode system prompt builder (5-section structure)
+   - Sandbox environment description (standalone)
+   - System prompt builder (slim, section-assembled; standalone)
    - Code extraction from LLM responses
-   - Message building for the RLM conversation loop
+   - Message building for the RLM conversation loop (standalone)
+   - Function directory / index builders (shared)
    - Config helpers (model defaults)"
   (:require [clojure.string :as str]))
 
@@ -19,7 +30,7 @@
   100000)
 
 ;; ============================================================================
-;; Sandbox Environment — shared base + mode-specific rules
+;; Sandbox Environment
 ;; ============================================================================
 
 ;; --- Decomposed sandbox environment subsections ---
@@ -27,8 +38,11 @@
 
 (defn- execution-model-core
   "## Execution Model section. The interop bullet is conditional on the SCI
-   interop level (`:restricted` default vs `:full` in a container sandbox)."
-  [interop]
+   interop level (`:restricted` default vs `:full` in a container sandbox);
+   the escape-hatch clause is conditional on `bash` actually being bound, since
+   it is a caller-supplied tool and not part of the sandbox (see
+   `sandbox/bound-symbols`)."
+  [interop available]
   (str "## Execution Model
 Your code runs in a **sandboxed Clojure interpreter** (SCI). Each ```clojure block is evaluated,
 and the results (return value, stdout, or error) are sent back for the next iteration.
@@ -49,9 +63,10 @@ and the results (return value, stdout, or error) are sent back for the next iter
               "For what they are usually reached for: **date and time** via `java.time`, which is "
               "whitelisted and needs no interop — `(java.time.LocalDate/now)`, "
               "`(java.time.ZonedDateTime/now)`, formatted with "
-              "`java.time.format.DateTimeFormatter`; OS/JVM facts via `(sys-info)`; "
-              "working dir / allowed dirs via "
-              "`(context-get [:agent-state :config])`, environment and anything else via `(bash :command \"…\")`."))
+              "`java.time.format.DateTimeFormatter`; OS/JVM facts via `(sys-info)`"
+              (if (contains? available 'bash)
+                "; environment, working directory and anything else via `(bash :command \"…\")`."
+                ". There is no shell here — `bash` is not bound in this sandbox.")))
        "
 - **Timeout**: 30s per code block."))
 
@@ -117,33 +132,32 @@ and the results (return value, stdout, or error) are sent back for the next iter
 ;; ============================================================================
 
 (defn build-user-message
-  "Build the first user message for any mode.
+  "Build the first user message for the standalone RLM loop.
    Options:
-     :mode            - :raw (default), :structured
-     :briefing        - Pre-loaded context briefing (agent modes)
+     :briefing        - Pre-loaded context briefing (omitted by standalone completion)
      :iterations-text - Pre-formatted iteration history (caller-supplied)"
-  [query & {:keys [mode briefing iterations-text] :or {mode :raw}}]
+  [query & {:keys [briefing iterations-text]}]
   {:role "user"
    :content
-   (if (= mode :structured)
-     (str "Query: " query
-          "\n\n" briefing
-          "\nUse the function directory and data directory above. Call `(usage$guide :topic <name>)` (e.g. `(usage$guide :topic :plans)`, `(usage$guide :topic :llm-query)`) for detailed guides; `(usage$guide)` lists topics."
-          "\n\nWrite Clojure code to answer this query.")
-     ;; :raw (default — also used by standalone completion)
-     (str "Query: " query
-          (when briefing
-            (str "\n\n" briefing
-                 "\nSandbox functions and context accessors available per directory above."))
-          (when iterations-text
-            (str "\n\n" iterations-text))
-          "\n\nWrite code to accomplish this task. You can use ```clojure, ```python, or ```bash blocks."))})
+   (str "Query: " query
+        (when briefing
+          (str "\n\n" briefing
+               "\nSandbox functions and context accessors available per directory above."))
+        (when iterations-text
+          (str "\n\n" iterations-text))
+        ;; clojure/clj ONLY. This loop extracts with `extract-code-blocks` /
+        ;; `extract-all-code-blocks`, whose pattern is `(?:clojure|clj)` — a
+        ;; ```python or ```bash fence is not executed, not reported, just
+        ;; invisible, and the iteration comes back "No code blocks found".
+        ;; (The multi-language dispatcher is `extract-all-code-blocks-multi`,
+        ;; which the agent's code-eval path uses and this one does not.)
+        "\n\nWrite Clojure code to accomplish this task, in a ```clojure fenced block.")})
 
 (defn build-initial-user-message
   "Build the first user message containing the query.
    Backward-compatible wrapper around build-user-message."
   [query]
-  (build-user-message query :mode :raw))
+  (build-user-message query))
 
 (defn build-feedback-message
   "Build a user message from REPL evaluation results.
@@ -171,10 +185,23 @@ and the results (return value, stdout, or error) are sent back for the next iter
      :content (str/join "\n\n" parts)}))
 
 ;; ============================================================================
-;; Modular Prompt Sections (shared by standalone + agent modes)
+;; Modular Prompt Sections
 ;; ============================================================================
 
-;; Context access — exploration pattern + all accessor docs
+;; Context access — exploration pattern + all accessor docs.
+;;
+;; Append this ONLY when the sandbox actually has the accessors — ask
+;; `sandbox/context-accessors-bound?`. `create-sandbox` builds them
+;; `(when clean-context)`, so with a nil context NONE of the six functions below
+;; is bound — `(context-index)` answers "Could not resolve symbol", and this
+;; section is then six paragraphs instructing the model to start by calling
+;; something that does not exist.
+;;
+;; It also used to describe `## Previous Turns` / `## Recalled Memory` sections
+;; and `(trajectory$search …)`, and to demo `(context-get [:agent-state])`.
+;; All four are AGENT constructs — the agent injects `:agent-state` into the
+;; context it passes and registers `trajectory$search` as a tool — and the
+;; standalone loop this prompt serves has none of them.
 (def context-access-prompt
   "## Context Access (SELECTIVE RETRIEVAL)
 There is NO `context` variable. Context is available ONLY through these accessor functions.
@@ -204,102 +231,143 @@ There is NO `context` variable. Context is available ONLY through these accessor
 (pprint (context-get [:interesting-key 0 :field]))  ;; 4. Get specific data
 ```
 
-### Previous turns & memory
-Prior turns and recalled memory are delivered as prompt sections (`## Previous Turns`,
-`## Recalled Memory`) in your messages — read them there. They are **not** in the sandbox
-context, so `(context-get [:previous-turns])` / `[:recalled-memory]` return nothing.
-Older turns' operational detail (tool calls, code + outputs) is reachable via
-`(trajectory$search \"keyword\")`.
-
-`context-get` fetches the sandbox context — agent state and your saved vars:
-- `(context-get [:agent-state …])` — live agent state (iteration, runtime keys)
-- `(context-get [:user-vars])` — inventory of your own `def`s
+### What is in there
+The context is the data map your caller handed this loop — nothing else. Its top-level
+keys are whatever that map had, plus one synthetic key the sandbox adds:
+- `(context-get [:user-vars])` — inventory of your own `def`s, refreshed each call
 - `(context-search \"keyword\")` — search ALL context values recursively
 
 **CRITICAL — context accessor results contain quotes**: These return Clojure data with embedded strings.
 NEVER put the result directly into a FINAL string literal. Assign to a variable first:
 ```clojure
 ;; BAD — will cause EOF parse error:
-(FINAL (str \"State: \" (context-get [:agent-state])))
+(FINAL (str \"Rows: \" (context-get [:rows])))
 ;; OK — assign to variable, format for display:
-(def st (context-get [:agent-state]))
-(FINAL (str \"iteration: \" (:iteration st)))
+(def rows (context-get [:rows]))
+(FINAL (str \"row count: \" (count rows)))
 ```")
 
 ;; ============================================================================
 ;; Unified System Prompt Builder
 ;; ============================================================================
 
-;; --- Slim system prompt sections (for agent modes with context-briefing) ---
+;; --- Slim system prompt sections ---
+;;
+;; There was once a second, `:structured` phrasing of every section here, for an
+;; agent loop that terminated on `(FINAL …)`. That loop no longer builds its
+;; prompt from this namespace — CoAct carries its own rules/footer and assembles
+;; via behavior-tree's dspy-action — so the `:structured` half had no production
+;; caller (only a test), and had drifted into being wrong about the very agent it
+;; described: it mandated `(FINAL var)`, which CoAct explicitly disables. What
+;; remains is the one phrasing the standalone RLM loop actually uses.
 
-(def ^:private critical-rules-structured
-  "## Critical Rules
-- **FINAL must be ALONE** — no `def`, `let`, or other code alongside. Assign to var first, then `(FINAL var)`.
-- **Never embed fn calls in FINAL**: `(FINAL (str (pprint x)))` → EOF error. Always: `(def v (with-out-str (pprint x)))` then `(FINAL v)`.
-- **SCI string escaping**: Only `\\n`, `\\t`, `\\\"`, `\\\\` are valid. Regex in bash needs doubled backslashes: `\\\\d` not `\\d`. For complex scripts: write to /tmp/foo.sh via `write-file` and run with `(bash \"bash /tmp/foo.sh\")`.
-- **One ```clojure block per response**, then STOP. Think REPL: one expression, read result, next expression.
-- **No XML tool-calling**: Never use `<function_calls>`, `<invoke>`, `<parameter>` — only ```clojure fences.
-- **Alias once**: `(require '[clojure.string :as str])` — it persists across iterations and forks, so `str/join` works thereafter.
-- Call `(usage$guide :topic <name>)` for detailed guides on any capability — e.g. `(usage$guide :topic :plans)`, `(usage$guide :topic :skills)`, `(usage$guide :topic :llm-query)`, `(usage$guide :topic :files)`. `(usage$guide)` lists topics.")
+(defn- critical-rules
+  "The rules that actually govern this loop.
 
-(def ^:private critical-rules-raw
-  "## Critical Rules
-- **SCI string escaping**: Only `\\n`, `\\t`, `\\\"`, `\\\\` are valid. Regex in bash needs doubled backslashes: `\\\\d` not `\\d`. For complex scripts: write to /tmp/foo.sh via `write-file` and run with `(bash \"bash /tmp/foo.sh\")`.
-- **One code block per response**: brief reasoning + ONE fenced block (```clojure, ```bash, or ```python). Wait for feedback.
-- **Final answer**: Rich markdown text ONLY, no code blocks. Or call `(FINAL \"answer\")` in Clojure.
+   The termination bullet is the one that was measured wrong. It used to read
+   \"Final answer: Rich markdown text ONLY, no code blocks\" — but prose with no
+   fence reaches `chat/handle-no-code-feedback`, which bounces it with \"No code
+   blocks found in your response.\" Observed live on claude-code/opus: a correct,
+   complete answer at iteration 2 was rejected and re-sent verbatim inside
+   `(FINAL …)` at iteration 3, so following the rule as written cost a whole
+   round trip on every free-form query. The two things that DO terminate are
+   `(FINAL …)` (`handle-code-evaluation`) and a ```markdown/```md/```text block
+   in a response carrying no clojure fence (`handle-no-code-blocks` →
+   `extract-markdown-block`).
+
+   The FINAL-must-be-alone clause is `sandbox/split-code-at-final`: expressions
+   before a FINAL in the same block make `final-stripped?` true, the pre-FINAL
+   code is evaluated, and the FINAL is deferred to the next iteration with a
+   NOTE. That is another silent iteration, and the rule was only ever stated in
+   the `:structured` text that no caller used.
+
+   The script bullet is gated because `write-file` and `bash` are
+   caller-supplied tools; a bare sandbox binds neither."
+  [available]
+  (let [script? (and (contains? available 'write-file) (contains? available 'bash))]
+    (str "## Critical Rules
+- **SCI string escaping**: Only `\\n`, `\\t`, `\\\"`, `\\\\` are valid. Regex in a shell string needs doubled backslashes: `\\\\d` not `\\d`."
+         (when script?
+           " For complex scripts: write to /tmp/foo.sh via `write-file` and run with `(bash \"bash /tmp/foo.sh\")`.")
+         "
+- **One code block per response**: brief reasoning + ONE ```clojure fenced block. Wait for feedback. Only clojure/clj fences are executed — a ```bash or ```python fence is ignored, not run.
+- **Ending the run — prose does NOT end it.** A response with no fenced block is bounced back asking for one. Finish in exactly one of two ways:
+  1. `(FINAL \"your answer\")` **alone** in a ```clojure block. Other expressions in the same block defer the FINAL by one iteration — assign first, then `(FINAL v)` in the NEXT block.
+  2. a ```markdown block holding the whole answer, in a response with no clojure block.
 - **No XML tool-calling**: Never use `<function_calls>`, `<invoke>`, `<parameter>` — only fenced code blocks.
-- **Alias once**: `(require '[clojure.string :as str])` — it persists across iterations and forks, so `str/join` works thereafter.
-- Call `(usage$guide :topic <name>)` for detailed guides on any capability — e.g. `(usage$guide :topic :plans)`, `(usage$guide :topic :skills)`, `(usage$guide :topic :llm-query)`, `(usage$guide :topic :files)`. `(usage$guide)` lists topics.")
+- **Alias once**: `(require '[clojure.string :as str])` — it persists across iterations and forks, so `str/join` works thereafter.")))
 
-(def ^:private context-discovery
-  "## Context & Functions
-The **Function Directory** below lists all sandbox functions grouped by category (signatures).
-Your first user message contains a **Context Briefing** with:
-- **Data Directory** — what's accessible via `context-get` (agent state, your saved vars). Previous turns & recalled memory arrive as their own prompt sections, not `context-get`.
-- **Active State** — tool/skill/MCP counts, in-progress plans, pending todos
-- **Instructions** — project and user instructions
+(def ^:private usage-guide-pointer
+  "Appended to the rules ONLY when this prompt carries agent affordances.
+   `usage$guide` is an agent-registered tool auto-bound into the sandbox; a
+   standalone `completion` has no agent, so the binding is absent and the
+   bullet was pointing at a function that would throw."
+  "\n- Call `(usage$guide :topic <name>)` for detailed guides on any capability — e.g. `(usage$guide :topic :plans)`, `(usage$guide :topic :skills)`, `(usage$guide :topic :llm-query)`, `(usage$guide :topic :files)`. `(usage$guide)` lists topics.")
 
-Start working from the function directory and briefing. Call `(usage$guide :topic <name>)` for detailed usage guides; `(usage$guide)` (no args) lists all available topics.")
+(defn- context-discovery
+  "Describe ONLY the context sections this prompt actually carries.
+
+   Both claims are conditional, and both used to be stated unconditionally:
+   `## Function Directory` is emitted solely when `:function-directory` is
+   supplied, and the briefing lives in a DIFFERENT message that this builder
+   never sees. The standalone loop — the only live caller — passes neither, so
+   its system prompt was telling the model to start from two sections that are
+   not in its context. Returns nil when there is nothing present to describe,
+   so the section is dropped rather than lying about it."
+  [{:keys [function-directory? briefing?]}]
+  (when (or function-directory? briefing?)
+    (str "## Context & Functions\n"
+         (when function-directory?
+           "The **Function Directory** below lists all sandbox functions grouped by category (signatures).\n")
+         (when briefing?
+           (str "Your first user message contains a **Context Briefing** with:\n"
+                "- **Data Directory** — what's accessible via `context-get` (agent state, your saved vars). Previous turns & recalled memory arrive as their own prompt sections, not `context-get`.\n"
+                "- **Active State** — tool/skill/MCP counts, in-progress plans, pending todos\n"
+                "- **Instructions** — project and user instructions\n"))
+         "\nStart working from "
+         (cond
+           (and function-directory? briefing?) "the function directory and briefing"
+           function-directory?                 "the function directory"
+           :else                               "the briefing")
+         ". Call `(usage$guide :topic <name>)` for detailed usage guides; `(usage$guide)` (no args) lists all available topics.")))
 
 (defn- condensed-footer
-  "Condensed footer for slim system prompt."
-  [mode]
-  (if (= mode :raw)
-    "## Workflow
-1. Read query + context briefing. On `[CONTINUATION]`: check `(keys (ns-publics 'user))` and `(list-plans :status :in-progress)`, resume.
+  "Condensed footer for the slim system prompt.
+
+   `max-iterations` is the caller's real loop limit. It was accepted by
+   `build-system-prompt`, defaulted, and documented as \"Loop limit\" — and then
+   referenced nowhere, so a caller running a 5-iteration budget stated it to
+   nobody and the model paced itself against a limit it could not see.
+
+   The workflow and efficiency bullets name tools the CALLER supplies, not the
+   sandbox: `list-plans`, `bash` and `query$llm` are unbound in a bare
+   `create-sandbox`. Each is gated on being present, for the same reason as the
+   rules above — advice you cannot act on is worse than no advice."
+  [max-iterations available briefing?]
+  (str "## Workflow
+1. Read the query"
+       (when briefing? " + context briefing")
+       ". On `[CONTINUATION]`: check `(keys (ns-publics 'user))`"
+       (when (contains? available 'list-plans)
+         " and `(list-plans :status :in-progress)`")
+       ", resume.
 2. **Reuse previous findings**: When a question relates to a previous turn, use the data from Conversation History — don't re-search or re-fetch.
 3. Write reasoning + ONE code block. Wait for feedback.
-4. Read feedback. Need more → another code block. Have everything → final answer (text only, no code).
+4. Read feedback. Need more → another code block. Have everything → finish it the way `## Critical Rules` describes.
 
 ## Answer Format
 - Rich markdown (headers, bullets, tables). Never raw data dumps.
 - If results already contain the answer, write it immediately — don't re-fetch.
 
 ## Efficiency
+- **Budget: " max-iterations " iteration" (when (not= 1 max-iterations) "s")
+       " total.** The loop stops there whether or not you have an answer — spend them on the question, not on re-checking.
 - Simple questions: answer in iteration 1.
-- `def` intermediate results — re-fetching wastes iterations.
-- Batch CLI workflows into `/tmp/script.sh`.
-- For large data: use `query$llm :prompts` (chunk → batch → aggregate)."
-
-    ;; :structured
-    "## Workflow
-1. On `[CONTINUATION]`: sandbox variables alive — `(keys (ns-publics 'user))`, `(list-plans :status :in-progress)`, resume.
-2. Briefing is pre-loaded — start working directly. Use `context-get`/`context-search` only when you need details beyond the briefing.
-3. Earlier-turn data lives in the `## Previous Turns` prompt section (and `(trajectory$search …)` for older operational detail) — not `context-get`.
-4. **Reuse previous findings**: When a question relates to a previous turn, use the data from Conversation History — don't re-search or re-fetch.
-5. `(pprint result)` on tool results before processing.
-6. Call FINAL as soon as you have the answer.
-
-## Answer Format
-- **Never return raw maps, EDN, or JSON.** Format as rich markdown.
-- Build answer in var → `(println answer)` to verify → `(FINAL answer)`.
-- For complex markdown: use a ```markdown block instead of FINAL.
-
-## Efficiency
-- Simple questions: FINAL in iteration 1 — no tools needed.
-- Prefer `bash` over `task$run :job-type :bash` for short commands. Batch into `/tmp/script.sh` for multi-step.
-- `def` intermediate results. Briefing pre-loads tools/skills — don't re-list.
-- For large data: MapReduce with `query$llm :prompts`."))
+- `def` intermediate results — re-fetching wastes iterations."
+       (when (contains? available 'bash)
+         "\n- Batch CLI workflows into `/tmp/script.sh`.")
+       (when (contains? available 'query$llm)
+         "\n- For large data: use `query$llm :prompts` (chunk → batch → aggregate).")))
 
 (defn- format-brainyard-instructions
   "Format a {:user-instructions :project-instructions} map as a markdown
@@ -316,57 +384,65 @@ Start working from the function directory and briefing. Call `(usage$guide :topi
       (str/join "\n\n" parts))))
 
 (defn build-system-prompt
-  "Build a lean system prompt (~1000-1500 tokens) for both standalone and agent modes.
+  "Build a lean system prompt (~1000-1500 tokens) for the code-writing loop.
 
    Sections:
    1) Role + execution model
    2) Critical rules (FINAL, SCI, one-block, no-XML)
-   3) Context discovery (function directory lives in this prompt, data map in briefing)
+   3) Context discovery — emitted only when this prompt actually carries a
+      function directory or its caller supplies a briefing (see context-discovery)
    4) Function directory (compact signatures, when :function-directory is provided)
    5) Brainyard instructions (when :brainyard-instructions is provided)
-   6) Condensed footer (workflow, answer format, efficiency)
+   6) Condensed footer (workflow, answer format, efficiency, iteration budget)
    7) Optional: instruction, agent-context, tool-context
 
-   Detailed guides are available on-demand via `(usage$guide :topic <name>)` in the sandbox.
-
    Options:
-     :mode                   - :structured or :raw (default)
-     :max-iterations         - Loop limit (default 20)
+     :max-iterations         - Loop limit (default 20). Stated to the model in the footer.
      :instruction            - Agent-specific instructions
      :agent-context          - Agent behavioral context
      :tool-context           - Tool usage guide
+     :available              - Set of symbols actually bound in the target sandbox
+                               (`sandbox/bound-symbols`). Prompt text that names a
+                               caller-supplied tool — `bash`, `write-file`, `list-plans`,
+                               `query$llm` — is emitted only when that tool is in the set,
+                               since a bare sandbox binds none of them and an instruction
+                               the model cannot follow costs an iteration. Default #{}.
      :function-directory     - Compact function signatures string (from build-function-directory).
                                Rendered as a '## Function Directory' section when non-blank.
+     :briefing?              - True when the caller puts a Context Briefing in the first
+                               USER message (build-user-message :briefing). This builder
+                               cannot see that message, so it has to be told; default false.
      :brainyard-instructions - Map {:user-instructions :project-instructions} loaded
                                via config/load-brainyard-instructions. Rendered as a
                                '## Brainyard Instructions' section when either side is non-blank.
      :interop                - SCI interop level (:restricted default | :full). Controls the
                                interop bullet in the Execution Model section.
      :return-breakdown?      - When true, returns {:content str :token-breakdown map}"
-  [& {:keys [mode max-iterations instruction agent-context tool-context
-             function-directory brainyard-instructions interop return-breakdown?]
-      :or {mode :raw max-iterations 20 interop :restricted}}]
+  [& {:keys [max-iterations instruction agent-context tool-context available
+             function-directory briefing? brainyard-instructions interop return-breakdown?]
+      :or {max-iterations 20 interop :restricted available #{}}}]
   (let [brainyard-section (when brainyard-instructions
                             (format-brainyard-instructions brainyard-instructions))
+        function-directory? (and function-directory
+                                 (not (str/blank? function-directory)))
+        ;; `usage$guide` is an agent-registered binding; the same two inputs that
+        ;; say "an agent assembled this prompt" are what say it will resolve.
+        agent-affordances? (boolean (or function-directory? briefing?))
+        discovery (context-discovery {:function-directory? function-directory?
+                                      :briefing? briefing?})
         sections
         (cond->
          {:role-and-execution
-          (str (if (= mode :raw)
-                 "You are an AI agent that accomplishes tasks by writing and executing code."
-                 "You are an AI agent that answers queries by writing Clojure code in a REPL sandbox.")
-               "\n\n" (execution-model-core interop))
+          (str "You are an AI agent that accomplishes tasks by writing and executing code."
+               "\n\n" (execution-model-core interop available))
           :critical-rules
-          (if (= mode :raw)
-            critical-rules-raw
-            critical-rules-structured)
-          :context-discovery context-discovery
-          :footer (condensed-footer mode)}
-          (and function-directory
-               (not (str/blank? function-directory)))
-          (assoc :function-directory
-                 (str "## Function Directory\n" function-directory))
-          brainyard-section
-          (assoc :brainyard-instructions brainyard-section)
+          (cond-> (critical-rules available)
+            agent-affordances? (str usage-guide-pointer))
+          :footer (condensed-footer max-iterations available briefing?)}
+          discovery           (assoc :context-discovery discovery)
+          function-directory? (assoc :function-directory
+                                     (str "## Function Directory\n" function-directory))
+          brainyard-section   (assoc :brainyard-instructions brainyard-section)
           instruction    (assoc :instruction (str "## Instructions\n" instruction))
           agent-context  (assoc :agent-context (str "## Agent Context\n" agent-context))
           tool-context   (assoc :tool-context (str "## Tool Usage Guide\n" tool-context)))
@@ -381,7 +457,7 @@ Start working from the function directory and briefing. Call `(usage$guide :topi
       content)))
 
 ;; ============================================================================
-;; CodeAct Prompt Helpers (raw mode)
+;; CodeAct Prompt Helpers
 ;; ============================================================================
 
 (def ^:private category-order
