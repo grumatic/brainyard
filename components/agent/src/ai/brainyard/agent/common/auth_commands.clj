@@ -23,14 +23,28 @@
    console calls the same routes. A second implementation here would drift from
    the one the operator is looking at.
 
-   CREDENTIAL. Every call carries `BY_AUTH_DELEGATION` and nothing else. An
-   owner process is handed `AUTH_API_URL` and that handle — deliberately not the
-   sidecar's internal token, which can resolve any session. The handle is bound
-   to one session and one project and dies with either, so this agent cannot act
-   for anyone but the user who launched it, and cannot touch another project.
-   The bound is enforced in the sidecar, not in the instruction above it: an
-   injected 'make me an admin of another realm' meets the same refusal the user
-   would.
+   CREDENTIAL, and there are two because there are two kinds of console.
+
+   SIGNED-IN CONSOLE: every call carries `BY_AUTH_DELEGATION` and nothing else.
+   An owner process is handed `AUTH_API_URL` and that handle — deliberately not
+   the sidecar's internal token, which can resolve any session. The handle is
+   bound to one session and one project and dies with either, so this agent
+   cannot act for anyone but the user who launched it, and cannot touch another
+   project. The bound is enforced in the sidecar, not in the instruction above
+   it: an injected 'make me an admin of another realm' meets the same refusal the
+   user would.
+
+   CONSOLE WITH NO SIGN-IN: there is no session, so there is no handle, and this
+   whole family used to refuse — which was wrong, because whether the CONSOLE
+   authenticates says nothing about whether the APPLICATION being built has
+   users. The workspace hands such a launch `BY_AUTH_OPERATOR` instead: a token
+   minted by the desktop, honoured by the sidecar only while it was itself
+   started for a console with no sign-in, and retired the moment one is turned
+   on. Holding it means 'the operator asked for this', which is the same
+   authority every other section has in that mode.
+
+   Never both. The two are separate tokens on purpose — an agent given the
+   operator token must not thereby gain a delegation's powers, or the reverse.
 
    NO COMMAND HERE WRITES THE ARTIFACT. `.brainyard/auth/realm.edn` is an
    ordinary EDN file in the project tree, like `tools/`, `hooks/` and `fsm/`, so
@@ -40,8 +54,8 @@
    in a third language for one small file.
 
    Every command returns `{:error \"...\"}` rather than throwing when the
-   sidecar is unreachable, so the agent can say authentication is off in this
-   workspace instead of failing the turn.
+   sidecar is unreachable, so the agent can say the sidecar is not running
+   instead of failing the turn.
 
    Design: brainyard-playground-apps/docs/design/app-auth-section-plan.md §6."
   (:require [ai.brainyard.agent.core.tool :refer [defcommand]]
@@ -97,6 +111,16 @@
     (or (not-empty from-file)
         (str/trim (or (System/getenv "BY_AUTH_DELEGATION") "")))))
 
+(defn- operator-token
+  "The operator authority, when this workspace's console has no sign-in.
+
+   Read from the environment rather than from a file, unlike the delegation
+   handle, and the difference is the reason the file exists: a handle dies with a
+   browser session and has to be replaceable under a running agent. This token
+   has no session behind it, so it lives exactly as long as the launch does."
+  []
+  (str/trim (or (System/getenv "BY_AUTH_OPERATOR") "")))
+
 (defn- encode ^String [v]
   (URLEncoder/encode (str v) (.name StandardCharsets/UTF_8)))
 
@@ -112,30 +136,48 @@
     (json/read-str (str body) :key-fn keyword)
     (catch Exception _ nil)))
 
-(defn- no-delegation-error []
-  {:error (str "This agent holds no delegation, so it cannot act for anyone. "
-               "One is given to an owner process when the workspace launches it with "
-               "authentication on; a session started before authentication was turned on "
-               "carries none. Open the Auth section and press Re-authorise — that hands this "
-               "session your authority without restarting it.")})
+(defn- no-credential-error []
+  {:error (str "This agent holds neither a delegation nor the operator authority, so it cannot act. "
+               "On a console that signs you in, an owner process is given a delegation at launch and a "
+               "session started before authentication was turned on carries none — open the Auth section "
+               "and press Re-authorise, which hands this session your authority without restarting it. "
+               "On a console with no sign-in, the authority comes from the desktop instead: open the Auth "
+               "section so it starts the auth sidecar, then start a new Auth session.")})
 
 (defn- unreachable-error [ex]
   {:error (str "The auth sidecar is not reachable at " (base-url) " (" (.getMessage ^Exception ex) "). "
-               "Authentication may be off in this workspace, or the sidecar may be stopped — "
-               "check the desktop's Backend tab. Nothing was read or written.")})
+               "It is shared by the whole desktop and runs whether or not this console signs anyone in, "
+               "so this means the process is stopped rather than that authentication is off — opening the "
+               "Auth section starts it, and the desktop's Backend tab has its row and its log. "
+               "Nothing was read or written.")})
+
+(defn- credential
+  "The header authorising this call, or nil when this agent holds nothing.
+
+   The delegation wins when both are present. That ordering is deliberate: a
+   delegation says WHICH USER is asking and is checked against their roles, while
+   the operator token only says the request came from the machine — so the more
+   specific authority is the one to present, and falling back would quietly
+   widen what an agent can do."
+  []
+  (let [handle (delegation)]
+    (if-not (str/blank? handle)
+      {"x-by-delegation" handle}
+      (let [op (operator-token)]
+        (when-not (str/blank? op) {"x-by-operator" op})))))
 
 (defn- request
-  "One call to the sidecar, as the delegating user. Never throws."
+  "One call to the sidecar, as the delegating user or as the operator. Never throws."
   [method path {:keys [body timeout-ms] :or {timeout-ms 60000}}]
-  (let [handle (delegation)]
-    (if (str/blank? handle)
-      (no-delegation-error)
+  (let [creds (credential)]
+    (if (nil? creds)
+      (no-credential-error)
       (let [url  (str (base-url) path)
             opts (cond-> {:as :string
                           :throw-exceptions false
                           :timeout-ms timeout-ms
                           :connect-timeout-ms 5000
-                          :headers {"x-by-delegation" handle}}
+                          :headers creds}
                    body (assoc :body (json/write-str body) :content-type :json))]
         (try
           (let [{:keys [status body]} (case method
@@ -152,10 +194,18 @@
                                (some-> body (subs 0 (min 300 (count (str body)))))
                                "no detail")
                            (when (= status 401)
-                             (str " — this usually means the delegation expired, which happens when the "
-                                  "browser session it came from idled out. Press Re-authorise in the "
-                                  "workspace's Auth section and ask again; this session keeps its "
-                                  "conversation.")))}))
+                             ;; Which 401 this is depends on which credential was sent, and the two
+                             ;; have opposite fixes — so the hint asks the headers rather than guessing.
+                             (if (contains? creds "x-by-delegation")
+                               (str " — this usually means the delegation expired, which happens when the "
+                                    "browser session it came from idled out. Press Re-authorise in the "
+                                    "workspace's Auth section and ask again; this session keeps its "
+                                    "conversation.")
+                               (str " — this usually means the operator authority this session was launched "
+                                    "with is not the one the sidecar holds now, which is what happens when "
+                                    "the console's own authentication is turned on. Start a new Auth "
+                                    "session: with sign-in on, authority comes from a signed-in user "
+                                    "rather than from reaching the machine."))))}))
           (catch Exception e
             (mulog/log ::auth-request-failed :url url :error (.getMessage e))
             (unreachable-error e)))))))
