@@ -76,7 +76,9 @@ is observed *between* nodes, not mid-node.
 
 st-memory is the per-iteration mutable surface the reasoning loops read
 and write; its layering semantics are specified in
-[memory-and-context](memory-and-context.md).
+[memory-and-context](memory-and-context.md). What is known about the
+individual keys on it — lifetime, writers, persistability — is declared
+under §8 (CR-BT-25).
 
 ---
 
@@ -117,6 +119,20 @@ bridge from control flow into reasoning.
 
 ---
 
+## 8. Declared context keys
+
+| ID | Contract | Status | Source |
+|---|---|---|---|
+| CR-BT-25 | A context key MAY be declared with `:doc`, `:schema`, `:writers`, `:lifetime` (`:session`/`:turn`/`:iteration`), `:persist?` and `:opaque?`. The context map MUST remain open — an undeclared key MUST be legal and unchecked. An `:opaque?` key MUST NOT be `:persist? true`. Every `:writers` symbol and `:schema` keyword MUST resolve, and `:lifetime :iteration` MUST equal exactly the set the per-iteration reset clears. | Implemented | `agent/core/bt_context.clj` |
+
+Declaration only — nothing validates, gates, or derives from it at runtime yet.
+`:writers` is plural because the source says single ownership is a fiction:
+`:display-stage` has ten writers, `:answer` eight, `:iterations` seven. Design:
+[bt-context-schema-design.md](../design/bt-context-schema-design.md) §3.1-§3.2,
+§5.2.1.
+
+---
+
 ## Gaps & candidate TODOs (this spec)
 
 - **CR-BT-08b — `:parallel` is uncancellable and untraced.** No
@@ -141,11 +157,14 @@ bridge from control flow into reasoning.
   **Phase 1 has landed** — CR-BT-26, CR-BT-27 and CR-BT-32 above close the
   DSPy boundary, and turning that check on found three pre-existing drifts in
   `::iterations` (design doc §3.6.1). The remaining gap is the bus itself, and
-  the design doc's own ordering was revised once Phase 1 shipped (§5.1): the
-  next step is **CR-BT-25**, the context-key registry, because `:lifetime` /
-  `:persist?` are the one missing fact behind three separately hand-maintained
-  lists (`reset-st-memory!`, `context-budget`'s drop set, and what `--resume`
-  can restore). CR-BT-28..31 (per-node `:requires`/`:provides`, the `build-bt`
+  the design doc's own ordering was revised once Phase 1 shipped (§5.1), which
+  promoted **CR-BT-25** — the context-key registry — to next, because
+  `:lifetime` / `:persist?` are the one missing fact behind three separately
+  hand-maintained lists (`reset-st-memory!`, `context-budget`'s drop set, and
+  what `--resume` can restore). **CR-BT-25 has since landed**:
+  54 keys declared, 21 deliberately not, every claim pinned against the source
+  by test (§8). It is declaration-only — the consumers that would make those
+  three lists derived are still to come. CR-BT-28..31 (per-node `:requires`/`:provides`, the `build-bt`
   dataflow fold, derived `:dirty-keys`) are demoted, not dropped — Phase 1
   already catches a missing input at the call, so their remaining unique value
   is a key missing on a path reaching no dspy node. *(High value / medium

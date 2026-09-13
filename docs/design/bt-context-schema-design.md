@@ -3,9 +3,10 @@
 *Area code `BT` (extends [specs/behavior-tree.md](../specs/behavior-tree.md)).
 Proposes giving the behavior tree's shared context — the `st-memory` atom — the
 same declared, checkable contract the tree itself already has. Status:
-**Phase 1 shipped** (CR-BT-26, CR-BT-27, CR-BT-32 — validation at the DSPy
-boundary); Phases 0, 2 and 3 remain proposal, **re-ordered in light of what
-Phase 1 turned out to cover — see §5.1**. New contracts are numbered
+**Phases 1 and 0 shipped** (CR-BT-26, CR-BT-27, CR-BT-32 — validation at the
+DSPy boundary; CR-BT-25 — the context-key registry); Phases 2 and 3 remain
+proposal, **re-ordered in light of what Phase 1 turned out to cover — see
+§5.1**. New contracts are numbered
 **CR-BT-25+** (CR-BT-01..24 are taken by the existing spec; CR-BT-32 was added
 on top when Phase 1 landed).*
 
@@ -170,9 +171,19 @@ that pay for themselves answer questions the code currently cannot:
 | Field | Answers | Consumed by |
 |---|---|---|
 | `:schema` | What shape is this? | validation at edges (§3.4) |
-| `:owner` | Which node writes it? | rename safety, dataflow graph, `:dirty-keys` derivation |
+| `:writers` | Which fns write it? | rename safety, dataflow graph, `:dirty-keys` derivation |
 | `:lifetime` | `:session` / `:turn` / `:iteration` | `reset-st-memory!`, compaction, sub-BT merge policy |
 | `:persist?` | Does this survive `--resume`? | session persistence, and the SCI fn-serialization wall |
+| `:opaque?` | Is this a live object or a function? | never serialized, never structurally validated |
+
+**`:owner` (singular) was the original proposal and the source says it is a
+fiction.** Extracting the real write sites found `:display-stage` written by ten
+fns, `:answer` by eight, `:iterations` by seven, `:terminated` by six. A single
+owner is the exception, not the rule — and not through sloppiness:
+`:display-stage` is a UI state machine every display action advances, and
+`:answer` is written by the channel that produces it and cleared by several
+recovery paths. A registry claiming one owner would have been wrong on exactly
+the rows that matter most, so the field is `:writers`, plural, and descriptive.
 
 `:lifetime` and `:persist?` are the two that generalise beyond type checking.
 Today `reset-st-memory!` (bt.clj:95) resets to `st-memory-init` + `:question` by
@@ -183,24 +194,27 @@ missing fact, asked three times.
 
 ### 3.2 The registry
 
-One namespace, `agent.core.bt-context` (or `behavior-tree.core.context-schema`
-if it should live below `agent` — see §7), holding:
+One namespace, `agent.core.bt-context`, holding a plain map (no macro — Phase 0
+has no mechanism to hang one on):
 
 ```clojure
-(defcontext-keys coact
-  {:question      {:schema ::acs/question  :owner :coact.action/init
-                   :lifetime :turn  :persist? true
-                   :doc "The user's input for this turn."}
-   :iterations    {:schema ::iterations    :owner :coact.action/accumulate
-                   :lifetime :turn  :persist? true}
-   :terminated    {:schema :boolean        :owner :coact.action/stamp-answer
-                   :lifetime :turn  :persist? false
-                   :doc "The loop's ONLY exit signal (see CR-RSN-*)."}
-   :sandbox       {:schema [:fn some?]     :owner :coact.action/init
-                   :lifetime :session :persist? false
-                   :opaque? true}
-   ...})
+(def context-keys
+  {:question  {:doc "The user's input for this turn. Stamped by reset-st-memory! …"
+               :schema :ai.brainyard.agent.common.schema/question
+               :lifetime :turn :persist? true
+               :writers #{'ai.brainyard.agent.core.bt/reset-st-memory! …}}
+   :sandbox   {:doc "The live SCI evaluation context …"
+               :lifetime :turn :persist? false :opaque? true
+               :writers #{'…coact-agent/coact-init-action}}
+   …})
 ```
+
+**`:schema` values are fully-qualified KEYWORDS and `:writers` are unresolved
+SYMBOLS**, both resolved late — the schema through clj-llm's process-wide malli
+registry at validation time, the writers by the test. So the namespace requires
+*nothing*: it cannot form a cycle with the ~6000-line `common/coact-agent` where
+most schemas and nearly all writers live, and any later phase can require it
+from anywhere.
 
 **Open by default.** The map schema is `:map`, never `[:map {:closed true}]`.
 Closing it would break the escape hatch that lets `usage-nudge`,
@@ -385,7 +399,7 @@ Each phase is independently shippable and independently useful.
 | Phase | Scope | Value delivered alone |
 |---|---|---|
 | **1** ✅ | DSPy in/out validation (§3.6) against the schemas that already exist | Closes the invisible-degradation failure on the hot path — **shipped**; found three pre-existing `:iterations` drifts on its first run (§3.6.1) |
-| **0** | The registry ns + declarations for the ~20 keys with a clear single owner. No enforcement. | `:lifetime` / `:persist?` are the first answer to three questions the codebase hand-maintains — see §5.2 |
+| **0** ✅ | The registry ns + declarations. No enforcement. | `:lifetime` / `:persist?` are the first answer to three questions the codebase hand-maintains (§5.2) — **shipped**: 54 keys declared, 21 deliberately not, every claim pinned against the source by test |
 | **2** | `:requires`/`:provides` on coact's nodes + entry/exit checks in the tracing overrides, assert-gated | Failures name the node that broke the contract, not the node that noticed |
 | **3** | `build-bt` static fold (§3.5); derive `:dirty-keys` from `:provides` | Removes a hand-maintained list; catches a missing key on paths that reach no dspy node |
 
@@ -431,6 +445,34 @@ the shape of a problem a declaration solves and an assertion does not.
 So the trade is: **Phase 2/3 buys enforcement of something Phase 1 already
 enforces where it matters; Phase 0 buys a capability that does not exist.**
 
+#### 5.2.1 What Phase 0 found, as built
+
+54 keys declared, 21 recorded as deliberately undeclared with a reason, so the
+gap between them is a decision rather than an oversight. By lifetime: 33 turn,
+14 iteration, 7 session. 12 keys are persistable; 2 are opaque.
+
+Three things the work changed about the design:
+
+- **`:owner` singular was wrong** (§3.1). The write-site extraction is what
+  settled it.
+- **No macro, and no dependencies.** The proposal sketched a `defcontext-keys`
+  macro; a plain map is enough when nothing consumes it yet, and keeping schemas
+  as late-resolved keywords and writers as unresolved symbols means the registry
+  requires nothing at all. That matters more than it sounds: nearly every writer
+  lives in `common/coact-agent`, and a registry that required it could not later
+  be required *by* it.
+- **The registry is pinned by RUNNING the code, not by reading it.** The
+  strongest test seeds every declared key with a sentinel, calls the real
+  `coact-inc-iter-action`, and asserts the set of keys that changed equals
+  `:lifetime :iteration` exactly. A key added to or dropped from that reset
+  silently changes lifetime; this is what catches it. Alongside it, all 135
+  `:writers` symbols and 9 `:schema` keywords must resolve — negative-controlled,
+  so a rename fails the suite rather than passing vacuously.
+
+That last point is the Phase 1 lesson applied one layer up: a declaration
+nothing checks is prose, and prose about 54 keys written by 13 namespaces rots
+on the first rename.
+
 ### 5.3 The cheapest next step costs nothing
 
 `:invalid → warn` (§3.6) shipped as an INSTRUMENT, not a compromise. Real usage
@@ -445,7 +487,7 @@ short-circuited by writing more code now.
 
 | ID | Contract | Status |
 |---|---|---|
-| CR-BT-25 | A context key MAY be declared in the context-key registry with `:schema`, `:owner`, `:lifetime` and `:persist?`. The context map schema MUST remain open — an undeclared key MUST be legal and unchecked. | Proposed |
+| CR-BT-25 | A context key MAY be declared in the context-key registry with `:doc`, `:schema`, `:writers`, `:lifetime`, `:persist?` and `:opaque?`. The context map MUST remain open — an undeclared key MUST be legal and unchecked. A declared `:opaque?` key MUST NOT be `:persist? true`. Every declared `:writers` symbol and `:schema` keyword MUST resolve, and `:lifetime :iteration` MUST equal exactly the set the per-iteration reset clears. | Implemented |
 | CR-BT-26 | The `dspy` node MUST validate gathered signature inputs against their declared schemas before the LLM call. A **missing** declared input (absent or nil, and not `{:optional true}`) MUST yield `:failure` with `:dspy-error-class :fatal` and a message naming the key and node. A **present-but-invalid** value MUST be logged (`::dspy-input-schema-drift`) and MUST NOT abort — see §3.6.1. A signature with no `:inputs` field map declares no contract and MUST be unchecked. | Implemented |
 | CR-BT-27 | The `dspy` node MUST merge only signature-declared output keys into st-memory; an undeclared key in a model reply MUST be dropped with a logged event (`::dspy-undeclared-outputs`). A signature declaring NO output keys MUST be treated as undeclared, not empty, and MUST NOT be filtered. | Implemented |
 | CR-BT-28 | A node MAY declare `:requires` / `:provides`; when declared, the agent-layer `tick` overrides MUST check them on entry/exit. Checks MUST be assert-gated so the shipped binary pays nothing. | Proposed |
@@ -458,17 +500,19 @@ short-circuited by writing more code now.
 
 ## 7. Open questions
 
-1. **Which brick owns the registry?** `behavior-tree` must not hard-depend on
-   `agent` (CR-BT-23), and the interesting declarations (`:iterations`,
-   `:todo-list`, `:parent-trail`) are agent-level. Likely split: the *mechanism*
-   (`defcontext-keys`, the validator, the fold) in `behavior-tree`; the
-   *declarations* per agent in `agent`. This mirrors how node overrides already
-   live in `agent/core/bt.clj`.
-2. **Does `:lifetime` subsume `st-memory-init`?** `reset-st-memory!` resets to
-   `st-memory-init` + `:question`. If every key declared `:lifetime :session`
-   survives the reset by definition, `st-memory-init` becomes derived rather than
-   configured — which is cleaner, but changes an existing contract (CR-BT-12)
-   and needs its own migration.
+1. ~~**Which brick owns the registry?**~~ **Deferred, correctly.** Phase 0 has
+   no mechanism to place, so nothing was speculatively pushed down: the
+   declarations live in `agent/core/bt_context.clj` and require nothing. The
+   question becomes live again at Phase 2, where the per-node checks ARE
+   mechanism and belong in `behavior-tree`, which must not depend on `agent`
+   (CR-BT-23) — the same split as the node overrides in `agent/core/bt.clj`.
+2. **Does `:lifetime` subsume `st-memory-init`?** Sharper now that `:lifetime`
+   exists: `:session` is *defined* as "lives in `st-memory-init`, so it survives
+   `reset-st-memory!`", and the registry records 7 such keys. Only ONE of them —
+   `:previous-turns` — is written back into `st-memory-init` during a turn; the
+   rest are seeded once at agent setup. So making `st-memory-init` derived from
+   `:lifetime :session` rather than configured is a small change with one real
+   writer to reroute. It still alters CR-BT-12 and needs its own migration.
 3. ~~**How much does Phase 1 actually cost per call?**~~ **Resolved by
    shipping.** Deep validation of `:iterations` was kept: it is bounded (the
    list is capped at 10 records) and malli walks structure, not string content,
@@ -503,7 +547,7 @@ short-circuited by writing more code now.
 
 | Phase | Contracts | Implementation | Tests |
 |---|---|---|---|
-| 0 | CR-BT-25 | — | — |
+| **0** | **CR-BT-25** | `agent/core/bt_context.clj` — `context-keys` (54 declared), `deliberately-undeclared` (21, each with a reason), and the accessors `declared?` / `keys-with-lifetime` / `persistable-keys` / `opaque-keys` / `writers-of` / `schema-of` / `coverage`. Zero dependencies: schemas are late-resolved keywords, writers unresolved symbols. | `agent/test/…/core/bt_context_test.clj` — 10 tests, 402 assertions, incl. 135 writer symbols and 9 schema keywords resolved |
 | **1** | **CR-BT-26, CR-BT-27, CR-BT-32** | `behavior_tree/core/dspy_action.clj` — `signature-fields`, `field-violation`, `input-violations`, `violations->message`, `filter-declared-outputs`, and the `cond` in `dspy`. Exported as `bt/input-violations` from `behavior_tree/interface.clj` so an agent can assert its own contract without an LLM call. | `behavior_tree/test/…/dspy_action_test.clj` (10 tests); `agent/test/…/coact_agent_test.clj` — one case per real writer into `:iterations` |
 | 2 | CR-BT-28, CR-BT-31 | — | — |
 | 3 | CR-BT-29, CR-BT-30 | — | — |
