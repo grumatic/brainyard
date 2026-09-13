@@ -21,12 +21,17 @@
 (defn- capture-switch
   "Drive switch-model! with `current-lm` as the active LM and `model-name` as
    the /model argument. Returns the option map handed to create-lm (what the
-   new LM is built from). All real side effects are stubbed."
-  [current-lm model-name]
+   new LM is built from). All real side effects are stubbed. `popular` stands
+   in for the curated catalog; the provider guess mimics the real one's
+   \"contains claude -> anthropic\" fallback."
+  ([current-lm model-name] (capture-switch current-lm model-name []))
+  ([current-lm model-name popular]
   (let [captured (atom nil)]
     (with-redefs [llm/get-default-lm          (fn [] current-lm)
-                  llm/get-popular-models      (fn [] [])
-                  llm/get-provider-from-model (fn [m] (if (= m "auto") :free-llm :openai))
+                  llm/get-popular-models      (fn [] popular)
+                  llm/get-provider-from-model (fn [m] (cond (= m "auto") :free-llm
+                                                            (re-find #"claude|sonnet" m) :anthropic
+                                                            :else :openai))
                   llm/create-lm               (fn [opts] (reset! captured opts) opts)
                   llm/configure-default-lm!   (fn [_] nil)
                   tui-session/emit!           (fn [_] nil)
@@ -39,7 +44,7 @@
                   ;; effect is stubbed; this is one of them.
                   persist/save-meta!          (fn [& _] nil)]
       (switch-model! model-name))
-    @captured))
+    @captured)))
 
 (deftest provider-switch-does-not-carry-previous-key
   (testing "openai → free-llm: the old OpenAI key is NOT passed to create-lm,
@@ -63,3 +68,32 @@
       (is (= :openai (:provider opts)))
       (is (= "gpt-4o" (:model opts)))
       (is (= "sk-openai-keep-me" (:api-key opts))))))
+
+(deftest explicit-provider-prefix-wins-over-the-guess
+  (testing "claude-code/sonnet stays on :claude-code — the guess from the whole
+            string says :anthropic, and used to be passed as :provider"
+    (let [opts (capture-switch {:provider :openai :model "gpt-4o"} "claude-code/sonnet")]
+      (is (= :claude-code (:provider opts)))
+      (is (= "sonnet" (:model opts)))))
+
+  (testing "legacy provider:model form is honored the same way"
+    (let [opts (capture-switch {:provider :openai :model "gpt-4o"} "claude-code:opus")]
+      (is (= [:claude-code "opus"] [(:provider opts) (:model opts)]))))
+
+  (testing "the prefix picks WHICH catalog entry supplies a pinned region"
+    (let [popular [{:model "sonnet" :provider :anthropic}
+                   {:model "amazon.nova-lite-v1:0" :provider :bedrock :region "us-east-1"}]
+          opts    (capture-switch {:provider :openai :model "gpt-4o"}
+                                  "bedrock/amazon.nova-lite-v1:0" popular)]
+      (is (= :bedrock (:provider opts)))
+      (is (= "amazon.nova-lite-v1:0" (:model opts)))
+      (is (= "us-east-1" (:region opts)))))
+
+  (testing "a bare id that contains ':' is not mistaken for a prefix"
+    (let [opts (capture-switch {:provider :openai :model "gpt-4o"} "amazon.nova-lite-v1:0"
+                               [{:model "amazon.nova-lite-v1:0" :provider :bedrock}])]
+      (is (= [:bedrock "amazon.nova-lite-v1:0"] [(:provider opts) (:model opts)]))))
+
+  (testing "same provider via prefix still reuses the current key"
+    (let [opts (capture-switch {:provider :openai :model "gpt-4o" :api-key "sk-keep"} "openai/gpt-4.1")]
+      (is (= [:openai "gpt-4.1" "sk-keep"] [(:provider opts) (:model opts) (:api-key opts)])))))

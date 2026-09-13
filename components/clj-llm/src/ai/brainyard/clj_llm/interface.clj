@@ -190,6 +190,14 @@
   "Determine the provider for a given model string."
   providers/get-provider-from-model)
 
+(def resolve-model-spec
+  "Split a provider-qualified model spec ('provider/model' or legacy
+   'provider:model') into [provider-kw bare-model] when its leading token is a
+   REGISTERED provider; otherwise [nil model]. Use this, not
+   get-provider-from-model, to honor an explicit prefix — the latter guesses from
+   the whole string, so 'claude-code/sonnet' reads as :anthropic."
+  providers/resolve-model-spec)
+
 (def format-lm-label
   "Canonical 'provider/model' display label from a provider (keyword/string/nil)
    and a model (bare id, or itself a 'provider/model'/'provider:model' spec).

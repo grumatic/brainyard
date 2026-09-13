@@ -205,9 +205,9 @@
                 ;; here, where the clear that spawned it is still on screen.
                 (when-let [d (seq (:detached rotated))]
                   (str "\n" (ansi/muted
-                              (str "  🧠 folding it into long-term memory in the"
-                                   " background (PID "
-                                   (str/join ", " (map (comp str :pid) d)) ")")))))
+                             (str "  🧠 folding it into long-term memory in the"
+                                  " background (PID "
+                                  (str/join ", " (map (comp str :pid) d)) ")")))))
            ;; Rotation failed: the screen and the context are clear, but the
            ;; transcript is still under the SAME id and the next turn will
            ;; append to it. Say so rather than printing a resume line that
@@ -379,9 +379,23 @@
   [model-name]
   (try
     (let [current-lm    (clj-llm/get-default-lm)
-          ;; Check popular models first (handles short names like "haiku" → :claude-code)
-          popular-match (some #(when (= model-name (:model %)) %) (clj-llm/get-popular-models))
-          new-provider  (or (:provider popular-match) (clj-llm/get-provider-from-model model-name))
+          ;; An explicit provider prefix ("claude-code/sonnet", "bedrock/amazon.…")
+          ;; is authoritative, so split it off BEFORE guessing. Guessing from the
+          ;; whole string read "claude-code/sonnet" as :anthropic (the id says
+          ;; "claude"), and that guess was passed to create-lm as an explicit
+          ;; :provider — which outranks the prefix — so the switch silently
+          ;; landed on a different provider than the one named.
+          [spec-provider bare-model] (clj-llm/resolve-model-spec model-name)
+          model-name    (or bare-model model-name)
+          ;; Check popular models first (handles short names like "haiku" →
+          ;; :claude-code). With a prefix, only that provider's entry can match.
+          popular-match (some #(when (and (= model-name (:model %))
+                                          (or (nil? spec-provider) (= spec-provider (:provider %))))
+                                 %)
+                              (clj-llm/get-popular-models))
+          new-provider  (or spec-provider
+                            (:provider popular-match)
+                            (clj-llm/get-provider-from-model model-name))
           ;; Reuse the current key ONLY when staying on the same provider. On a
           ;; provider switch, leave :api-key unset and let create-lm resolve the
           ;; new provider's key from its own :api-key-env. Do NOT carry the old
@@ -407,7 +421,7 @@
           (try (persist/save-meta! sid {:model model-name :provider new-provider})
                (catch Throwable _))))
       (tui-session/emit!
-       (ansi/success (str "Switched to " (name new-provider) " / " model-name)))
+       (ansi/success (str "Switched to " (name (:provider new-lm new-provider)) " / " (:model new-lm model-name))))
       (tui-session/update-status-bar!))
     (catch Exception e
       (tui-session/emit! (ansi/failure (str "Failed to switch model: " (.getMessage e)))))))

@@ -691,7 +691,7 @@
             [(subs s 0 colon) (subs s (inc colon))]
             [s nil]))))))
 
-(defn- resolve-model-spec
+(defn resolve-model-spec
   "When `model` is a provider-qualified spec — `provider/model` (preferred) or
    legacy `provider:model` — whose leading token is a REGISTERED provider,
    return `[provider-kw bare-model]`; otherwise `[nil model]`.
