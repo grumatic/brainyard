@@ -3,9 +3,11 @@
 *Area code `BT` (extends [specs/behavior-tree.md](../specs/behavior-tree.md)).
 Proposes giving the behavior tree's shared context — the `st-memory` atom — the
 same declared, checkable contract the tree itself already has. Status:
-**Phase 1 shipped** (CR-BT-26, CR-BT-27 — validation at the DSPy boundary);
-Phases 0, 2 and 3 remain proposal. New contracts are numbered **CR-BT-25+**
-(CR-BT-01..24 are taken by the existing spec).*
+**Phase 1 shipped** (CR-BT-26, CR-BT-27, CR-BT-32 — validation at the DSPy
+boundary); Phases 0, 2 and 3 remain proposal, **re-ordered in light of what
+Phase 1 turned out to cover — see §5.1**. New contracts are numbered
+**CR-BT-25+** (CR-BT-01..24 are taken by the existing spec; CR-BT-32 was added
+on top when Phase 1 landed).*
 
 ---
 
@@ -258,16 +260,26 @@ Walk the tree once at `build-bt`, folding `:provides` down each path against
 each node's `:requires`, and error on a `:requires` that no ancestor (or
 `:st-memory-init` seed) provides.
 
-This catches the whole of §1.3(a) **before any LLM call is made**. It is also
-the change that makes the tree's declarativeness mean something operationally
-rather than only structurally: today a tree is a valid tree if its node types
-exist; after this, a tree is valid if its data actually flows.
+The argument for this was originally "catches the whole of §1.3(a) **before any
+LLM call is made**." **Phase 1 has since made that mostly false** — a missing
+declared input is now caught at the call, by name, with a clean fatal abort, so
+the marginal gain here is one request's latency rather than a class of bug. See
+§5.1. What survives as this phase's own value:
+
+- A key missing on a path that reaches **no dspy node at all** — real, but a
+  narrower case than the original claim.
+- It makes the tree's declarativeness mean something operationally rather than
+  only structurally: today a tree is a valid tree if its node types exist; after
+  this, a tree is valid if its data actually flows.
+- It derives `:dirty-keys` (CR-BT-30), removing a hand-maintained list.
 
 The fold must be conservative about `:fallback` (only one branch runs, so a key
 provided in exactly one branch is not guaranteed downstream) and about
 `:repeat` (a key provided by iteration N is available to N+1 but not to the
 first tick). Both cases degrade to a warning rather than an error — the point is
-to catch the flat-out-missing key, not to build a type system.
+to catch the flat-out-missing key, not to build a type system. Note this
+conservatism covers most of coact's interesting structure, which is the other
+half of why §5.1 demotes this phase.
 
 ### 3.6 The DSPy boundary specifically
 
@@ -368,19 +380,64 @@ code block — on a schema typo, not a runtime fault.
 
 ## 5. Phasing
 
-Each phase is independently shippable and independently useful. Phase 1 is the
-one to do first if only one gets done.
+Each phase is independently shippable and independently useful.
 
 | Phase | Scope | Value delivered alone |
 |---|---|---|
-| **0** | The registry ns + declarations for the ~20 keys with a clear single owner. No enforcement. | Answers "who writes this key"; makes the next rename a lookup instead of a grep |
 | **1** ✅ | DSPy in/out validation (§3.6) against the schemas that already exist | Closes the invisible-degradation failure on the hot path — **shipped**; found three pre-existing `:iterations` drifts on its first run (§3.6.1) |
+| **0** | The registry ns + declarations for the ~20 keys with a clear single owner. No enforcement. | `:lifetime` / `:persist?` are the first answer to three questions the codebase hand-maintains — see §5.2 |
 | **2** | `:requires`/`:provides` on coact's nodes + entry/exit checks in the tracing overrides, assert-gated | Failures name the node that broke the contract, not the node that noticed |
-| **3** | `build-bt` static fold (§3.5); derive `:dirty-keys` from `:provides` | Whole class of bug caught before LLM spend; removes a hand-maintained list |
+| **3** | `build-bt` static fold (§3.5); derive `:dirty-keys` from `:provides` | Removes a hand-maintained list; catches a missing key on paths that reach no dspy node |
 
 Phases 0 and 1 touch no node definitions and no agent authors' code. Phase 2 is
 additive per node — an undeclared node is simply unchecked, so coverage can grow
 one agent at a time starting with coact.
+
+### 5.1 Revised after Phase 1: do Phase 0 next, not Phase 2/3
+
+This document originally ordered the work 0 → 1 → 2 → 3, and argued Phase 3's
+prize was catching a missing key **before any LLM spend**. Shipping Phase 1
+invalidated that argument, and the ordering above is the correction.
+
+- **Phase 1 ate most of Phase 3's value.** A missing declared input is now
+  caught AT the call, with the key named and a clean fatal abort. Catching the
+  same thing a few hundred milliseconds and one request earlier is a small
+  marginal gain. What remains uniquely Phase 3's is a key missing on a path that
+  reaches no dspy node at all — real, but much narrower than §3.5 claims.
+- **Phase 2/3 also costs more than written.** coact's tree is ~35 nodes, and
+  `:provides` is genuinely ambiguous for several of them: `coact-repair-action`
+  provides different keys depending on which of its four branches ran. And
+  §3.5's own conservatism — `:fallback` branches and `:repeat` first-ticks
+  degrade to warnings rather than errors — covers most of coact's interesting
+  structure, so the fold will warn often and error rarely.
+- **Phase 0's weakest-looking half is the one that pays.** See §5.2.
+
+### 5.2 Why Phase 0 outranks enforcement now
+
+`:schema` and `:owner` are documentation. `:lifetime` and `:persist?` are a
+capability nothing in the codebase currently has — and three things are
+hand-maintained today for want of exactly that one fact:
+
+| Hand-maintained today | Where | What `:lifetime` / `:persist?` would make it |
+|---|---|---|
+| What survives a turn reset | `reset-st-memory!` resets to `st-memory-init` + `:question`, by convention | Derived: a key is kept iff `:lifetime :session` |
+| What may be dropped under budget pressure | `context-budget`'s list | Derived from `:lifetime`, not enumerated |
+| What can be restored on `--resume` | Nothing distinguishes a serialisable value from a runtime handle, so a key holding a function silently cannot come back | Derived from `:persist?` + `:opaque?` |
+
+That third row is the SCI fn-serialization limit already recorded against
+`--resume`. All three are the same missing fact asked in three places, which is
+the shape of a problem a declaration solves and an assertion does not.
+
+So the trade is: **Phase 2/3 buys enforcement of something Phase 1 already
+enforces where it matters; Phase 0 buys a capability that does not exist.**
+
+### 5.3 The cheapest next step costs nothing
+
+`:invalid → warn` (§3.6) shipped as an INSTRUMENT, not a compromise. Real usage
+accumulates `::dspy-input-schema-drift` events, and a clean log is evidence the
+input schemas have become true. Promoting `:invalid` to fatal is then one line,
+per signature, with the evidence to justify it — and it cannot be
+short-circuited by writing more code now.
 
 ---
 
@@ -426,7 +483,16 @@ one agent at a time starting with coact.
    this question proposed: `:missing` aborts, `:invalid` logs (§3.6). Phases 2–3
    still need an answer for the per-node checks, where the assert gate applies
    and the same split may not.
-5. **Do model-authored tools get to see the registry?** `clj-sandbox`'s context
+5. ~~**Does Phase 1 leave the other signatures unprotected?**~~ **Closed: no.**
+   Seven call sites reach a signature without the BT dspy node — `skill_distill`
+   (×2), `skill_refine`, `memory_agent/commands` (×3) and `memory/core/extract`.
+   All pass inputs as an explicit literal map at the call site
+   (`{:skill-name (str skill-name) :current-skill-md (str current-md) …}`)
+   rather than gathering them from the blackboard, so there is no silent
+   nil-drop to catch: the caller names every input inline and a missing one is a
+   visible `nil` in code, not an absent key on a shared atom. CR-BT-26 is
+   correctly scoped to where the failure mode exists, not under-scoped.
+6. **Do model-authored tools get to see the registry?** `clj-sandbox`'s context
    accessors expose agent state to LLM-written code. Declaring a key
    `:sensitive?` should plausibly hide it there too, which makes the registry a
    security surface and not only a documentation one.
@@ -462,14 +528,17 @@ turn that populates `:iterations` with real eval entries — both correct, with
 
 ## 9. Source references
 
-Facts in §1 are anchored to these locations as of the writing of this doc:
+Facts in §1 are anchored to these locations as of the writing of this doc.
+Rows naming a line in `dspy_action.clj` describe the code **as it was before
+Phase 1**; they are named by form rather than line so they stay findable now
+that the file has changed.
 
 | Claim | Source |
 |---|---|
 | Context contract is two keys | `behavior_tree/core/engine.clj:13-22` |
-| Nil inputs dropped; one input suffices | `behavior_tree/core/dspy_action.clj:353-362` |
-| Model outputs merged unguarded | `behavior_tree/core/dspy_action.clj:371` |
-| `missing-inputs` only when all absent | `behavior_tree/core/dspy_action.clj:415` |
+| Nil inputs dropped; one input suffices | `dspy_action.clj` — the `all-inputs` gather (CR-BT-26 now guards it) |
+| Model outputs merged unguarded | `dspy_action.clj` — the `reduce-kv assoc` merge (CR-BT-27 now filters it) |
+| `missing-inputs` only when all absent | `dspy_action.clj` — the `:else` branch of `dspy`'s `cond` |
 | Sub-BT blind merge | `agent/core/bt.clj:161` |
 | `:dirty-keys` hand-maintained | `agent/core/bt.clj:182-200` |
 | Trace `pr-str`s arbitrary values | `agent/core/bt.clj:402` |

@@ -130,19 +130,26 @@ bridge from control flow into reasoning.
   `st-memory` bus it runs against is not. Measured: **≥ 54 distinct keys**,
   617 src references across **46 files in 5 bricks**, 13 writer namespaces
   and 33 read-only, with **4** nodes asserting anything
-  (`st-memory-has-value?`). The visible costs: a nil DSPy input is
-  silently dropped and the call proceeds on a partial input set
-  (`dspy_action.clj:353-362`), model outputs merge onto the bus unguarded
-  (`:371`), and `skill-behavior-fn` blind-merges a subtree's whole memory
-  while its sibling works around that with a hand-maintained
-  `:dirty-keys` list. Proposal (CR-BT-25..31):
+  (`st-memory-has-value?`). Three visible costs; Phase 1 closed the first
+  two. ~~A nil DSPy input is silently dropped and the call proceeds on a
+  partial input set~~ and ~~model outputs merge onto the bus unguarded~~ —
+  both now checked in `dspy_action.clj` (`dspy`, ~line 476 and ~line 540).
+  Still open: `skill-behavior-fn` blind-merges a subtree's whole memory
+  (`agent/core/bt.clj:161`) while its sibling works around that with a
+  hand-maintained `:dirty-keys` list. Proposal (CR-BT-25..31):
   [docs/design/bt-context-schema-design.md](../design/bt-context-schema-design.md).
   **Phase 1 has landed** — CR-BT-26, CR-BT-27 and CR-BT-32 above close the
-  DSPy boundary, and
-  turning that check on found three pre-existing drifts in `::iterations`
-  (design doc §3.6.1). The remaining gap is the bus itself: CR-BT-28..31
-  (per-node `:requires`/`:provides`, the `build-bt` dataflow fold, derived
-  `:dirty-keys`) are still proposal. *(High value / medium cost.)*
+  DSPy boundary, and turning that check on found three pre-existing drifts in
+  `::iterations` (design doc §3.6.1). The remaining gap is the bus itself, and
+  the design doc's own ordering was revised once Phase 1 shipped (§5.1): the
+  next step is **CR-BT-25**, the context-key registry, because `:lifetime` /
+  `:persist?` are the one missing fact behind three separately hand-maintained
+  lists (`reset-st-memory!`, `context-budget`'s drop set, and what `--resume`
+  can restore). CR-BT-28..31 (per-node `:requires`/`:provides`, the `build-bt`
+  dataflow fold, derived `:dirty-keys`) are demoted, not dropped — Phase 1
+  already catches a missing input at the call, so their remaining unique value
+  is a key missing on a path reaching no dspy node. *(High value / medium
+  cost.)*
 
 No `TODO`/`FIXME` markers exist in the BT engine or the agent-layer
 override file.
