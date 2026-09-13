@@ -103,6 +103,8 @@ bridge from control flow into reasoning.
 | CR-BT-21 | Missing inputs MUST yield `:failure` plus an `:agent.dspy-action/post` event with `:error "missing-inputs"`; an exception MUST yield `:failure` and store `:dspy-error`. | Implemented | `dspy_action.clj` |
 | CR-BT-22 | lm-config precedence MUST be node-opts → agent → session → global. | Implemented | `dspy_action.clj` |
 | CR-BT-23 | The BT component MUST NOT hard-depend on the agent component; agent-side hooks/chunk-factory MUST be reached via `requiring-resolve`. | Implemented | `dspy_action.clj` |
+| CR-BT-26 | It MUST validate gathered inputs against the signature's declared `:inputs` schemas before the call. A **missing** declared input (absent or nil, not `{:optional true}`) MUST yield `:failure` with `:dspy-error-class :fatal` and a message naming the key and node; a **present-but-invalid** value MUST be logged (`::dspy-input-schema-drift`) and MUST NOT abort. A signature with no `:inputs` map declares no contract and MUST be unchecked. | Implemented | `dspy_action.clj` |
+| CR-BT-27 | It MUST merge only signature-declared output keys into st-memory, dropping an undeclared key in a model reply with `::dspy-undeclared-outputs`. A signature declaring NO output keys MUST be treated as undeclared, not empty, and MUST NOT be filtered. | Implemented | `dspy_action.clj` |
 
 ---
 
@@ -111,6 +113,7 @@ bridge from control flow into reasoning.
 | ID | Contract | Status | Source |
 |---|---|---|---|
 | CR-BT-24 | `behavior-tree/interface.clj` MUST re-export `success`/`failure`/`running`, `build`, `run`, `st-memory-has-value?`, `dspy`, and MUST document that repeat/tracing/HITL/visualization nodes live in `agent.core.bt` as overrides, not in this component. | Implemented | `behavior_tree/interface.clj` |
+| CR-BT-32 | It MUST also export `input-violations`, so a caller can assert the CR-BT-26 contract without an LLM round-trip — an agent pinning that its own producers write what its signature declares. | Implemented | `behavior_tree/interface.clj` |
 
 ---
 
@@ -121,6 +124,25 @@ bridge from control flow into reasoning.
   add both (to match the other node types) or document parallel subtrees
   as intentionally short/opaque. *(Medium; interacts with the CoAct
   parallel-block path — see [reasoning](reasoning.md) CR-RSN-06.)*
+
+- **CR-BT-12b — the shared context has no declared contract.** The tree
+  is declarative and validated by construction (CR-BT-02..04); the
+  `st-memory` bus it runs against is not. Measured: **≥ 54 distinct keys**,
+  617 src references across **46 files in 5 bricks**, 13 writer namespaces
+  and 33 read-only, with **4** nodes asserting anything
+  (`st-memory-has-value?`). The visible costs: a nil DSPy input is
+  silently dropped and the call proceeds on a partial input set
+  (`dspy_action.clj:353-362`), model outputs merge onto the bus unguarded
+  (`:371`), and `skill-behavior-fn` blind-merges a subtree's whole memory
+  while its sibling works around that with a hand-maintained
+  `:dirty-keys` list. Proposal (CR-BT-25..31):
+  [docs/design/bt-context-schema-design.md](../design/bt-context-schema-design.md).
+  **Phase 1 has landed** — CR-BT-26, CR-BT-27 and CR-BT-32 above close the
+  DSPy boundary, and
+  turning that check on found three pre-existing drifts in `::iterations`
+  (design doc §3.6.1). The remaining gap is the bus itself: CR-BT-28..31
+  (per-node `:requires`/`:provides`, the `build-bt` dataflow fold, derived
+  `:dirty-keys`) are still proposal. *(High value / medium cost.)*
 
 No `TODO`/`FIXME` markers exist in the BT engine or the agent-layer
 override file.

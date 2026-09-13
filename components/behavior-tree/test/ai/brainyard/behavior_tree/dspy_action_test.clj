@@ -277,3 +277,126 @@
                   "## volatile-tail\nvt")
              text)
           "the no-zone key still renders, after the last zone"))))
+
+;; ============================================================================
+;; CR-BT-26 / CR-BT-27 — declared-field validation at the DSPy boundary
+;; (design: docs/design/bt-context-schema-design.md §3.6)
+;; ============================================================================
+
+(def ^:private validating-sig
+  "A COMPILED-shaped signature: it carries :inputs / :outputs field maps, which
+   is what turns the checks on. The hand-built maps used by the tests above
+   carry only :input-keys / :output-keys and are deliberately left unchecked."
+  {:name        "Validating"
+   :instructions "Test"
+   :inputs      {:question  [:string {:desc "q"}]
+                 :iterations [:vector {:desc "history"} :map]
+                 :hint      [:string {:desc "h" :optional true}]}
+   :input-order [:question :iterations :hint]
+   :input-keys  #{:question :iterations :hint}
+   :outputs     {:answer [:string {:desc "a"}]}
+   :output-keys #{:answer}})
+
+(defn- run-validating!
+  "Build + run a dspy node on `validating-sig` against `st-memory`, with a mock
+   op returning `outputs`. Returns [result st-memory-map]."
+  [st-memory outputs]
+  (try
+    (defmethod dspy-action/execute-dspy-operation :mock-validate
+      [_ _signature _context _inputs]
+      {:outputs outputs})
+    (let [built (bt/build [:action {:id :test/validating
+                                    :signature validating-sig
+                                    :operation :mock-validate}
+                           bt/dspy]
+                          {:st-memory st-memory})
+          result (bt/run built)]
+      [result @(:st-memory (:context built))])
+    (finally
+      (remove-method dspy-action/execute-dspy-operation :mock-validate))))
+
+(deftest signature-fields-carries-declared-field-maps-test
+  (testing "signature-fields returns the field maps alongside the key vectors"
+    (let [m (dspy-action/signature-fields validating-sig nil)]
+      (is (= [:question :iterations :hint] (:input-keys m)))
+      (is (= [:answer] (:output-keys m)))
+      (is (= #{:question :iterations :hint} (set (keys (:input-fields m)))))
+      (is (= #{:answer} (set (keys (:output-fields m))))))))
+
+(deftest input-violations-clean-when-contract-holds-test
+  (testing "every declared non-optional input present and well-shaped"
+    (is (= [] (dspy-action/input-violations
+               (:inputs validating-sig)
+               {:question "q" :iterations [{:iteration 1}]})))))
+
+(deftest input-violations-absent-key-is-missing-test
+  (testing "a declared input nobody wrote is :missing, named"
+    (is (= [{:key :iterations :reason :missing}]
+           (dspy-action/input-violations (:inputs validating-sig)
+                                         {:question "q"}))))
+  (testing "an explicit nil is the same failure as an absent key — it is what
+            the gather step used to drop silently"
+    (is (= [{:key :iterations :reason :missing}]
+           (dspy-action/input-violations (:inputs validating-sig)
+                                         {:question "q" :iterations nil})))))
+
+(deftest input-violations-optional-field-may-be-absent-test
+  (testing "{:optional true} is how a signature author declares an input optional"
+    (is (= [] (dspy-action/input-violations
+               (:inputs validating-sig)
+               {:question "q" :iterations []})))
+    (is (not-any? #(= :hint (:key %))
+                  (dspy-action/input-violations (:inputs validating-sig) {})))))
+
+(deftest input-violations-wrong-shape-is-invalid-test
+  (testing "a present value failing its schema is :invalid, with the explanation"
+    (let [[v :as vs] (dspy-action/input-violations (:inputs validating-sig)
+                                                   {:question "q" :iterations "nope"})]
+      (is (= 1 (count vs)))
+      (is (= :iterations (:key v)))
+      (is (= :invalid (:reason v)))
+      (is (seq (:errors v))))))
+
+(deftest missing-declared-input-fails-fatally-test
+  (testing "a missing declared input yields :failure and a :fatal dspy error
+            naming the key — re-prompting cannot fix a key no action wrote"
+    (let [[result st] (run-validating! {:question "q"} {:answer "a"})]
+      (is (= bt/failure result))
+      (is (= :fatal (:dspy-error-class st)))
+      (is (re-find #":iterations" (:dspy-error st)))
+      (is (re-find #"context contract violated" (:dspy-error st)))
+      (is (= (:dspy-error st) (:dspy-error-reason st)))
+      (testing "and the operation never ran"
+        (is (nil? (:answer st)))))))
+
+(deftest invalid-declared-input-warns-but-proceeds-test
+  (testing "a present-but-wrong-shaped input does NOT abort: the prompt is
+            complete, and the schema is as likely to be the stale half"
+    (let [[result st] (run-validating! {:question "q" :iterations "nope"}
+                                       {:answer "a"})]
+      (is (= bt/success result))
+      (is (= "a" (:answer st)))
+      (is (nil? (:dspy-error st))))))
+
+(deftest undeclared-model-outputs-are-dropped-test
+  (testing "only signature-declared output keys reach st-memory"
+    (let [[result st] (run-validating! {:question "q" :iterations []}
+                                       {:answer "a"
+                                        :hallucinated "x"
+                                        :$PARAMETER_NAME "y"})]
+      (is (= bt/success result))
+      (is (= "a" (:answer st)))
+      (is (nil? (:hallucinated st)))
+      (is (nil? (get st :$PARAMETER_NAME))))))
+
+(deftest undeclared-output-contract-is-not-an-empty-one-test
+  (testing "a signature with no :output-keys is unchecked, not filtered to nothing
+            — dropping every output would be worse than the key it guards against"
+    (is (= [{:answer "a" :extra "b"} []]
+           (dspy-action/filter-declared-outputs {:answer "a" :extra "b"} [])))))
+
+(deftest hand-built-signatures-stay-unchecked-test
+  (testing "a signature map with no :inputs declares no contract, so nothing is
+            required — this is what keeps every pre-existing node working"
+    (is (= [] (dspy-action/input-violations nil {})))
+    (is (= [] (dspy-action/input-violations {} {:anything 1})))))

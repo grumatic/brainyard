@@ -2745,3 +2745,104 @@
                                        opts))]
         (is (false? (:survived r))
             "abandoning the fan-out must not orphan its workers")))))
+
+;; ============================================================================
+;; CR-BT-26 — the declared ThinkActCode input contract must describe what the
+;; producers actually write.
+;;
+;; These are not abstract schema tests. The DSPy boundary now validates
+;; `:iterations` on every LLM call, and turning that on for the first time found
+;; that `::eval-entry` declared `:status` / `:task-id` / `:from-iteration` as
+;; REQUIRED keys (`[:maybe …]` makes the value nullable, not the key optional)
+;; while `sanitize-eval-entry` adds them with `cond->` — so every plain sync
+;; eval entry violated the schema, invisibly, because inputs were never checked.
+;; One case per real writer into `:iterations` in coact_agent.clj.
+;; ============================================================================
+
+(def ^:private tac-input-fields (:inputs rca/ThinkActCode))
+
+(defn- iter-violations
+  "Run the real declared-input check over a turn state holding `iters`."
+  [iters]
+  (bt/input-violations
+   tac-input-fields
+   {:question "q" :context-briefing "b" :recalled-memory "" :iterations iters}))
+
+(deftest think-act-code-inputs-are-satisfied-by-real-records-test
+  (testing "iteration 1 — coact-init-action seeds :iterations []"
+    (is (= [] (iter-violations []))))
+
+  (testing "tool channel — coact-accumulate-iteration-action"
+    (is (= [] (iter-violations
+               [{:iteration 1 :thought "t" :channel "tool"
+                 :tool-results [{:tool-name "search" :tool-args {:q "x"}
+                                 :tool-result "r"}]
+                 :code-results []}]))))
+
+  (testing "code channel, sync completion — sanitize-eval-entry omits the three
+            task-lifecycle keys entirely"
+    (is (= [] (iter-violations
+               [{:iteration 1 :thought "t" :channel "code"
+                 :tool-results []
+                 :code-results [{:lang "clojure" :code "(+ 1 1)" :result "2"
+                                 :output "" :error "" :parallel? false}]}]))))
+
+  (testing "code channel, soft-pending detach — :status + :task-id present"
+    (is (= [] (iter-violations
+               [{:iteration 2 :thought "t" :channel "code"
+                 :tool-results []
+                 :code-results [{:lang "bash" :code "sleep 5" :result ""
+                                 :output "" :error "" :parallel? false
+                                 :status :pending :task-id "t-1"}]}]))))
+
+  (testing "code channel, harvested completion — all three present"
+    (is (= [] (iter-violations
+               [{:iteration 3 :thought "t" :channel "code"
+                 :tool-results []
+                 :code-results [{:lang "bash" :code "x" :result "0"
+                                 :output "o" :error "" :parallel? false
+                                 :status :resolved :task-id "t-1"
+                                 :from-iteration 2}]}]))))
+
+  (testing "evaluation record — coact-refine-self / process-eval"
+    (is (= [] (iter-violations
+               [{:iteration 4 :channel "evaluation" :thought "t"
+                 :rejected-answer "a" :verdict "INCOMPLETE" :feedback "f"
+                 :tool-results [] :code-results []}]))))
+
+  (testing "in-flight roster — carries extra keys the schema does not declare,
+            which an OPEN :map must keep accepting"
+    (is (= [] (iter-violations
+               [{:iteration 5 :thought "t" :channel "none"
+                 :tool-results [] :code-results []
+                 :tasks [{:task-id "t-2"}] :in-flight-roster? true}]))))
+
+  (testing "notices — drained usage/self-improve guidance"
+    (is (= [] (iter-violations
+               [{:iteration 6 :thought "t" :channel "none"
+                 :tool-results [] :code-results [] :notices "guide"}])))))
+
+(deftest harvest-resolve-path-sanitizes-its-entry-test
+  (testing "project-terminal-task->eval-entry's error path emits :result nil and
+            no :parallel?; the resolve site must sanitize like every other write
+            into :iterations, or it writes a schema-violating (and untruncated)
+            entry into the model's replay buffer"
+    (let [sanitize   @#'rca/sanitize-eval-entry
+          projected  {:lang "clojure" :code "c" :result nil
+                      :output "o" :error "boom"}
+          resolved   (sanitize (merge projected {:status :resolved
+                                                 :task-id "t-3"
+                                                 :from-iteration 6}))]
+      (is (= "" (:result resolved)) ":result must be normalized to a string")
+      (is (false? (:parallel? resolved)) ":parallel? must be filled in")
+      (is (= [] (iter-violations
+                 [{:iteration 7 :thought "t" :channel "code"
+                   :tool-results [] :code-results [resolved]}]))))))
+
+(deftest missing-declared-input-is-named-not-silent-test
+  (testing "the failure this contract exists to catch: an action that did not
+            write its key produces a named violation instead of a quieter prompt"
+    (is (= [{:key :context-briefing :reason :missing}]
+           (bt/input-violations
+            tac-input-fields
+            {:question "q" :recalled-memory "" :iterations []})))))

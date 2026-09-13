@@ -221,6 +221,128 @@
    (let [sig (resolve-signature signature context)]
      (clj-llm/extract-signature-metadata sig))))
 
+(defn signature-fields
+  "Resolve a signature ONCE and return its key vectors alongside the declared
+   field maps (`:input-fields` / `:output-fields`, key -> raw field schema).
+
+   `extract-signature-metadata` returns only the key vectors, and re-resolving
+   for the schemas would let the two disagree: under the `from-st-memory`
+   sentinel every resolution re-reads st-memory, so a signature swapped
+   mid-turn would be validated against one shape and called with another."
+  [signature context]
+  (let [sig (resolve-signature signature context)]
+    (assoc (clj-llm/extract-signature-metadata sig)
+           :input-fields  (:inputs sig)
+           :output-fields (:outputs sig))))
+
+;; ## Declared-field validation at the DSPy boundary (CR-BT-26 / CR-BT-27)
+;;
+;; This is the one edge where a context-contract violation is INVISIBLE. Inputs
+;; were gathered with `get` and a nil was silently dropped, and the call then
+;; proceeded as long as ONE input survived — so an action that failed to write
+;; `:context-briefing` produced not an error but a quieter prompt, and the
+;; resulting turn was indistinguishable from a healthy one at every layer below
+;; the model. Outputs were merged onto the shared st-memory blackboard under
+;; model-chosen keys, which is the only writer on that bus whose content we do
+;; not author.
+;;
+;; Both checks run UNCONDITIONALLY rather than behind an assert flag (the rule
+;; the cheaper per-node checks will use): they are amortised against a network
+;; round-trip, and this is precisely the boundary where being off in production
+;; means the failure is invisible again.
+;;
+;; ### :missing aborts, :invalid warns — the two reasons are different in kind
+;;
+;; A MISSING declared input is unambiguous: nobody wrote the key, the prompt is
+;; silently thinner, and nothing downstream can compensate. That aborts.
+;;
+;; A PRESENT value that fails its schema means the prompt is complete and
+;; something disagrees about shape — and on this bus the disagreement is at
+;; least as likely to be the SCHEMA as the value. Turning this check on for the
+;; first time found three such drifts in `::iterations` alone, all pre-existing,
+;; all invisible precisely because `:iterations` is an input and inputs were
+;; never validated (see the design doc's as-built notes). Aborting a working
+;; turn on a stale schema is a worse outcome than the bug it reports, so an
+;; invalid value is logged with the key and malli's explanation and the call
+;; proceeds. Once a signature's input schemas are known true, promoting its
+;; `:invalid` to fatal is a one-line change here.
+;;
+;; Design: docs/design/bt-context-schema-design.md §3.6.
+
+(defn- field-violation
+  "Check ONE declared field against the value on the bus.
+   Returns nil when clean, else `{:key _ :reason :missing|:invalid :errors _}`.
+
+   Absence is a violation UNLESS the field declares `{:optional true}` — the
+   marker `parse-malli-field` already understands, so optionality is stated in
+   the signature by its author rather than guessed here. That asymmetry is the
+   whole point: st-memory had no way to say \"this input is required\", so a key
+   an action forgot to write was indistinguishable from one nobody needs.
+
+   No compiled-validator cache. `validate-output` runs `explain`/`humanize` only
+   on the failure path, so the clean path is one `m/validate` per declared
+   field — microseconds against the LLM call it rides on — and a cache keyed on
+   a schema form would go stale against a `defschemas` re-registration in the
+   REPL, which this codebase has already been bitten by once (see the `defonce`
+   note in clj-llm `schema_registry.clj`)."
+  [k raw-schema state]
+  (let [{:keys [schema optional]} (clj-llm/parse-malli-field raw-schema)
+        value    (get state k)
+        present? (some? value)]
+    (cond
+      (and (not present?) optional) nil
+      (not present?)                {:key k :reason :missing}
+      :else (let [{:keys [valid? errors]} (clj-llm/validate-output schema value)]
+              (when-not valid?
+                {:key k :reason :invalid :errors errors})))))
+
+(defn input-violations
+  "Every declared input of `input-fields` that is absent (and not `:optional`)
+   or present with the wrong shape, checked against `state` (the st-memory
+   snapshot). Empty vector when the contract holds."
+  [input-fields state]
+  (vec (keep (fn [[k raw-schema]] (field-violation k raw-schema state))
+             input-fields)))
+
+(defn violations->message
+  "One line naming the offending keys — this string becomes `:dspy-error-reason`
+   and is what the user sees when the turn aborts, so it must say which key and
+   which node, not just that something was wrong. Renders both reasons: only
+   `:missing` aborts today, but the text is what a promoted `:invalid` would
+   also need."
+  [node-id violations]
+  (str "behavior-tree context contract violated at " (pr-str node-id) ": "
+       (str/join "; "
+                 (map (fn [{:keys [key reason errors]}]
+                        (case reason
+                          :missing (str (pr-str key) " is a declared signature input "
+                                        "but is absent from st-memory")
+                          :invalid (str (pr-str key) " failed its declared schema — "
+                                        (pr-str errors))))
+                      violations))))
+
+(defn filter-declared-outputs
+  "Keep only signature-declared output keys. Returns `[kept dropped-keys]`.
+
+   Both clj-llm output paths fill a default for every declared key before
+   returning, so filtering can never lose one; what it drops is a key the MODEL
+   invented. `fields->malli-schema` builds an open `[:map …]`, so such a key
+   passes output validation today and lands on the shared bus — where anything
+   reading st-memory, including the TUI and model-authored sandbox code, then
+   sees it. Nothing can legitimately depend on it: its presence is whatever the
+   model happened to emit that turn."
+  [outputs output-keys]
+  (let [declared (set output-keys)]
+    (if (empty? declared)
+      ;; A signature that declares NO outputs has an UNDECLARED contract, not an
+      ;; empty one — filtering against it would silently discard every output.
+      ;; Compiled signatures always carry :output-keys; hand-built maps (the BT
+      ;; tests, ad-hoc nodes) may not, and dropping their results would be a
+      ;; far worse failure than the undeclared key this guards against.
+      [outputs []]
+      [(select-keys outputs declared)
+       (vec (remove declared (keys outputs)))])))
+
 (defmulti execute-dspy-operation
   "Execute DSPy operation using clj-llm.
    Dispatches on operation keyword (:predict, :chain-of-thought)."
@@ -322,7 +444,8 @@
   [{{:keys [id signature operation stable-keys]} :opts
     :keys [st-memory agent]
     :as context}]
-  (let [{:keys [input-keys]} (extract-signature-metadata signature context)
+  (let [{:keys [input-keys output-keys input-fields]}
+        (signature-fields signature context)
         stable-keys (normalize-stable-keys
                      (if (some? stable-keys) stable-keys default-stable-keys))
         fire!       (when agent (force !fire-hook))
@@ -357,13 +480,59 @@
                                      acc)))
                                {} input-keys)
             filtered-inputs (apply dissoc all-inputs stable-keys)
+            ;; CR-BT-26. Checked against the FULL declared input set, including
+            ;; keys lifted into the system message by :stable-keys — a stable
+            ;; key that is missing degrades `build-system-prompt` in exactly the
+            ;; same silent way, it just omits a '## <key>' section instead of a
+            ;; user-message field.
+            violations      (input-violations input-fields state)
+            {missing :missing invalid :invalid} (group-by :reason violations)
+            ;; Schema drift on a value that IS present: report and continue.
+            _ (when (seq invalid)
+                (mulog/warn ::dspy-input-schema-drift
+                            :node-id id
+                            :keys (mapv :key invalid)
+                            :errors (mapv #(select-keys % [:key :errors]) invalid)))
             pre-event       (assoc base-event :inputs filtered-inputs)]
         (when fire! (fire! :agent.dspy-action/pre pre-event))
-        (if (seq all-inputs)
+        (cond
+          ;; A declared input is absent. This is an internal contract
+          ;; violation, not a model failure, so it is classified :fatal — the
+          ;; agent repair path re-prompts on :malformed and re-runs on
+          ;; :transient, and neither can fix a key no action wrote. :fatal
+          ;; routes to abort-turn-with-llm-error! with the precise cause,
+          ;; which is the one outcome that names the broken key instead of
+          ;; burning the iteration budget re-asking a model that was never the
+          ;; problem.
+          (seq missing)
+          (let [msg (violations->message id missing)]
+            (mulog/error ::dspy-missing-declared-inputs
+                         :node-id id
+                         :keys (mapv :key missing)
+                         :message msg)
+            (swap! st-memory assoc
+                   :dspy-error msg
+                   :dspy-error-class :fatal
+                   :dspy-error-reason msg
+                   :dspy-raw-text nil
+                   :dspy-no-json-envelope? false)
+            (when fire!
+              (fire! :agent.dspy-action/post
+                     (assoc pre-event :result p/failure :error msg)))
+            p/failure)
+
+          (seq all-inputs)
           (let [result (execute-dspy-operation operation signature context
                                                {:inputs filtered-inputs :state state
                                                 :stable-keys stable-keys
-                                                :no-zone-keys (set (get-in context [:opts :no-zone-keys]))})]
+                                                :no-zone-keys (set (get-in context [:opts :no-zone-keys]))})
+                ;; CR-BT-27 — only signature-declared keys reach the bus.
+                [kept dropped] (filter-declared-outputs (:outputs result) output-keys)
+                result         (assoc result :outputs kept)]
+            (when (seq dropped)
+              (mulog/warn ::dspy-undeclared-outputs
+                          :node-id id :dropped dropped
+                          :declared (vec output-keys)))
             ;; Batch all state updates (outputs + reasoning + usage) into a
             ;; single swap! so TUI watch handlers see all changes atomically.
             (swap! st-memory
@@ -411,6 +580,12 @@
                             :reasoning (:reasoning result)
                             :usage     (:usage result))))
             p/success)
+
+          ;; Nothing to send. With CR-BT-26 in front of it this is now reachable
+          ;; only when the signature declares no inputs at all, or when every
+          ;; declared input is `{:optional true}` and none happens to be set —
+          ;; the "a required key is missing" case is caught above, by name.
+          :else
           (do
             (mulog/warn ::dspy-missing-inputs :node-id id :input-keys input-keys)
             (when fire!

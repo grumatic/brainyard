@@ -132,10 +132,19 @@
                  [:error [:string {:desc "error message, empty if none"}]]
                  [:parallel? [:boolean {:desc "true if this block ran in a parallel partition"}]]
                  ;; Optional fields set on the soft-pending / harvest paths.
-                 [:status [:maybe [:enum {:desc "Optional task lifecycle marker. :pending = soft-timeout deferred, harvest later; :timeout = hard-cancel at the LLM-set deadline; :resolved = harvested completion of a previously-pending task; :cancelled = cancel-task was called. Missing on plain sync completion (success / failure)."}
-                                   :pending :timeout :resolved :cancelled]]]
-                 [:task-id [:maybe [:string {:desc "Stable task-manager handle. Set when :status is :pending (so a later iteration can correlate the harvested completion) or :resolved (so the LLM can pass it to `task$detail` (add `:last-n N` for the output tail) / `task$cancel`)."}]]]
-                 [:from-iteration [:maybe [:int {:desc "On :resolved entries, the iteration that first emitted the eval (provenance for cross-iteration formatting)."}]]]]
+                 ;; `{:optional true}` is the ENTRY prop — it says the KEY may be
+                 ;; absent. `[:maybe …]` alone only makes the VALUE nullable and
+                 ;; leaves the key required, which is what these three carried
+                 ;; until CR-BT-26 validated `:iterations` for the first time and
+                 ;; every plain sync eval entry failed: `sanitize-eval-entry`
+                 ;; adds them with `cond->`, so they are genuinely absent, not nil.
+                 ;; Both are kept — absent OR explicitly nil are both real here,
+                 ;; since the harvest path merges a projected entry rather than
+                 ;; re-sanitizing it.
+                 [:status {:optional true} [:maybe [:enum {:desc "Optional task lifecycle marker. :pending = soft-timeout deferred, harvest later; :timeout = hard-cancel at the LLM-set deadline; :resolved = harvested completion of a previously-pending task; :cancelled = cancel-task was called. Missing on plain sync completion (success / failure)."}
+                                                    :pending :timeout :resolved :cancelled]]]
+                 [:task-id {:optional true} [:maybe [:string {:desc "Stable task-manager handle. Set when :status is :pending (so a later iteration can correlate the harvested completion) or :resolved (so the LLM can pass it to `task$detail` (add `:last-n N` for the output tail) / `task$cancel`)."}]]]
+                 [:from-iteration {:optional true} [:maybe [:int {:desc "On :resolved entries, the iteration that first emitted the eval (provenance for cross-iteration formatting)."}]]]]
 
    ::iteration [:map {:desc "One CoAct iteration record"}
                 [:iteration [:int {:desc "1-based index"}]]
@@ -3010,10 +3019,23 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                                          (mapv (fn [e]
                                                  (if-let [t (and (= :pending (:status e))
                                                                  (get terminal-tasks (:task-id e)))]
+                                                   ;; sanitize, like every other
+                                                   ;; write into :iterations. This
+                                                   ;; site was the one that didn't:
+                                                   ;; the projection's error path
+                                                   ;; emits `:result nil` and no
+                                                   ;; `:parallel?`, and skipping
+                                                   ;; sanitize also skipped the
+                                                   ;; context-budget truncation
+                                                   ;; every neighbouring entry gets.
+                                                   ;; Surfaced by CR-BT-26 as
+                                                   ;; ::dspy-input-schema-drift on
+                                                   ;; `:iterations`.
                                                    (let [base (project-terminal-task->eval-entry t)]
-                                                     (merge base {:status :resolved
-                                                                  :task-id (:task-id e)
-                                                                  :from-iteration (:from-iteration e)}))
+                                                     (sanitize-eval-entry
+                                                      (merge base {:status :resolved
+                                                                   :task-id (:task-id e)
+                                                                   :from-iteration (:from-iteration e)})))
                                                    e))
                                                (or entries []))))
                                (:tool-results record)

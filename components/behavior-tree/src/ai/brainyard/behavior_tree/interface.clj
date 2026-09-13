@@ -63,6 +63,21 @@
   [args]
   (engine/st-memory-has-value? args))
 
+(defn input-violations
+  "CR-BT-26: every declared signature input in `input-fields` that is absent
+   from `state` (and not marked `{:optional true}`) or present with the wrong
+   shape. Returns `[{:key _ :reason :missing|:invalid :errors _} …]`; empty
+   when the contract holds.
+
+   The `dspy` node runs this itself on every call — exported so a caller can
+   assert the same contract WITHOUT an LLM round-trip, which is how an agent
+   pins that its own producers write what its signature declares. A signature
+   with no `:inputs` field map declares no contract and yields no violations.
+
+   Design: docs/design/bt-context-schema-design.md §3.6."
+  [input-fields state]
+  (dspy-action/input-violations input-fields state))
+
 ;; ============================================================================
 ;; DSPy action (for use as action-fn in BT)
 ;; ============================================================================
