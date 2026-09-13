@@ -9,7 +9,7 @@
    - Registry:  agent-registry$list
    - Runtime:   agent-runtime$config (read or set)
    - Memory:    memory$remember, memory$recall, memory$status, memory$explain
-   - Query:     query$llm (accepts :prompt or :prompts)
+   - Query:     query$llm (accepts :prompt or :prompts, and a per-call :lm-config)
    - all-common-commands vector
 
    NOTE: query$clone (clone-self recursion) is defined here but is NOT part of
@@ -37,6 +37,7 @@
             [ai.brainyard.agent.common.fsm :as fsm]
             [ai.brainyard.agent.common.todo :as todo]
             [ai.brainyard.agent.common.trajectory-export :as traj-export]
+            [ai.brainyard.agent.common.schema :as acs]
             [ai.brainyard.clj-llm.interface :as clj-llm]
             [ai.brainyard.agent.core.usage :as usage]
             ;; bare — registers the built-in usage guides into agent.core.usage
@@ -44,6 +45,7 @@
             [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.memory.interface.protocol :as mproto]
             [ai.brainyard.mulog.interface :as mulog]
+            [clojure.edn :as edn]
             [clojure.string :as str]))
 
 ;; ============================================================================
@@ -908,9 +910,131 @@ results are intentionally kept out of semantic recall so it stays focused on kno
   (when-let [agent proto/*current-agent*]
     (get-in @(:!session agent) [:config :usage-tracker])))
 
+;; ----------------------------------------------------------------------------
+;; query$llm — per-call model selection
+;;
+;; Without an argument, every sub-query in a session runs on whatever
+;; `:sub-lm-config` resolves to, which is a SESSION-level setting: a caller that
+;; wants one cheap classification and one careful analysis in the same turn has
+;; no way to say so. `:lm-config` names the model FOR THIS CALL and changes
+;; nothing when omitted.
+;; ----------------------------------------------------------------------------
+
+(def ^:private lm-config-arg-keys
+  "Keys accepted inside a `query$llm :lm-config`, forwarded to `create-lm`.
+   Everything here is a model-selection or sampling knob whose worst case is a
+   wasted call. Anything not listed is ignored rather than rejected — a model
+   padding the map with a `:name` or `:reason` has still said which LM it wants."
+  #{:provider :model :temperature :max-tokens :timeout-ms :region :aws-profile})
+
+(def ^:private lm-config-denied-keys
+  "Keys a caller may NOT set, rejected loudly rather than dropped silently.
+
+   `:base-url` is the destination and `:api-key` is the credential, and both
+   stay owned by config/env. `query$llm`'s `:prompt` + `:sub-context` carry
+   whatever the caller gathered — file contents, logs, configs — so a caller
+   able to name its own base URL turns this command into an exfiltration
+   channel, authenticated with a key it also supplied. That caller is not
+   always the user: any content this agent read can contain instructions.
+   Selecting among CONFIGURED providers cannot send data anywhere new; naming a
+   URL can, which is why the line is drawn between them rather than at the map."
+  #{:base-url :api-key :auth-token})
+
+(defn- coerce-lm-num
+  "Coerce a numeric lm-config value that arrived as a string (the JSON
+   tool-calls channel has no way to keep `0.2` from being sent as `\"0.2\"`).
+   An unparseable string is passed through untouched so `create-lm` — not a
+   silent nil — reports it."
+  [k v]
+  (if (string? v)
+    (or (if (= k :temperature) (parse-double v) (parse-long v)) v)
+    v))
+
+(defn- ->lm-spec
+  "Normalize a caller-supplied `:lm-config` into a keyword-keyed `create-lm`
+   spec, or `{::error msg}`. Accepts string OR keyword keys: a native map comes
+   from the code-block channel, a JSON object (string keys) from tool-calls."
+  [m]
+  (let [spec (reduce-kv (fn [acc k v]
+                          (let [kk (keyword (if (keyword? k) (name k) (str k)))]
+                            (assoc acc kk v)))
+                        {} m)
+        denied (filterv lm-config-denied-keys (keys spec))]
+    (if (seq denied)
+      {::error (str ":lm-config may not set " (str/join ", " (map str denied))
+                    " — the endpoint and credentials come from the environment."
+                    " Pass only :provider/:model (plus :temperature, :max-tokens,"
+                    " :timeout-ms, :region, :aws-profile).")}
+      (into {} (keep (fn [[k v]]
+                       (when (and (lm-config-arg-keys k) (some? v))
+                         [k (coerce-lm-num k v)])))
+            spec))))
+
+(defn- resolve-query-lm
+  "Resolve the LM for ONE `query$llm` call. Returns `{:lm <lm-config> :label s}`
+   or `{::error msg}`.
+
+   `arg` may be:
+     nil / blank → the agent's `:sub-lm-config` via `config/resolve-sub-lm`
+                   (exactly today's behavior)
+     a map       → `{:provider \"openai\" :model \"gpt-4o\"}` → `create-lm`
+     a string    → a `provider/model` label (the same form `:sub-lm-config`,
+                   `:eval-lm-config` and `:agent-lm-tiers` already take), or an
+                   EDN map string, since the tool-calls channel cannot express a
+                   map literal — the `::acs/map-object-arg` convention.
+
+   The spec is always minted by `create-lm`, never used verbatim: a hand-built
+   map carries no `:api-key`, `:base-url`, `:auth-header` or `:message-format`,
+   so the call would 401 or POST to nil. Same lesson as the `/model` switch that
+   forwarded a stale key instead of re-resolving one.
+
+   An unresolvable spec is an ERROR, not a fallback to the sub-LM. The
+   config-level resolvers (`resolve-sub-lm` / `-eval-lm` / `-analytics-lm`) fall
+   back because their input is a persisted setting whose typo would otherwise
+   crash an unrelated turn; here the caller named a model FOR THIS CALL, and
+   quietly billing a different one answers the wrong question while looking like
+   the right answer."
+  [arg]
+  (let [spec (cond
+               (map? arg) (->lm-spec arg)
+
+               (and (string? arg) (not (str/blank? arg)))
+               (let [s (str/trim arg)]
+                 (if (str/starts-with? s "{")
+                   (let [parsed (try (edn/read-string s)
+                                     (catch Exception e {::error (str ":lm-config is not readable EDN: "
+                                                                     (ex-message e))}))]
+                     (cond (::error parsed) parsed
+                           (map? parsed)    (->lm-spec parsed)
+                           :else {::error ":lm-config string must be a provider/model label or an EDN map"}))
+                   ;; A bare label: "openai/gpt-4o", legacy "openai:gpt-4o".
+                   {:model s}))
+
+               ;; nil, and a blank string — LLMs emit "" for a field they
+               ;; skipped — both mean "not specified", i.e. the sub-LM.
+               (or (nil? arg) (and (string? arg) (str/blank? arg))) nil
+
+               :else {::error (str ":lm-config must be a map or a \"provider/model\" string, got "
+                                   (pr-str arg))})]
+    (cond
+      (nil? spec)     {:lm (config/resolve-sub-lm)}
+      (::error spec)  spec
+      (empty? spec)   {::error ":lm-config named no model — pass :provider and :model"}
+      :else
+      (try
+        (let [lm    (clj-llm/create-lm spec)
+              label (clj-llm/format-lm-label (:provider lm) (:model lm))]
+          ;; Logged on every override so "why did this sub-query bill that
+          ;; model?" is answerable from the log, the way ::tier-routed makes a
+          ;; dispatch's model choice answerable.
+          (mulog/log ::query-lm-override :provider (:provider lm) :model (:model lm))
+          {:lm lm :label label})
+        (catch Exception e
+          {::error (str ":lm-config did not resolve to a model: " (ex-message e))})))))
+
 (defcommand query$llm
-  "Query a sub-LLM (no tools, no iteration). Pass :prompt (single) or :prompts (concurrent batch)."
-  (fn [& {:keys [prompt prompts sub-context timeout]}]
+  "Query a sub-LLM (no tools, no iteration). Pass :prompt (single) or :prompts (concurrent batch); :lm-config picks the model."
+  (fn [& {:keys [prompt prompts sub-context timeout lm-config]}]
     (let [has-prompt?  (not (str/blank? (str prompt)))
           has-prompts? (and (sequential? prompts) (seq prompts))
           ;; Seconds at the tool boundary, ms underneath: every other timeout an
@@ -919,24 +1043,32 @@ results are intentionally kept out of semantic recall so it stays focused on kno
           ;; 300000. Coerced to nil when absent so the LM's own :timeout-ms — and
           ;; failing that the provider default — still decides.
           timeout-ms   (when (and (number? timeout) (pos? timeout))
-                         (long (* 1000 timeout)))]
+                         (long (* 1000 timeout)))
+          resolved     (resolve-query-lm lm-config)
+          ;; Echoed back only when the caller overrode the model, so a query
+          ;; that ran on the session's own sub-LM stays as quiet as it was.
+          lm-label     (when (some? lm-config) (:label resolved))
+          with-lm      (fn [m] (cond-> m lm-label (assoc :lm lm-label)))]
       (cond
+        (::error resolved)
+        {:error (str "query$llm: " (::error resolved))}
+
         (and has-prompt? has-prompts?)
         {:error "supply :prompt OR :prompts, not both"}
 
         has-prompts?
         (try
-          (let [f (clj-llm/create-llm-query-batched-fn (config/resolve-sub-lm) (resolve-usage-tracker)
+          (let [f (clj-llm/create-llm-query-batched-fn (:lm resolved) (resolve-usage-tracker)
                                                        {:timeout-ms timeout-ms})]
-            {:results (if sub-context (f (vec prompts) sub-context) (f (vec prompts)))})
+            (with-lm {:results (if sub-context (f (vec prompts) sub-context) (f (vec prompts)))}))
           (catch Exception e
             {:error (str "query$llm error (batched): " (.getMessage e))}))
 
         has-prompt?
         (try
-          (let [f (clj-llm/create-llm-query-fn (config/resolve-sub-lm) (resolve-usage-tracker)
+          (let [f (clj-llm/create-llm-query-fn (:lm resolved) (resolve-usage-tracker)
                                                {:timeout-ms timeout-ms})]
-            {:result (if sub-context (f prompt sub-context) (f prompt))})
+            (with-lm {:result (if sub-context (f prompt sub-context) (f prompt))}))
           (catch Exception e
             {:error (str "query$llm error: " (.getMessage e))}))
 
@@ -946,10 +1078,12 @@ results are intentionally kept out of semantic recall so it stays focused on kno
                   [:prompt {:optional true} [:string {:desc "Single prompt to send to the sub-LLM (omit when using :prompts)"}]]
                   [:prompts {:optional true} [:vector {:desc "Multiple prompts to dispatch concurrently (max 20). Omit when using :prompt."} :string]]
                   [:sub-context {:optional true} [:string {:desc "Optional supplementary context (max ~500K chars). Shared across all prompts in batched mode."}]]
-                  [:timeout {:optional true} [:int {:desc "Seconds to allow the call (default 60; batched: bounds the whole batch, default 180). Raise for long generations."}]]]
+                  [:timeout {:optional true} [:int {:desc "Seconds to allow the call (default 60; batched: bounds the whole batch, default 180). Raise for long generations."}]]
+                  [:lm-config {:optional true :desc "Model for THIS call. A map {:provider \"openai\" :model \"gpt-4o\"} (also :temperature/:max-tokens/:timeout-ms/:region), an EDN map string, or a \"provider/model\" label. Omit → the agent's configured sub-LLM. :base-url/:api-key are not accepted."} ::acs/map-object-arg]]
   :output-schema [:map
                   [:result {:optional true} [:string {:desc "Sub-LLM response (single-prompt mode)"}]]
                   [:results {:optional true} [:vector {:desc "Vector of sub-LLM responses in input order (batched mode)"} :string]]
+                  [:lm {:optional true} [:string {:desc "The provider/model that served the call (present only when :lm-config was given)"}]]
                   [:error {:optional true} [:string {:desc "Error if the call failed"}]]])
 
 (defcommand query$clone

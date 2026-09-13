@@ -289,6 +289,24 @@ Pass EITHER `:prompt` (single string → `{:result \"<answer>\"}`) OR `:prompts`
 (vector of strings, max 20 → `{:results [\"<a1>\" ...]}` in input order). Don't
 pass both. `:sub-context` is shared across all prompts in batched mode.
 
+### Choosing the model per call — `:lm-config`
+Omit it and the call runs on the session's configured sub-LLM, as always. Pass it
+to pick the model for THIS call — a cheap one for bulk classification, a stronger
+one for the analysis that follows, in the same turn:
+
+```clojure
+;; a map (preferred in code blocks)
+(query$llm :prompts prompts :lm-config {:provider \"bedrock\" :model \"amazon.nova-lite-v1:0\"})
+;; a provider/model label — same form as the :sub-lm-config setting
+(query$llm :prompt \"Weigh these two designs…\" :lm-config \"openai/gpt-4o\")
+```
+
+Also accepted in the map: `:temperature`, `:max-tokens`, `:timeout-ms`, `:region`,
+`:aws-profile`. `:base-url` and `:api-key` are NOT — the endpoint and the
+credential come from the environment. The result carries `:lm` naming the model
+that served it. A model/provider that doesn't resolve is an `:error`, never a
+silent fall back to the session model, so a typo is visible rather than billed.
+
 When to use:
 - **Complex analysis of large data**: parsing, classifying, or summarizing file contents, logs, configs
 - **Natural-language reasoning**: answering \"why\" questions, comparing alternatives, drawing conclusions

@@ -731,6 +731,38 @@ an agent. `bb catalog:refresh` reports which catalog models have no entry in
 
 Design + as-built map: `docs/design/router-agent-model-routing-plan.md`.
 
+### `query$llm :lm-config` names a model for ONE sub-query
+
+The tier rule above ("the router never names a model") is about DISPATCH — a
+specialist that will run for many turns, whose model choice deserves a
+configuration answer rather than a per-turn whim. A sub-query is the opposite
+case: no tools, no iteration, one request, and the caller is already writing the
+prompt. `:sub-lm-config` is session-level, so a caller wanting a cheap bulk
+classification and one careful analysis in the same turn could not say so;
+`:lm-config` says it per call. Omitted, nothing changes.
+
+Accepted as a native map (`{:provider "openai" :model "gpt-4o"}`), an EDN map
+string, or a `provider/model` label — the `::acs/map-object-arg` convention, so
+the code-block and tool-calls channels can both express it. Three rules:
+
+- **Always minted by `create-lm`, never used verbatim.** A hand-built map has no
+  `:api-key`, `:base-url`, `:auth-header` or `:message-format`, so the call would
+  401 or POST to nil — the same failure the `/model` switch hit when it forwarded
+  a stale key instead of re-resolving one.
+- **`:base-url` and `:api-key` are refused, not dropped.** `:prompt` and
+  `:sub-context` carry whatever the caller gathered — file contents, logs,
+  configs — so a caller able to name its own endpoint turns this into an
+  exfiltration channel authenticated with a key it also supplied, and that caller
+  is not always the user: any content the agent read can contain instructions.
+  Choosing among CONFIGURED providers cannot send data anywhere new; naming a URL
+  can, which is where the line is drawn.
+- **An unresolvable spec is an `:error`, not a fall back to the sub-LM.** The
+  config-level resolvers fall back because their input is a persisted setting
+  whose typo would crash an unrelated turn; here the caller named a model FOR
+  THIS CALL, and quietly billing a different one is a wrong answer wearing the
+  shape of a right one. The result carries `:lm` (the serving `provider/model`)
+  whenever an override was given, and `::query-lm-override` is logged.
+
 ## Build & release pipeline
 
 ```bash
