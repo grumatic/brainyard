@@ -344,7 +344,7 @@ Your answer body is markdown. Be terse. Lead with the outcome.")
                           ;; Allowlisted shell reads (which, ls, git rev-parse, ...)
                           common-tools/shell-tools
                           ;; Flat sub-LLM (NOT query$clone)
-                          [#'common-cmds/query$llm]
+                          [#'common-cmds/query$llm #'common-cmds/query$structured-output]
                           ;; Background tasks for slow probes
                           task-cmds/task-commands
                           ;; Bookkeeping

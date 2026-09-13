@@ -217,7 +217,7 @@ throwing when it is not running.
                           ;; Shell — allowlisted reads only.
                           common-tools/shell-tools
                           ;; Synthesis over retrieved passages.
-                          [#'common-cmds/query$llm]
+                          [#'common-cmds/query$llm #'common-cmds/query$structured-output]
                           ;; Background tasks for slow extraction runs.
                           task-cmds/task-commands
                           ;; Bookkeeping.

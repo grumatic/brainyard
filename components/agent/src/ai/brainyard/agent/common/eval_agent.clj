@@ -498,7 +498,7 @@ CROSS-AGENT DISPATCH (only on user opt-in — v1 does not auto-apply)
                                        ;; reproducibility cross-check. FLAT only —
                                        ;; intentionally excludes query$clone
                                        ;; (clone-self forbidden).
-                                       [#'common-cmds/query$llm]
+                                       [#'common-cmds/query$llm #'common-cmds/query$structured-output]
 
                                        ;; Bookkeeping + cross-agent dispatch via
                                        ;; call-tool. bootstrap-tools also covers

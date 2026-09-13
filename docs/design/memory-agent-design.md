@@ -408,9 +408,9 @@ The agent's input signature accepts a discriminated union over `:op`. Internally
 
 > **As-built:** The pseudo-`defagent` above is illustrative. The shipped `defagent memory-agent`
 > (in `common/memory_agent.clj`) differs in three ways verified against code:
-> 1. **Roster is 20 tools, not 16.** The shipped `memory-agent-tools` adds the three signature
+> 1. **Roster is 21 tools, not 16.** The shipped `memory-agent-tools` adds the three signature
 >    wrappers (`memory$essence-extract`, `memory$llm-consolidate`, `memory$verify-fact`) and the
->    deterministic `memory$purge-plan` planner. See the §18.1 table for the authoritative roster.
+>    deterministic `memory$purge-plan` planner, and `query$structured-output` alongside `query$llm`. See the §18.1 table for the authoritative roster.
 > 2. **No `:forbidden` key.** `call-tool`/`query$clone` are excluded by **omission** from the roster,
 >    not via a `:forbidden` set; the write-guard hook enforces gating from the other direction.
 > 3. **Custom `run-memory-agent` ask-fn**, not `run-coact-derived` — it inherits coact's
@@ -666,7 +666,7 @@ All five phases shipped end-to-end. Test coverage: 135 tests / 900 assertions ac
 
 **Files (all under `components/agent/`):**
 
-- `src/ai/brainyard/agent/common/memory_agent.clj` — `defagent memory-agent` + custom `run-memory-agent` ask-fn + 20-tool roster (`memory-agent-tools`).
+- `src/ai/brainyard/agent/common/memory_agent.clj` — `defagent memory-agent` + custom `run-memory-agent` ask-fn + 21-tool roster (`memory-agent-tools`).
 - `src/ai/brainyard/agent/common/memory_agent/commands.clj` — every `memory$*` primitive.
 - `src/ai/brainyard/agent/common/memory_agent/signatures.clj` — `EssenceExtraction`, `LlmReducer`, `FactVerification`.
 - `src/ai/brainyard/agent/common/memory_agent/instruction.clj` — master instruction + tool-context.
@@ -695,7 +695,7 @@ All five phases shipped end-to-end. Test coverage: 135 tests / 900 assertions ac
 
 A handful of choices diverged from the proposal text in ways worth pinning down:
 
-1. **`run-memory-agent` instead of `run-coact-derived`.** Using coact's `run-coact-derived` would also merge coact-agent's ~50-tool roster into memory-agent's. Memory-agent is a leaf bookkeeper; we want the narrow 20-tool surface visible to its LLM. `run-memory-agent` inherits coact's `:instruction` / `:tool-context` / `:bt-factory` only.
+1. **`run-memory-agent` instead of `run-coact-derived`.** Using coact's `run-coact-derived` would also merge coact-agent's ~50-tool roster into memory-agent's. Memory-agent is a leaf bookkeeper; we want the narrow 21-tool surface visible to its LLM. `run-memory-agent` inherits coact's `:instruction` / `:tool-context` / `:bt-factory` only.
 2. **Sub-LM default = `claude-code:sonnet`.** Open Q2 originally suggested haiku-class. We landed one notch up because EssenceExtraction / LlmReducer / FactVerification benefit measurably from sonnet's stronger structured-output reliability. Override per call via `:sub-lm-config`.
 3. **`memory$verify-fact` is a tool, not a hand-crafted `query$llm` prompt.** Same for `memory$essence-extract` and `memory$llm-consolidate`. Each wraps `clj-llm/chain-of-thought` so the LLM that drives memory-agent doesn't have to construct prompts or parse JSON — Malli validates the output schema.
 4. **`memory$verify-fact` deferred from Phase 1's primitive list.** Originally listed as a thin wrapper in §5.2; in practice it requires the FactVerification signature and so naturally lives with `:op :verify-fact` in Phase 5.

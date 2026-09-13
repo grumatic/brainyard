@@ -173,7 +173,8 @@
    #'ma-cmds/memory$purge-plan
 
    ;; Reasoning
-   #'common-cmds/query$llm])
+   #'common-cmds/query$llm
+   #'common-cmds/query$structured-output])
 
 ;; ============================================================================
 ;; defagent

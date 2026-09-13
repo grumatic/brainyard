@@ -314,7 +314,7 @@ caveat.")
                           ;; Shell — allowlisted (date math for relative :at)
                           common-tools/shell-tools
                           ;; Synthesis — flat sub-LLM (NOT query$clone)
-                          [#'common-cmds/query$llm]
+                          [#'common-cmds/query$llm #'common-cmds/query$structured-output]
                           ;; Background tasks for slow probes
                           task-cmds/task-commands
                           ;; Discovery + cross-agent dispatch (call-tool)

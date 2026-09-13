@@ -353,7 +353,7 @@ ANSWER with `Saved edit:` and (`Rollback:` | `Rolled back:`).")
                                        common-tools/shell-tools
 
                                        ;; Synthesis — flat sub-LLM only
-                                       [#'common-cmds/query$llm]
+                                       [#'common-cmds/query$llm #'common-cmds/query$structured-output]
 
                                        ;; Bookkeeping
                                        common-tools/bootstrap-tools

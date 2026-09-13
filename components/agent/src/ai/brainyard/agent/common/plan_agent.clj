@@ -389,7 +389,7 @@ PERSISTENCE — write markdown directly (NO dossier-construction tools)
                                        ;; Sub-LLM for rubric scoring (R1 / R2 / R6).
                                        ;; FLAT only — intentionally excludes #'query$clone
                                        ;; (Hard Rule 4: clone-self forbidden).
-                                       [#'common-cmds/query$llm]
+                                       [#'common-cmds/query$llm #'common-cmds/query$structured-output]
 
                                        ;; Bookkeeping + cross-agent dispatch via call-tool.
                                        common-tools/bootstrap-tools

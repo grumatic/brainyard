@@ -470,7 +470,7 @@ For a new server: call mcp-agent first; take its resulting entry; wrap in
                           ;; Shell — allowlisted reads only (which, env, gpg --list-keys, etc.)
                           common-tools/shell-tools
                           ;; Synthesis — flat sub-LLM (NOT query$clone)
-                          [#'common-cmds/query$llm]
+                          [#'common-cmds/query$llm #'common-cmds/query$structured-output]
                           ;; Background tasks for slow probes
                           task-cmds/task-commands
                           ;; Bookkeeping

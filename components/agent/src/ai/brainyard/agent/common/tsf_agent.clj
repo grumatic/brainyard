@@ -204,7 +204,7 @@ throwing when it is not running.
                           ;; Shell — allowlisted reads only.
                           common-tools/shell-tools
                           ;; Synthesis over what the runs produced.
-                          [#'common-cmds/query$llm]
+                          [#'common-cmds/query$llm #'common-cmds/query$structured-output]
                           ;; Background tasks: a run is minutes long, and this
                           ;; is how the agent waits on one without holding a turn.
                           task-cmds/task-commands

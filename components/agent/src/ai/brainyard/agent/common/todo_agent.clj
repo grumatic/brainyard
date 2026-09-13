@@ -440,7 +440,7 @@ CROSS-AGENT DISPATCH (sparingly)
 
                                        ;; Sub-LLM for rubric scoring (R1 / R2 / R3 / R6).
                                        ;; FLAT only — intentionally excludes query$clone.
-                                       [#'common-cmds/query$llm]
+                                       [#'common-cmds/query$llm #'common-cmds/query$structured-output]
 
                                        ;; Bookkeeping + cross-agent dispatch via call-tool.
                                        ;; bootstrap-tools also covers project-file / config /

@@ -289,6 +289,23 @@ Pass `:prompts` — a vector of strings, max 20 → `{:results [\"<a1>\" ...]}` 
 input order. A single query is a one-element vector; read it with
 `(first (:results r))`. `:context` is shared across all prompts.
 
+### Structured output — `:output-schema` + `query$structured-output`
+Pass `:output-schema` (a JSON Schema for an object — map or JSON string — or a Malli
+schema) and each result comes back as the parsed JSON value, with the schema that
+was sent under `:output-schema`. Parsed is not validated: check the shape with
+`query$structured-output`, which takes that pair as-is and reports `:invalid`
+indices — rerun only those.
+
+```clojure
+(def r (query$llm :prompts prompts
+                  :output-schema {\"type\" \"object\"
+                                  \"properties\" {\"label\" {\"type\" \"string\"}
+                                                \"count\" {\"type\" \"integer\"}}
+                                  \"required\" [\"label\" \"count\"]}))
+(def v (query$structured-output :output-schema (:output-schema r) :values (:results r)))
+;; → {:valid? false :invalid [2] :errors [{:index 2 :path [\"count\"] :message \"missing required property\"}]}
+```
+
 ### Choosing the model per call — `:lm-config`
 Omit it and the call runs on the session's configured sub-LLM, as always. Pass it
 to pick the model for THIS call — a cheap one for bulk classification, a stronger

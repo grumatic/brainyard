@@ -361,7 +361,7 @@ forced-turn entry — the blast radius.")
                           ;; Shell — allowlisted (scan for trigger emitters)
                           common-tools/shell-tools
                           ;; Synthesis — flat sub-LLM (NOT query$clone)
-                          [#'common-cmds/query$llm]
+                          [#'common-cmds/query$llm #'common-cmds/query$structured-output]
                           ;; Background tasks for slow probes
                           task-cmds/task-commands
                           ;; Discovery + cross-agent dispatch (call-tool)

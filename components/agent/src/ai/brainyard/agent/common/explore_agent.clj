@@ -443,7 +443,7 @@ The results/ path you wrote is what you emit on the
 
                                        ;; Synthesis — flat sub-LLM only
                                        ;; (intentionally excludes #'query$clone — Hard Rule 1)
-                                       [#'common-cmds/query$llm]
+                                       [#'common-cmds/query$llm #'common-cmds/query$structured-output]
 
                                        ;; Bookkeeping
                                        common-tools/bootstrap-tools

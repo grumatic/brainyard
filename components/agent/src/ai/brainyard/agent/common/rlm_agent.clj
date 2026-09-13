@@ -315,7 +315,7 @@ in place of inlining equivalent helper logic.
                                        common-tools/shell-tools
 
                                         ;; MAP primitive — flat sub-LLM calls (single + batched, same command).
-                                       [#'common-cmds/query$llm]
+                                       [#'common-cmds/query$llm #'common-cmds/query$structured-output]
 
                                         ;; RECURSE primitive — clone-self (depth-2), gated to rlm-* via
                                         ;; :tool-use-control. rlm-agent is the SOLE holder of query$clone;

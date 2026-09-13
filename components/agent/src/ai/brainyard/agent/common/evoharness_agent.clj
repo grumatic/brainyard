@@ -237,7 +237,7 @@ throwing when it is not running.
                           common-tools/shell-tools
                           ;; Synthesis over many episodes. Never for scoring one:
                           ;; that would put an LLM judge in the reward path.
-                          [#'common-cmds/query$llm]
+                          [#'common-cmds/query$llm #'common-cmds/query$structured-output]
                           ;; Background tasks: runs are long and a submission
                           ;; should not hold a turn.
                           task-cmds/task-commands

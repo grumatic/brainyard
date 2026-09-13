@@ -741,7 +741,7 @@ AUTHORING (no helpers — write the markdown):
 
                                        ;; Synthesis — flat sub-LLM only.
                                        ;; Intentionally excludes #'query$clone (Hard Rule 1).
-                                       [#'common-cmds/query$llm]
+                                       [#'common-cmds/query$llm #'common-cmds/query$structured-output]
 
                                        ;; Bookkeeping — call-tool reaches the six specialists
                                        common-tools/bootstrap-tools

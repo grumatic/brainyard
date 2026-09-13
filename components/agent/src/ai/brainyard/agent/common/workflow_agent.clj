@@ -471,7 +471,7 @@ workflow$load-template, report.
                            common-tools/shell-tools
 
                            ;; Synthesis — flat sub-LLM only (excludes query$clone).
-                           [#'common-cmds/query$llm]
+                           [#'common-cmds/query$llm #'common-cmds/query$structured-output]
 
                            ;; Bookkeeping — call-tool reaches every functional agent.
                            common-tools/bootstrap-tools

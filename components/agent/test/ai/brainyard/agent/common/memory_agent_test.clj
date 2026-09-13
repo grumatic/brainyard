@@ -271,9 +271,9 @@
           (is (string? (:tool-context st-init)))
           (is (str/includes? (:tool-context st-init) "memory$stats")))
 
-        (testing "the 20-tool roster lands on the bound tools list"
+        (testing "the 21-tool roster lands on the bound tools list"
           (let [names (set (map (comp str :name) (:tools st-init)))]
-            (is (= 20 (count names)))
+            (is (= 21 (count names)))
             (is (contains? names "memory$stats"))
             (is (contains? names "memory$write"))
             (is (contains? names "memory$state-write"))

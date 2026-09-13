@@ -350,7 +350,7 @@ KEYWORD (e.g. :order/shipped). reaction$add keeps `:on` for the trigger (its
                           ;; Shell — allowlisted (dry-run a probe command by hand)
                           common-tools/shell-tools
                           ;; Synthesis — flat sub-LLM (NOT query$clone)
-                          [#'common-cmds/query$llm]
+                          [#'common-cmds/query$llm #'common-cmds/query$structured-output]
                           ;; Background tasks for slow probes
                           task-cmds/task-commands
                           ;; Discovery + cross-agent dispatch (call-tool)

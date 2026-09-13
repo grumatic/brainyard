@@ -496,7 +496,7 @@ thinner than a hand-authored one.
                                        ;; Sub-LLM for :read-only items + R3/R4 cross-
                                        ;; reference. FLAT only — excludes query$clone
                                        ;; (clone-self forbidden).
-                                       [#'common-cmds/query$llm]
+                                       [#'common-cmds/query$llm #'common-cmds/query$structured-output]
 
                                        ;; Bookkeeping + cross-agent dispatch via
                                        ;; call-tool (edit-agent / explore-agent live

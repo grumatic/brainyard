@@ -1227,9 +1227,14 @@
                       the HTTP paths via `timeout-opts`, :claude-code and :acp
                       via their own `(:timeout-ms opts)`. Setting it on the
                       lm-config instead would miss nothing, but would make a
-                      per-call timeout require minting a new LM."
+                      per-call timeout require minting a new LM.
+                    Optional :json-schema — a JSON Schema the answer must follow,
+                      forwarded to `chat-completion` (API-level on providers
+                      with native structured output, injected into the system
+                      prompt elsewhere). The answer is still returned as the
+                      raw string; parsing and validating it is the caller's."
   ([lm-config usage-tracker] (create-llm-query-fn lm-config usage-tracker nil))
-  ([lm-config usage-tracker {:keys [timeout-ms]}]
+  ([lm-config usage-tracker {:keys [timeout-ms json-schema]}]
    (fn llm-query
      ([prompt] (llm-query prompt nil))
      ([prompt context]
@@ -1239,7 +1244,8 @@
                    :timeout-ms timeout-ms)
       (let [response (chat-completion lm-config (sub-query-messages prompt context)
                                       :usage-tracker usage-tracker
-                                      :timeout-ms timeout-ms)]
+                                      :timeout-ms timeout-ms
+                                      :json-schema json-schema)]
         (extract-content response lm-config))))))
 
 (defn create-llm-query-batched-fn
@@ -1251,7 +1257,8 @@
    Parameters:
      lm-config      - LM configuration for sub-calls
      usage-tracker  - Shared usage tracker atom (may be nil)
-     opts           - Optional {:timeout-ms n}, which here bounds BOTH the
+     opts           - Optional {:timeout-ms n :json-schema s}. :json-schema is
+                      applied to every call in the batch. :timeout-ms bounds BOTH the
                       batch's wall clock and each call's own request deadline.
                       One number for both is the honest reading of \"this batch
                       must finish within n\": a per-call timeout above the batch
@@ -1267,7 +1274,8 @@
    ;; slow-but-valid LLM call isn't cut; override per call via `opts`, or per
    ;; LM via lm-config :timeout-ms.
    (let [timeout-ms (or (:timeout-ms opts) (:timeout-ms lm-config) 180000)
-         single-fn  (create-llm-query-fn lm-config usage-tracker {:timeout-ms timeout-ms})]
+         single-fn  (create-llm-query-fn lm-config usage-tracker {:timeout-ms  timeout-ms
+                                                                  :json-schema (:json-schema opts)})]
      (fn llm-query-batched
        ([prompts] (llm-query-batched prompts nil))
        ([prompts context]

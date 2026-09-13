@@ -201,7 +201,7 @@ so rather than failing.")
                           ;; Shell — allowlisted reads only.
                           common-tools/shell-tools
                           ;; Synthesis, for explaining a configuration.
-                          [#'common-cmds/query$llm]
+                          [#'common-cmds/query$llm #'common-cmds/query$structured-output]
                           ;; Bookkeeping.
                           common-tools/invocation-tools
                           ;; The identity surface itself.

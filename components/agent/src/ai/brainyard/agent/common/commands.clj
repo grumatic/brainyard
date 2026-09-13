@@ -45,8 +45,10 @@
             [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.memory.interface.protocol :as mproto]
             [ai.brainyard.mulog.interface :as mulog]
+            [clojure.data.json :as json]
             [clojure.edn :as edn]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [clojure.walk :as walk]))
 
 ;; ============================================================================
 ;; Registry Commands
@@ -1032,9 +1034,72 @@ results are intentionally kept out of semantic recall so it stays focused on kno
         (catch Exception e
           {::error (str ":lm-config did not resolve to a model: " (ex-message e))})))))
 
+;; ----------------------------------------------------------------------------
+;; Structured output — one schema form on the wire, several accepted on input
+;; ----------------------------------------------------------------------------
+
+(defn- ->output-json-schema
+  "Normalize a caller-supplied `:output-schema` into a keyword-keyed JSON Schema,
+   or `{::error msg}`.
+
+   Accepted, so each channel can say it in its own native form:
+     a map          → a JSON Schema (string keys from tool calls, keywords from code)
+     a vector       → a Malli schema, e.g. `[:map [:name :string]]`
+     a string       → JSON text of a JSON Schema, or EDN of either form
+
+   Always converges on JSON Schema because that is what every provider takes —
+   natively as `response_format`, or appended to the system prompt — and what
+   `query$structured-output` validates against, so the schema echoed by
+   `query$llm` can be handed straight to the validator.
+
+   The top level must be an OBJECT schema: native structured output rejects
+   anything else, and the prompt-injected fallback asks for a JSON object."
+  [arg]
+  (let [parsed (cond
+                 (string? arg)
+                 (let [s (str/trim arg)]
+                   (or (when (str/starts-with? s "{")
+                         (try (json/read-str s) (catch Exception _ nil)))
+                       (try (edn/read-string s)
+                            (catch Exception e
+                              {::error (str ":output-schema is neither JSON nor EDN: " (ex-message e))}))))
+                 :else arg)]
+    (cond
+      (::error parsed) parsed
+
+      (vector? parsed)
+      (try (clj-llm/malli->json-schema parsed)
+           (catch Exception e
+             {::error (str ":output-schema is not a valid Malli schema: " (ex-message e))}))
+
+      (map? parsed)
+      (walk/keywordize-keys parsed)
+
+      :else
+      {::error (str ":output-schema must be a JSON Schema map, a Malli vector, or a string of either, got "
+                    (pr-str arg))})))
+
+(defn- output-json-schema
+  "`->output-json-schema` plus the object-at-top-level rule."
+  [arg]
+  (let [js (->output-json-schema arg)]
+    (cond
+      (::error js) js
+      (not= "object" (name (or (:type js) ""))) {::error ":output-schema must describe a JSON object (\"type\": \"object\") at the top level"}
+      :else js)))
+
+(defn- parse-structured
+  "An answer string as JSON data, or the string itself when it does not parse —
+   kept so `query$structured-output` reports WHY that slot is invalid rather
+   than the slot silently becoming nil."
+  [s]
+  (if (string? s)
+    (try (clj-llm/parse-json-response s) (catch Exception _ s))
+    s))
+
 (defcommand query$llm
-  "Query a sub-LLM (no tools, no iteration). Pass :prompts (vector, 1..20, run concurrently) → :results in input order; :lm-config picks the model."
-  (fn [& {:keys [prompts context timeout lm-config]}]
+  "Query a sub-LLM (no tools, no iteration). Pass :prompts (vector, 1..20, run concurrently) → :results in input order; :output-schema makes each result JSON; :lm-config picks the model."
+  (fn [& {:keys [prompts context timeout lm-config output-schema]}]
     (let [;; Seconds at the tool boundary, ms underneath: every other timeout an
           ;; LLM writes here is a wall-clock wait it is choosing for itself, and
           ;; a model that means "five minutes" writes 300 far more reliably than
@@ -1046,7 +1111,10 @@ results are intentionally kept out of semantic recall so it stays focused on kno
           ;; Echoed back only when the caller overrode the model, so a query
           ;; that ran on the session's own sub-LM stays as quiet as it was.
           lm-label     (when (some? lm-config) (:label resolved))
-          with-lm      (fn [m] (cond-> m lm-label (assoc :lm lm-label)))]
+          with-lm      (fn [m] (cond-> m lm-label (assoc :lm lm-label)))
+          ;; nil when absent; a JSON Schema map, or {::error} when given.
+          json-schema  (when (some? output-schema) (output-json-schema output-schema))
+          query-opts   {:timeout-ms timeout-ms :json-schema json-schema}]
       ;; ONE shape in, one shape out: a single query is a one-element
       ;; `:prompts` and reads `(first (:results r))`. The singular
       ;; `:prompt`/`:result` pair is gone rather than aliased — a caller still
@@ -1055,6 +1123,9 @@ results are intentionally kept out of semantic recall so it stays focused on kno
       (cond
         (::error resolved)
         {:error (str "query$llm: " (::error resolved))}
+
+        (::error json-schema)
+        {:error (str "query$llm: " (::error json-schema))}
 
         (not (and (sequential? prompts) (seq prompts)))
         {:error "query$llm: :prompts (vector of 1..20 strings) is required"}
@@ -1065,24 +1136,79 @@ results are intentionally kept out of semantic recall so it stays focused on kno
           ;; unifying the shape does not change how a lone query is served.
           (let [results (if (= 1 (count prompts))
                           (let [f (clj-llm/create-llm-query-fn (:lm resolved) (resolve-usage-tracker)
-                                                               {:timeout-ms timeout-ms})
+                                                               query-opts)
                                 p (first prompts)]
                             [(if context (f p context) (f p))])
                           (let [f (clj-llm/create-llm-query-batched-fn (:lm resolved) (resolve-usage-tracker)
-                                                                       {:timeout-ms timeout-ms})]
+                                                                       query-opts)]
                             (if context (f prompts context) (f prompts))))]
-            (with-lm {:results results}))
+            ;; With a schema, each result is the parsed JSON value and the
+            ;; schema that was sent rides along, so the pair can go straight to
+            ;; `query$structured-output`. Parsing is not validation: a model may
+            ;; return well-formed JSON of the wrong shape, which only the
+            ;; validator reports.
+            (with-lm (if json-schema
+                       {:results       (mapv parse-structured results)
+                        :output-schema json-schema}
+                       {:results results})))
           (catch Exception e
             {:error (str "query$llm error: " (.getMessage e))})))))
   :input-schema  [:map
                   [:prompts [:vector {:desc "Prompts to send (1..20, dispatched concurrently). A single query is a one-element vector."} :string]]
                   [:context {:optional true} [:string {:desc "Optional material the prompts are about (max ~500K chars). Sent in the system prompt, shared across all prompts."}]]
                   [:timeout {:optional true} [:int {:desc "Seconds to allow the call (one prompt: default 60; several: bounds the whole batch, default 180). Raise for long generations."}]]
-                  [:lm-config {:optional true :desc "Model for THIS call. A map {:provider \"openai\" :model \"gpt-4o\"} (also :temperature/:max-tokens/:timeout-ms/:region), an EDN map string, or a \"provider/model\" label. Omit → the agent's configured sub-LLM. :base-url/:api-key are not accepted."} ::acs/map-object-arg]]
+                  [:lm-config {:optional true :desc "Model for THIS call. A map {:provider \"openai\" :model \"gpt-4o\"} (also :temperature/:max-tokens/:timeout-ms/:region), an EDN map string, or a \"provider/model\" label. Omit → the agent's configured sub-LLM. :base-url/:api-key are not accepted."} ::acs/map-object-arg]
+                  [:output-schema {:optional true :desc "Structured output: a JSON Schema for an object (map or JSON string), or a Malli schema. Each result becomes the parsed JSON value; validate with query$structured-output."} [:or :string :map [:vector :any]]]]
   :output-schema [:map
-                  [:results {:optional true} [:vector {:desc "Sub-LLM responses, one per prompt, in input order"} :string]]
+                  [:results {:optional true} [:vector {:desc "Sub-LLM responses, one per prompt, in input order — strings, or parsed JSON values when :output-schema was given (a result that did not parse stays a string)"} :any]]
+                  [:output-schema {:optional true} [:map {:desc "The JSON Schema sent to the sub-LLM (present only when :output-schema was given)"}]]
                   [:lm {:optional true} [:string {:desc "The provider/model that served the call (present only when :lm-config was given)"}]]
                   [:error {:optional true} [:string {:desc "Error if the call failed"}]]])
+
+(defcommand query$structured-output
+  "Validate structured output against a JSON Schema. Pass :output-schema and :values (e.g. both straight from a query$llm result) → :valid? and per-value :errors."
+  (fn [& {:keys [output-schema values]}]
+    (let [js (->output-json-schema output-schema)]
+      (cond
+        (::error js)
+        {:error (str "query$structured-output: " (::error js))}
+
+        (not (sequential? values))
+        {:error "query$structured-output: :values (vector of JSON values) is required"}
+
+        :else
+        (let [;; A string where the schema does not admit one is JSON text —
+              ;; a raw answer, or a query$llm slot that failed to parse. Parse
+              ;; it and validate the data; if it still will not parse, that is
+              ;; the error to report, not "expected object, got string".
+              string-ok? (let [t (:type js)]
+                           (or (nil? t) (= "string" (name t))
+                               (and (sequential? t) (some #(= "string" (name %)) t))))
+              checked    (map-indexed
+                          (fn [i v]
+                            (if (and (string? v) (not string-ok?))
+                              (let [parsed (try (clj-llm/parse-json-response v)
+                                                (catch Exception e {::unparseable (ex-message e)}))]
+                                (if-let [msg (and (map? parsed) (::unparseable parsed))]
+                                  {:index i :errors [{:path [] :message (str "not valid JSON: " msg)}]}
+                                  (assoc (clj-llm/validate-json-schema js parsed) :index i)))
+                              (assoc (clj-llm/validate-json-schema js v) :index i)))
+                          values)
+              errors     (vec (for [{:keys [index errors]} checked
+                                    e errors]
+                                (assoc e :index index)))
+              invalid    (vec (distinct (map :index errors)))]
+          {:valid?  (empty? errors)
+           :invalid invalid
+           :errors  errors}))))
+  :input-schema  [:map
+                  [:output-schema {:desc "The JSON Schema to validate against (map or JSON string), or a Malli schema — e.g. :output-schema from a query$llm result."} [:or :string :map [:vector :any]]]
+                  [:values [:vector {:desc "JSON values to check, e.g. :results from a query$llm result. A JSON string is parsed first."} :any]]]
+  :output-schema [:map
+                  [:valid? {:optional true} [:boolean {:desc "True when every value conforms"}]]
+                  [:invalid {:optional true} [:vector {:desc "Indices of values that failed — rerun only these"} :int]]
+                  [:errors {:optional true} [:vector {:desc "One entry per violation: {:index i :path [...] :message \"...\"}"} :map]]
+                  [:error {:optional true} [:string {:desc "Error if the schema or arguments were unusable"}]]])
 
 (defcommand query$clone
   "Query a cloned copy of the current agent (same tools, isolated state, auto-closed). rlm-only: clone-self recursion gated to rlm-* via :tool-use-control."
@@ -1237,7 +1363,7 @@ results are intentionally kept out of semantic recall so it stays focused on kno
    intentionally NOT here — it is rlm-only, gated via :tool-use-control and
    bound explicitly by rlm-agent's roster, so it must stay out of
    all-common-commands (which every other coact-derived agent inherits)."
-  [#'query$llm])
+  [#'query$llm #'query$structured-output])
 
 (def llm-commands
   "Commands for inspecting LLM metadata (no network calls)."

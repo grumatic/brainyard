@@ -777,7 +777,7 @@ hook can record the shape.
                                        ;; Synthesis — flat sub-LLM only.
                                        ;; Intentionally excludes #'query$clone
                                        ;; (Hard Rule 1 — clone-self forbidden).
-                                       [#'common-cmds/query$llm]
+                                       [#'common-cmds/query$llm #'common-cmds/query$structured-output]
 
                                        ;; Bootstrap & discovery — list-tools,
                                        ;; get-tool-info, search; call-tool

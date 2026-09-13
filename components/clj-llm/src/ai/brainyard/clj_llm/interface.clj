@@ -12,6 +12,7 @@
    - JSON Schema structured output via Malli"
   (:require [ai.brainyard.clj-llm.core.signature :as signature]
             [ai.brainyard.clj-llm.core.schema :as schema]
+            [ai.brainyard.clj-llm.core.json-schema :as json-schema]
             [ai.brainyard.clj-llm.core.schema-registry :as schema-registry]
             [ai.brainyard.clj-llm.core.prompt :as prompt]
             [ai.brainyard.clj-llm.core.providers :as providers]
@@ -279,6 +280,17 @@
   "Validate data against a Malli schema.
    Returns {:valid? bool :data data :errors [...]}"
   schema/validate-output)
+
+(def validate-json-schema
+  "Validate a JSON value against a JSON Schema (structured-output subset).
+   (validate-json-schema schema value) → {:valid? bool :errors [{:path [...] :message \"...\"}]}
+   Key-type agnostic: schema and value may use string or keyword keys."
+  json-schema/validate)
+
+(def parse-json-response
+  "Parse an LLM's JSON answer, tolerating markdown fences and preamble.
+   Returns keyword-keyed data; throws ex-info (with :raw-text) when no JSON parses."
+  llm/parse-json-response)
 
 ;; ============================================================================
 ;; Low-level LLM

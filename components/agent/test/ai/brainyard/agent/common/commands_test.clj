@@ -315,3 +315,84 @@
       (is (some? f) "query$llm must stay auto-bound into the sandbox")
       (is (str/includes? (:doc (meta f)) ":lm-config")
           "the sandbox docstring must advertise the new arg"))))
+
+;; ============================================================================
+;; query$llm :output-schema + query$structured-output
+;; ============================================================================
+
+(def ^:private item-schema
+  {"type" "object"
+   "properties" {"label" {"type" "string"} "count" {"type" "integer"}}
+   "required" ["label" "count"]})
+
+(defn- structured-query
+  "query$llm with the factories stubbed to answer `answers` in order; returns
+   `[result opts-seen]`."
+  [args answers]
+  (let [!opts (atom nil)]
+    [(with-redefs-fn
+       {#'config/resolve-sub-lm (constantly {:model "sentinel"})
+        #'clj-llm/create-llm-query-fn
+        (fn [_ _ opts] (reset! !opts opts) (fn [& _] (first answers)))
+        #'clj-llm/create-llm-query-batched-fn
+        (fn [_ _ opts] (reset! !opts opts) (fn [& _] (vec answers)))}
+       (fn [] (cmds/query$llm args)))
+     @!opts]))
+
+(deftest query-llm-output-schema-returns-json-values-and-the-schema
+  (testing "each result is parsed JSON, and the schema sent is echoed back"
+    (let [[r opts] (structured-query {:prompts ["a" "b"] :output-schema item-schema}
+                                     ["{\"label\":\"x\",\"count\":1}" "```json\n{\"label\":\"y\",\"count\":2}\n```"])]
+      (is (= [{:label "x" :count 1} {:label "y" :count 2}] (:results r)))
+      (is (= "object" (get-in r [:output-schema :type])))
+      (is (= (:output-schema r) (:json-schema opts)) "the same schema reaches the LLM call")))
+
+  (testing "a result that does not parse stays a string rather than becoming nil"
+    (let [[r _] (structured-query {:prompts ["a"] :output-schema item-schema} ["sorry, no"])]
+      (is (= ["sorry, no"] (:results r)))))
+
+  (testing "a JSON string schema and a Malli schema are both accepted"
+    (let [[r1 _] (structured-query {:prompts ["a"] :output-schema "{\"type\":\"object\"}"} ["{}"])
+          [r2 _] (structured-query {:prompts ["a"] :output-schema [:map [:label :string]]} ["{\"label\":\"x\"}"])]
+      (is (= "object" (get-in r1 [:output-schema :type])))
+      (is (= "object" (get-in r2 [:output-schema :type])))
+      (is (= [{:label "x"}] (:results r2)))))
+
+  (testing "without :output-schema nothing changes — strings, no schema key, no :json-schema sent"
+    (let [[r opts] (structured-query {:prompts ["a"]} ["plain"])]
+      (is (= {:results ["plain"]} r))
+      (is (nil? (:json-schema opts)))))
+
+  (testing "a non-object top level is refused before any call"
+    (let [[r opts] (structured-query {:prompts ["a"] :output-schema {"type" "array"}} ["[]"])]
+      (is (str/includes? (:error r) "JSON object"))
+      (is (nil? opts)))))
+
+(deftest query-structured-output-validates-values
+  (testing "a query$llm result pairs straight into the validator"
+    (let [[r _] (structured-query {:prompts ["a" "b" "c"] :output-schema item-schema}
+                                  ["{\"label\":\"x\",\"count\":1}" "{\"label\":\"y\"}" "not json"])
+          v     (cmds/query$structured-output {:output-schema (:output-schema r) :values (:results r)})]
+      (is (false? (:valid? v)))
+      (is (= [1 2] (:invalid v)) "only the failing indices — rerun just those")
+      (is (some #(= {:index 1 :path ["count"] :message "missing required property"} %) (:errors v)))
+      (is (some #(and (= 2 (:index %)) (str/includes? (:message %) "not valid JSON")) (:errors v)))))
+
+  (testing "all valid"
+    (is (= {:valid? true :invalid [] :errors []}
+           (cmds/query$structured-output {:output-schema item-schema
+                                          :values [{"label" "x" "count" 1}]}))))
+
+  (testing "JSON text is parsed before validating"
+    (is (:valid? (cmds/query$structured-output {:output-schema item-schema
+                                                :values ["{\"label\":\"x\",\"count\":1}"]}))))
+
+  (testing "through dispatch, from the tool-calls channel (string-keyed JSON)"
+    (let [r (tool/call-tool :query$structured-output
+                            {"output-schema" item-schema "values" [{"label" "x" "count" "1"}]})]
+      (is (false? (:valid? r)))
+      (is (= ["count"] (:path (first (:errors r)))))))
+
+  (testing "an unusable schema is an :error"
+    (is (str/includes? (:error (cmds/query$structured-output {:output-schema 42 :values []}))
+                       ":output-schema"))))
