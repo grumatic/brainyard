@@ -9,7 +9,7 @@
    - Registry:  agent-registry$list
    - Runtime:   agent-runtime$config (read or set)
    - Memory:    memory$remember, memory$recall, memory$status, memory$explain
-   - Query:     query$llm (accepts :prompt or :prompts, and a per-call :lm-config)
+   - Query:     query$llm (:prompts vector → :results, and a per-call :lm-config)
    - all-common-commands vector
 
    NOTE: query$clone (clone-self recursion) is defined here but is NOT part of
@@ -931,7 +931,7 @@ results are intentionally kept out of semantic recall so it stays focused on kno
   "Keys a caller may NOT set, rejected loudly rather than dropped silently.
 
    `:base-url` is the destination and `:api-key` is the credential, and both
-   stay owned by config/env. `query$llm`'s `:prompt` + `:sub-context` carry
+   stay owned by config/env. `query$llm`'s `:prompts` + `:context` carry
    whatever the caller gathered — file contents, logs, configs — so a caller
    able to name its own base URL turns this command into an exfiltration
    channel, authenticated with a key it also supplied. That caller is not
@@ -1003,7 +1003,7 @@ results are intentionally kept out of semantic recall so it stays focused on kno
                  (if (str/starts-with? s "{")
                    (let [parsed (try (edn/read-string s)
                                      (catch Exception e {::error (str ":lm-config is not readable EDN: "
-                                                                     (ex-message e))}))]
+                                                                      (ex-message e))}))]
                      (cond (::error parsed) parsed
                            (map? parsed)    (->lm-spec parsed)
                            :else {::error ":lm-config string must be a provider/model label or an EDN map"}))
@@ -1033,11 +1033,9 @@ results are intentionally kept out of semantic recall so it stays focused on kno
           {::error (str ":lm-config did not resolve to a model: " (ex-message e))})))))
 
 (defcommand query$llm
-  "Query a sub-LLM (no tools, no iteration). Pass :prompt (single) or :prompts (concurrent batch); :lm-config picks the model."
-  (fn [& {:keys [prompt prompts sub-context timeout lm-config]}]
-    (let [has-prompt?  (not (str/blank? (str prompt)))
-          has-prompts? (and (sequential? prompts) (seq prompts))
-          ;; Seconds at the tool boundary, ms underneath: every other timeout an
+  "Query a sub-LLM (no tools, no iteration). Pass :prompts (vector, 1..20, run concurrently) → :results in input order; :lm-config picks the model."
+  (fn [& {:keys [prompts context timeout lm-config]}]
+    (let [;; Seconds at the tool boundary, ms underneath: every other timeout an
           ;; LLM writes here is a wall-clock wait it is choosing for itself, and
           ;; a model that means "five minutes" writes 300 far more reliably than
           ;; 300000. Coerced to nil when absent so the LM's own :timeout-ms — and
@@ -1049,40 +1047,40 @@ results are intentionally kept out of semantic recall so it stays focused on kno
           ;; that ran on the session's own sub-LM stays as quiet as it was.
           lm-label     (when (some? lm-config) (:label resolved))
           with-lm      (fn [m] (cond-> m lm-label (assoc :lm lm-label)))]
+      ;; ONE shape in, one shape out: a single query is a one-element
+      ;; `:prompts` and reads `(first (:results r))`. The singular
+      ;; `:prompt`/`:result` pair is gone rather than aliased — a caller still
+      ;; reading `(:result …)` would get a silent nil, while a call without
+      ;; `:prompts` is refused by the schema before it gets here.
       (cond
         (::error resolved)
         {:error (str "query$llm: " (::error resolved))}
 
-        (and has-prompt? has-prompts?)
-        {:error "supply :prompt OR :prompts, not both"}
-
-        has-prompts?
-        (try
-          (let [f (clj-llm/create-llm-query-batched-fn (:lm resolved) (resolve-usage-tracker)
-                                                       {:timeout-ms timeout-ms})]
-            (with-lm {:results (if sub-context (f (vec prompts) sub-context) (f (vec prompts)))}))
-          (catch Exception e
-            {:error (str "query$llm error (batched): " (.getMessage e))}))
-
-        has-prompt?
-        (try
-          (let [f (clj-llm/create-llm-query-fn (:lm resolved) (resolve-usage-tracker)
-                                               {:timeout-ms timeout-ms})]
-            (with-lm {:result (if sub-context (f prompt sub-context) (f prompt))}))
-          (catch Exception e
-            {:error (str "query$llm error: " (.getMessage e))}))
+        (not (and (sequential? prompts) (seq prompts)))
+        {:error "query$llm: :prompts (vector of 1..20 strings) is required"}
 
         :else
-        {:error "either :prompt (string) or :prompts (vector of strings) is required"})))
+        (try
+          ;; One prompt keeps the single-call path (and its 60s default), so
+          ;; unifying the shape does not change how a lone query is served.
+          (let [results (if (= 1 (count prompts))
+                          (let [f (clj-llm/create-llm-query-fn (:lm resolved) (resolve-usage-tracker)
+                                                               {:timeout-ms timeout-ms})
+                                p (first prompts)]
+                            [(if context (f p context) (f p))])
+                          (let [f (clj-llm/create-llm-query-batched-fn (:lm resolved) (resolve-usage-tracker)
+                                                                       {:timeout-ms timeout-ms})]
+                            (if context (f prompts context) (f prompts))))]
+            (with-lm {:results results}))
+          (catch Exception e
+            {:error (str "query$llm error: " (.getMessage e))})))))
   :input-schema  [:map
-                  [:prompt {:optional true} [:string {:desc "Single prompt to send to the sub-LLM (omit when using :prompts)"}]]
-                  [:prompts {:optional true} [:vector {:desc "Multiple prompts to dispatch concurrently (max 20). Omit when using :prompt."} :string]]
-                  [:sub-context {:optional true} [:string {:desc "Optional supplementary context (max ~500K chars). Shared across all prompts in batched mode."}]]
-                  [:timeout {:optional true} [:int {:desc "Seconds to allow the call (default 60; batched: bounds the whole batch, default 180). Raise for long generations."}]]
+                  [:prompts [:vector {:desc "Prompts to send (1..20, dispatched concurrently). A single query is a one-element vector."} :string]]
+                  [:context {:optional true} [:string {:desc "Optional material the prompts are about (max ~500K chars). Sent in the system prompt, shared across all prompts."}]]
+                  [:timeout {:optional true} [:int {:desc "Seconds to allow the call (one prompt: default 60; several: bounds the whole batch, default 180). Raise for long generations."}]]
                   [:lm-config {:optional true :desc "Model for THIS call. A map {:provider \"openai\" :model \"gpt-4o\"} (also :temperature/:max-tokens/:timeout-ms/:region), an EDN map string, or a \"provider/model\" label. Omit → the agent's configured sub-LLM. :base-url/:api-key are not accepted."} ::acs/map-object-arg]]
   :output-schema [:map
-                  [:result {:optional true} [:string {:desc "Sub-LLM response (single-prompt mode)"}]]
-                  [:results {:optional true} [:vector {:desc "Vector of sub-LLM responses in input order (batched mode)"} :string]]
+                  [:results {:optional true} [:vector {:desc "Sub-LLM responses, one per prompt, in input order"} :string]]
                   [:lm {:optional true} [:string {:desc "The provider/model that served the call (present only when :lm-config was given)"}]]
                   [:error {:optional true} [:string {:desc "Error if the call failed"}]]])
 

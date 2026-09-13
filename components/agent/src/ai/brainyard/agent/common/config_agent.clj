@@ -439,7 +439,7 @@ For a new server: call mcp-agent first; take its resulting entry; wrap in
 
 ### Q&A
 
-- (query$llm :prompt <str>)                   → single-step sub-LLM
+- (query$llm :prompts [<str>])                 → single-step sub-LLM
 
 ### EXPLICITLY FORBIDDEN
 - clone-self dispatch                         (invoke a different agent by name instead)

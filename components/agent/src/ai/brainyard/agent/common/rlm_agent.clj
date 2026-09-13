@@ -51,14 +51,14 @@ THE RLM PLAYBOOK (chunk → map → reduce)
 
 3. CHUNK deliberately. A chunk should be:
    • Small enough for ONE sub-LLM call (target ~50–200K chars per prompt;
-     query$llm caps sub-context to ~500K).
+     query$llm caps context to ~500K).
    • Self-contained — never split a record across chunks if avoidable.
    • Stable — the same chunk i must yield the same result when retried, so
      prefer line/byte ranges over time-based windows.
 
 4. MAP — fan out one sub-LLM call per chunk via
         `(query$llm :prompts [<prompt-1> <prompt-2> …]
-                    :sub-context <shared-prefix>)`
+                    :context <shared-prefix>)`
    • Cap each batch at 20 prompts (the runtime limit). Larger fan-outs run
      across iterations or via (task$run :job-type :tool).
    • Each prompt should be SELF-CONTAINED. The sub-LLM has NO tools, NO state,
@@ -69,8 +69,8 @@ THE RLM PLAYBOOK (chunk → map → reduce)
 5. REDUCE — combine map results in a clojure fence. Patterns:
    • Aggregate counts/labels — `(frequencies …)`, `(group-by …)`.
    • Stitch summaries — `(clojure.string/join \"\\n\\n\" results)`.
-   • Synthesize — one final `(query$llm :prompt \"Given these N summaries:\\n…
-                               produce a single coherent digest.\")` call.
+   • Synthesize — one final `(query$llm :prompts [\"Given these N summaries:\\n…
+                               produce a single coherent digest.\"])` call.
    • Conservative verdict — for safety/classification fan-outs, \"ANY chunk
      says X → final answer X\" is the formally correct aggregator.
 
@@ -124,9 +124,9 @@ DECISION HEURISTICS
 ────────────────────────────────────────────────────────────────────────────
 1. Source fits in one read-file call AND question is O(1) → read + ANSWER.
 2. Source fits in one read-file call AND question is O(N) →
-     read + single (query$llm :prompt …) over the loaded text.
+     read + one (query$llm :prompts […]) over the loaded text.
 3. Source spans multiple files OR > 50K chars AND question is O(N) →
-     enumerate → chunk → (query$llm :prompts [...] :sub-context …) → reduce.
+     enumerate → chunk → (query$llm :prompts [...] :context …) → reduce.
 4. Source is huge (>10⁶ chars) → spill to /tmp via read-file's chunked
      :offset/:limit + spill markers; then chunk → batched map → reduce.
 5. Question implies pairwise comparison → MapReduce to per-chunk summaries
@@ -138,7 +138,7 @@ DECISION HEURISTICS
 BUDGET AWARENESS
 ────────────────────────────────────────────────────────────────────────────
 - Each batched query$llm call = N concurrent sub-LLM completions. Token cost
-  is N × (sub-context-size + per-prompt-size) + N × (response-size). DEFAULT
+  is N × (context-size + per-prompt-size) + N × (response-size). DEFAULT
   the sub-LLM to a smaller model (e.g. haiku/4-mini) via
   `(agent-runtime$config
      {:key \"sub-lm-config\" :value \"claude-haiku-4-5-20251001\"})`.
@@ -192,17 +192,16 @@ turn start; the rest of the tool-context describes general tools.
     ```
 
 ### C. MAP — fanning out sub-LLM calls
-Single primitive, two arities (auto-bound from `defcommand query$llm`):
-
-  Single-prompt:
-    (query$llm :prompt \"<prompt>\")                ; → {:result \"<answer>\"}
-    (query$llm :prompt \"<prompt>\"
-               :sub-context \"<shared text>\")      ; truncated to ~500K
+Single primitive, one shape (auto-bound from `defcommand query$llm`) —
+`:prompts` in, `:results` out, in input order:
 
   Batched (concurrent, the RLM workhorse):
     (query$llm :prompts [<p1> <p2> … <pN>])              ; → {:results [...]}
     (query$llm :prompts [<p1> <p2> … <pN>]
-               :sub-context \"<shared text>\")            ; sub-context shared
+               :context \"<shared text>\")            ; shared, truncated to ~500K
+
+  One prompt is a one-element vector:
+    (first (:results (query$llm :prompts [\"<prompt>\"])))  ; → \"<answer>\"
 
 Limits: max 20 prompts per batched call. For >20 chunks, run multiple batches
 across iterations and concat the :results vectors. Each prompt runs in an
@@ -217,7 +216,7 @@ is straightforward summarization/classification.
 ### D. REDUCE — folding map results in a clojure fence
 - Aggregation primitives: `frequencies`, `group-by`, `reduce`, `merge-with`.
 - Stitching: `(clojure.string/join \"\\n\\n\" results)`.
-- Final synthesis (optional): one more `(query$llm :prompt …)` over the
+- Final synthesis (optional): one more `(query$llm :prompts […])` over the
   stitched map outputs.
 - Robust parsing of structured map output: prefer the helper
   `rlm$parse-map-results` (3-tier fallback per element, see §H below). The

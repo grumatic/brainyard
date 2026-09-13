@@ -673,7 +673,7 @@ Iteration shape for a typical exploration:
 | 0 | code | `(explore$find …)` reuse check; `(explore$reuse? …)` on a hit. Fresh hit → jump to answer. |
 | 1 | code | Parallel probe across A/B/C/D (one fence, `pmap` over thunks); `def` results. |
 | 2 | code | Drill on the surface(s) with promising hits. |
-| 3 | code (optional) | `(query$llm :prompt …)` synthesis over collected evidence. |
+| 3 | code (optional) | `(query$llm :prompts […])` synthesis over collected evidence. |
 | 4 | code | Fill the RESULT TEMPLATE; `(write-file {:path … :content …})`; append INDEX line. |
 | 5 | answer | Inline summary + `Saved exploration: <path>` line. |
 

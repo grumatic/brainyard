@@ -287,7 +287,7 @@ Your answer body is markdown. Be terse. Lead with the outcome.")
 
 ### SYNTHESIS (the LLM-driven parts)
 
-- (query$llm :prompt <str>)
+- (query$llm :prompts [<str>])
     Sub-LLM. Used HEAVILY in init-agent: source summarisation
     (CLAUDE.md → §SECTION MODEL bullets), curation prompts, classifying
     \"is this an append or an overwrite?\".

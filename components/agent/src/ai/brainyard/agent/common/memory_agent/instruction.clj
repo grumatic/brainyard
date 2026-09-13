@@ -421,7 +421,7 @@ dispatch, no file or shell tools. Bookkeeping uses these primitives only.
                               for `:op :purge`.
 
 ### Reasoning
-- `query$llm` — flat sub-LLM. Pass `:prompt` or `:prompts` (batched).
+- `query$llm` — flat sub-LLM. Pass `:prompts` (vector; one query = one element) → `:results`.
                 Use sparingly — most memory-agent ops are mechanical
                 and the signature wrappers (above) are the preferred
                 path when a schema'd output is needed.

@@ -172,7 +172,7 @@ throwing when it is not running.
 - bash                                          (allowlisted; no writes)
 
 ### Q&A
-- (query$llm :prompt <str>)                     → single-step sub-LLM
+- (query$llm :prompts [<str>])                   → single-step sub-LLM
 
 ### EXPLICITLY FORBIDDEN
 - reporting metrics for a run you have not read with tsf$run-status

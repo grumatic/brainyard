@@ -194,8 +194,8 @@
 (deftest query-llm-lm-config-selects-the-model-for-one-call
   (testing "a native map is minted through create-lm — provider, model AND the
             credential/base-url fields a hand-built map would lack"
-    (let [[r lm] (stub-query {:prompt "hi" :lm-config {:provider "openai" :model "gpt-4o"}})]
-      (is (= "stub-answer" (:result r)))
+    (let [[r lm] (stub-query {:prompts ["hi"] :lm-config {:provider "openai" :model "gpt-4o"}})]
+      (is (= ["stub-answer"] (:results r)))
       (is (= :openai (:provider lm)))
       (is (= "gpt-4o" (:model lm)))
       (is (contains? lm :api-key) "create-lm must own credential resolution")
@@ -203,17 +203,17 @@
       (is (= "openai/gpt-4o" (:lm r)) "the serving model is echoed back when overridden")))
 
   (testing "string keys + string numbers (the JSON tool-calls channel)"
-    (let [[_ lm] (stub-query {:prompt "hi" :lm-config {"provider" "openai" "model" "gpt-4o"
-                                                       "temperature" "0.3"}})]
+    (let [[_ lm] (stub-query {:prompts ["hi"] :lm-config {"provider" "openai" "model" "gpt-4o"
+                                                          "temperature" "0.3"}})]
       (is (= :openai (:provider lm)))
       (is (= 0.3 (:temperature lm)))))
 
   (testing "an EDN map string — the tool-calls channel cannot express a map literal"
-    (let [[_ lm] (stub-query {:prompt "hi" :lm-config "{:provider \"openai\" :model \"gpt-4o\"}"})]
+    (let [[_ lm] (stub-query {:prompts ["hi"] :lm-config "{:provider \"openai\" :model \"gpt-4o\"}"})]
       (is (= [:openai "gpt-4o"] [(:provider lm) (:model lm)]))))
 
   (testing "a bare provider/model label, the form :sub-lm-config already takes"
-    (let [[_ lm] (stub-query {:prompt "hi" :lm-config "openai/gpt-4o"})]
+    (let [[_ lm] (stub-query {:prompts ["hi"] :lm-config "openai/gpt-4o"})]
       (is (= [:openai "gpt-4o"] [(:provider lm) (:model lm)]))))
 
   (testing "batched mode routes through the same resolution"
@@ -225,44 +225,83 @@
 (deftest query-llm-without-lm-config-is-unchanged
   (testing "omitted → the agent's configured sub-LM, and no :lm in the result"
     (let [[r lm] (with-redefs-fn {#'config/resolve-sub-lm (constantly {:model "sentinel"})}
-                   (fn [] (stub-query {:prompt "hi"})))]
-      (is (= "stub-answer" (:result r)))
+                   (fn [] (stub-query {:prompts ["hi"]})))]
+      (is (= ["stub-answer"] (:results r)))
       (is (nil? (:lm r)) "a query on the session's own sub-LM stays as quiet as before")
       (is (= {:model "sentinel"} lm))))
 
   (testing "a blank string means 'not specified' — LLMs emit \"\" for skipped fields"
     (let [[_ lm] (with-redefs-fn {#'config/resolve-sub-lm (constantly {:model "sentinel"})}
-                   (fn [] (stub-query {:prompt "hi" :lm-config ""})))]
+                   (fn [] (stub-query {:prompts ["hi"] :lm-config ""})))]
       (is (= {:model "sentinel"} lm)))))
 
+(deftest query-llm-has-one-shape-prompts-in-results-out
+  (let [!path (atom nil)
+        run   (fn [args]
+                (with-redefs-fn
+                  {#'config/resolve-sub-lm (constantly {:model "sentinel"})
+                   #'clj-llm/create-llm-query-fn
+                   (fn [_ _ _] (reset! !path :single) (fn [p & _] (str "one:" p)))
+                   #'clj-llm/create-llm-query-batched-fn
+                   (fn [_ _ _] (reset! !path :batched) (fn [ps & _] (mapv #(str "many:" %) ps)))}
+                  (fn [] (cmds/query$llm args))))]
+    (testing "one prompt still takes the single-call path, but answers in :results"
+      (let [r (run {:prompts ["a"]})]
+        (is (= :single @!path))
+        (is (= {:results ["one:a"]} r))))
+
+    (testing "several prompts fan out, results in input order"
+      (let [r (run {:prompts ["a" "b"]})]
+        (is (= :batched @!path))
+        (is (= {:results ["many:a" "many:b"]} r))))
+
+    (testing "the sandbox binding takes the vector positionally, through dispatch"
+      (let [f (get (sb/make-tool-bindings nil) 'query$llm)]
+        (is (= ["one:a"] (:results (with-redefs-fn
+                                     {#'config/resolve-sub-lm (constantly {:model "sentinel"})
+                                      #'clj-llm/create-llm-query-fn
+                                      (fn [_ _ _] (fn [p & _] (str "one:" p)))}
+                                     (fn [] (f ["a"]))))))))
+
+    (testing "an empty vector is an error, not an empty answer"
+      (is (str/includes? (:error (run {:prompts []})) ":prompts")))
+
+    (testing "the singular :prompt is no longer accepted — dispatch refuses the
+              call rather than letting a (:result …) reader get a silent nil"
+      (let [entries (tool/malli-map-entries (:input-schema (:meta (tool/get-tool-defs :id :query$llm))))
+            ks      (set (map first entries))]
+        (is (contains? ks :prompts))
+        (is (not (contains? ks :prompt))))
+      (is (str/includes? (:error-message (tool/call-tool :query$llm {:prompt "a"})) "prompts")))))
+
 (deftest query-llm-lm-config-rejects-endpoint-and-credential
-  (testing ":base-url is refused — :prompt/:sub-context carry gathered project
+  (testing ":base-url is refused — :prompts/:context carry gathered project
             data, so a caller naming its own endpoint is an exfiltration channel"
-    (let [[r lm] (stub-query {:prompt "hi" :lm-config {:provider "openai" :model "gpt-4o"
-                                                      :base-url "https://elsewhere.example"}})]
+    (let [[r lm] (stub-query {:prompts ["hi"] :lm-config {:provider "openai" :model "gpt-4o"
+                                                          :base-url "https://elsewhere.example"}})]
       (is (str/includes? (:error r) "may not set :base-url"))
       (is (nil? lm) "no call may be made at all")
-      (is (nil? (:result r)))))
+      (is (nil? (:results r)))))
 
   (testing ":api-key is refused for the same reason"
-    (let [[r _] (stub-query {:prompt "hi" :lm-config {:model "openai/gpt-4o" :api-key "sk-x"}})]
+    (let [[r _] (stub-query {:prompts ["hi"] :lm-config {:model "openai/gpt-4o" :api-key "sk-x"}})]
       (is (str/includes? (:error r) "may not set :api-key")))))
 
 (deftest query-llm-unresolvable-lm-config-errors-rather-than-falling-back
   (testing "an unknown provider errors, and names the ones that exist"
-    (let [[r lm] (stub-query {:prompt "hi" :lm-config {:provider "nope" :model "x"}})]
+    (let [[r lm] (stub-query {:prompts ["hi"] :lm-config {:provider "nope" :model "x"}})]
       (is (str/includes? (:error r) "did not resolve"))
       (is (str/includes? (:error r) "Known providers"))
       (is (nil? lm) "silently billing the session model would answer the wrong question")))
 
   (testing "a map that names no model is an error, not a silent default — the
             caller tried to select an LM and its keys were all unrecognized"
-    (let [[r lm] (stub-query {:prompt "hi" :lm-config {:name "gpt-4o"}})]
+    (let [[r lm] (stub-query {:prompts ["hi"] :lm-config {:name "gpt-4o"}})]
       (is (str/includes? (:error r) "named no model"))
       (is (nil? lm))))
 
   (testing "a non-map, non-string value is rejected"
-    (let [[r _] (stub-query {:prompt "hi" :lm-config [1 2]})]
+    (let [[r _] (stub-query {:prompts ["hi"] :lm-config [1 2]})]
       (is (str/includes? (:error r) "must be a map")))))
 
 (deftest query-llm-lm-config-is-declared-in-the-input-schema

@@ -268,14 +268,14 @@ Use dedicated file functions instead of `bash` for read/write/grep — they are 
 
 (def ^:private usage-llm-query
   "## LLM Sub-Queries (`query$llm`)
-Delegate reasoning to a sub-LLM. `query$llm` is a command, called positionally
-with optional kwargs, returning a result map (`{:result …}` / `{:results […]}` /
-`{:error …}`).
+Delegate reasoning to a sub-LLM. `query$llm` is a command taking `:prompts`
+(positionally or as a kwarg) plus optional kwargs, returning a result map
+(`{:results […]}` / `{:error …}`).
 
 | Function                          | Tools? | Iterates? | Cost | Use for                                                  |
 |-----------------------------------|--------|-----------|------|----------------------------------------------------------|
-| `query$llm` (with `:prompt`)      | no     | no        | low  | reasoning/summary/extraction on data you already have    |
-| `query$llm` (with `:prompts`)     | no     | no        | low  | concurrent map-reduce over many independent prompts      |
+| `query$llm` (one prompt)          | no     | no        | low  | reasoning/summary/extraction on data you already have    |
+| `query$llm` (many prompts)        | no     | no        | low  | concurrent map-reduce over many independent prompts      |
 
 (There is no general agent-clone primitive in the sandbox. `query$clone` —
 clone-self / depth-2 recursion — is gated to `rlm-agent` only; if you are not
@@ -285,9 +285,9 @@ by name, e.g. `(explore-agent :question \"…\")`.)
 ### `query$llm` — pure LLM reasoning, no tools
 Use for **analysis, reasoning, and summarization** on data you've already collected — not for raw coding.
 
-Pass EITHER `:prompt` (single string → `{:result \"<answer>\"}`) OR `:prompts`
-(vector of strings, max 20 → `{:results [\"<a1>\" ...]}` in input order). Don't
-pass both. `:sub-context` is shared across all prompts in batched mode.
+Pass `:prompts` — a vector of strings, max 20 → `{:results [\"<a1>\" ...]}` in
+input order. A single query is a one-element vector; read it with
+`(first (:results r))`. `:context` is shared across all prompts.
 
 ### Choosing the model per call — `:lm-config`
 Omit it and the call runs on the session's configured sub-LLM, as always. Pass it
@@ -298,7 +298,7 @@ one for the analysis that follows, in the same turn:
 ;; a map (preferred in code blocks)
 (query$llm :prompts prompts :lm-config {:provider \"bedrock\" :model \"amazon.nova-lite-v1:0\"})
 ;; a provider/model label — same form as the :sub-lm-config setting
-(query$llm :prompt \"Weigh these two designs…\" :lm-config \"openai/gpt-4o\")
+(query$llm :prompts [\"Weigh these two designs…\"] :lm-config \"openai/gpt-4o\")
 ```
 
 Also accepted in the map: `:temperature`, `:max-tokens`, `:timeout-ms`, `:region`,
@@ -316,8 +316,8 @@ Example — analyze deps across a Polylith monorepo:
 ```clojure
 (def all-deps-raw (:output (bash \"find . -name deps.edn -exec echo '=== {} ===' \\\\; -exec cat {} \\\\;\")))
 (def root-raw (:content (read-file \"deps.edn\")))
-(def analysis (:result (query$llm
-  \"Parse these Clojure deps.edn files from a Polylith monorepo. For each file:
+(def analysis (first (:results (query$llm
+  [\"Parse these Clojure deps.edn files from a Polylith monorepo. For each file:
 1. Extract component/base name (from path)
 2. All :deps entries (library + version)
 3. Any alias :extra-deps
@@ -326,8 +326,8 @@ Return a markdown report with:
 - Table of ALL unique external deps (library | version | used by)
 - Version conflicts (same lib, different versions)
 - Group by category (web, database, ML/AI, testing, utilities)
-- Components with empty :deps {}\"
-  :sub-context (str \"ROOT deps.edn:\\n\" root-raw \"\\n\\nCOMPONENT/BASE deps.edn:\\n\" all-deps-raw))))
+- Components with empty :deps {}\"]
+  :context (str \"ROOT deps.edn:\\n\" root-raw \"\\n\\nCOMPONENT/BASE deps.edn:\\n\" all-deps-raw)))))
 ```
 
 Example — batch analysis with `query$llm` `:prompts`:
@@ -337,8 +337,8 @@ Example — batch analysis with `query$llm` `:prompts`:
 (def contents (mapv #(:content (read-file %)) (take 10 files)))
 (def prompts (mapv #(str \"Summarize the key functions in this file:\\n\" %) contents))
 (def summaries (:results (query$llm :prompts prompts)))  ;; concurrent, max 20
-(def report (:result (query$llm \"Combine these per-file summaries into a single architecture overview.\"
-                                 :sub-context (clojure.string/join \"\\n---\\n\" summaries))))
+(def report (first (:results (query$llm [\"Combine these per-file summaries into a single architecture overview.\"]
+                                         :context (clojure.string/join \"\\n---\\n\" summaries)))))
 ```
 
 ### When NOT to use any sub-query — write Clojure code instead
@@ -588,7 +588,7 @@ It is not thrown away when it answers. The result carries `:subagent-id`
   "Ordered guide specs. `:order` is assigned from position below. `:consult` is
    the one-line 'when to consult' hint surfaced in the system-prompt table."
   [{:topic :llm-query    :title "LLM Sub-Queries"      :category :llm         :guide usage-llm-query
-    :consult "Before dispatching a sub-LLM (`query$llm` with `:prompt`/`:prompts`) — picks model, depth, context."}
+    :consult "Before dispatching a sub-LLM (`query$llm` with `:prompts`) — picks model, depth, context."}
    {:topic :agents       :title "Specialized Agents"   :category :agents      :scope :user :guide usage-agents
     :consult "Before delegating to a sub-agent, and before re-dispatching one you already have (agent-registry$ask)."}
    {:topic :agent-state  :title "Agent State"          :category :agent       :guide usage-agent-state

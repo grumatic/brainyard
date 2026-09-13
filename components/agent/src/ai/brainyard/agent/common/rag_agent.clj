@@ -184,7 +184,7 @@ throwing when it is not running.
 - bash                                         (allowlisted; no writes)
 
 ### Q&A
-- (query$llm :prompt <str>)                    → single-step sub-LLM
+- (query$llm :prompts [<str>])                  → single-step sub-LLM
 
 ### EXPLICITLY FORBIDDEN
 - answering from your own knowledge while implying it came from the corpus

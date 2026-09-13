@@ -29,7 +29,7 @@
     list so it survives iterations;
   - **chunk** deliberately (stable line/byte ranges, one record never split);
   - **map** — fan out one sub-LLM call per chunk via batched
-    `(query$llm :prompts [...] :sub-context …)`, each asking for a *structured*
+    `(query$llm :prompts [...] :context …)`, each asking for a *structured*
     one-line result;
   - **reduce** — fold the parsed map outputs in a clojure fence with
     `frequencies` / `group-by` into the final aggregate.

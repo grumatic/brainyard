@@ -780,7 +780,7 @@ the block, so the big thing never crosses the boundary.")
 results into `let`/`def`). Registered tools surface in the sandbox under their
 kebab-case names — call them directly:
 ```clojure
-(query$llm \"prompt\")
+(query$llm :prompts [\"prompt\"])
 (list-tools :type \"command\")
 (mcp$server :op \"list\")
 ```
@@ -816,7 +816,7 @@ on-demand (see `### Sandbox Categories` and `### Discovery`).
 | When | Call | Notes |
 |---|---|---|
 | Find / inspect a tool   | `list-tools` then `get-tool-info` | See `### Discovery` — the single statement of how tool lookup works. |
-| Cheap sub-LLM           | `(query$llm :prompt \"prompt\")` / `(query$llm :prompts [\"a\" \"b\"])` | One-shot, no agent state. |
+| Cheap sub-LLM           | `(query$llm :prompts [\"a\" \"b\"])` → `:results` | One-shot, no agent state. |
 | Run a registered agent  | `(explore-agent :question \"…\")` / `(plan-agent :question \"…\")` | Flat dispatch to a sibling agent by name. |
 | MCP fallback             | `(call-tool \"<id>\" {…} :server-name \"<srv>\")` | Only for tools not in the local registry. `call-tool` is the ONE call that takes a `{…}` args map — it must, to keep the target's args from colliding with its own routing kwargs. |
 | Look up usage guide     | `(usage$guide :topic <name>)` | Topics: see `### Usage Guides` table below. |
@@ -2192,7 +2192,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
 
    Builds:
    - sandbox (SCI with tool/usage bindings; sub-LLM dispatch rides the
-     auto-tool-bound query$llm (single :prompt or batched :prompts). Clone-self
+     auto-tool-bound query$llm (:prompts → :results). Clone-self
      dispatch via query$clone is gated to rlm-agent only — it surfaces in the
      sandbox just for rlm). Reuses the previous turn's sandbox
      when one
@@ -2310,7 +2310,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                 (mulog/warn ::load-user-agents-failed :error (ex-message e)))))
 
         ;; Build sandbox bindings (tool + optional restore). Sub-LLM dispatch
-        ;; (query$llm — single :prompt or batched :prompts) is a defcommand in
+        ;; (query$llm — :prompts → :results) is a defcommand in
         ;; agent.common.commands and surfaces in the sandbox via the
         ;; auto-tool-binding path inside make-tool-bindings — as does usage$guide
         ;; (no longer special-cased). Clone-self dispatch (query$clone) is gated

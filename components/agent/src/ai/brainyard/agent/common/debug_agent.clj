@@ -904,7 +904,7 @@ sandbox's eager stand-in. Always join before the fence returns: a detached
    (memory$recall :query \"recent commits\" :limit 5)
 
    ;; Sub-LLM (no tools, no iteration — cheap fan-out)
-   (query$llm :prompt \"Summarize this stack trace: …\")
+   (query$llm :prompts [\"Summarize this stack trace: …\"])
 
    ;; The binding carries the tool's own docs
    (:doc      (meta #'read-file))

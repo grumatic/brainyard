@@ -775,9 +775,9 @@ resulting `Saved exploration:` path into `:agent-context`.
 
 ;; C1 — goal clear?
 (def acceptance-candidates
-  (:result (query$llm
-             :prompt (str "If you had to write `## Acceptance` for: " question
-                          " — name 1–3 observable signals."))))
+  (first (:results (query$llm
+             :prompts [(str "If you had to write `## Acceptance` for: " question
+                          " — name 1–3 observable signals.")])))))
 
 ;; C2 — no duplicate?
 (def existing (doc$list {:kind :plan :status :draft :scope :project}))
@@ -837,11 +837,11 @@ resulting `Saved exploration:` path into `:agent-context`.
 
 ;; R1 / R2 / R6 — query$llm
 (def llm-rubric
-  (:result (query$llm
-             :prompt (str "Score this plan body against R1 (approach actionable, "
+  (first (:results (query$llm
+             :prompts [(str "Score this plan body against R1 (approach actionable, "
                           "3-15 verb-led bullets), R2 (acceptance observable), "
                           "R6 (no contradictions). Return EDN "
-                          "{:r1 :pass|:fail :r2 … :r6 … :notes \"…\"}.\n\n" plan-body))))
+                          "{:r1 :pass|:fail :r2 … :r6 … :notes \"…\"}.\n\n" plan-body)])))))
 
 ;; R3 references resolve · R4 risks specific · R5 scope · R7 no artifacts (bash + grep)
 (def r3 (let [paths (re-seq #"file:(\S+)" plan-body)]

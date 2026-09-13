@@ -136,7 +136,7 @@
       (is (str/includes? instruction "20"))
 
       ;; Sub-context primitive named explicitly
-      (is (str/includes? instruction "sub-context")))))
+      (is (str/includes? instruction ":context")))))
 
 (deftest tool-context-content-test
   (testing "tool-context names the four primitives + spill-recovery + helpers"

@@ -749,8 +749,8 @@ the code-block and tool-calls channels can both express it. Three rules:
   `:api-key`, `:base-url`, `:auth-header` or `:message-format`, so the call would
   401 or POST to nil — the same failure the `/model` switch hit when it forwarded
   a stale key instead of re-resolving one.
-- **`:base-url` and `:api-key` are refused, not dropped.** `:prompt` and
-  `:sub-context` carry whatever the caller gathered — file contents, logs,
+- **`:base-url` and `:api-key` are refused, not dropped.** `:prompts` and
+  `:context` carry whatever the caller gathered — file contents, logs,
   configs — so a caller able to name its own endpoint turns this into an
   exfiltration channel authenticated with a key it also supplied, and that caller
   is not always the user: any content the agent read can contain instructions.

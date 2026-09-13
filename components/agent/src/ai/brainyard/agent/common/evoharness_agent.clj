@@ -201,7 +201,7 @@ throwing when it is not running.
 - bash                                          (allowlisted; no writes)
 
 ### Q&A
-- (query$llm :prompt <str>)                     → synthesis over MANY episodes, never scoring ONE
+- (query$llm :prompts [<str>])                   → synthesis over MANY episodes, never scoring ONE
 
 ### EXPLICITLY FORBIDDEN
 - reporting any number without its split and its profile

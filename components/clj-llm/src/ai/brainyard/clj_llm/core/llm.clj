@@ -1182,21 +1182,41 @@
 ;; ============================================================================
 ;;
 ;; Thin wrappers around chat-completion/extract-content used by callers that
-;; need a single-shot (prompt [+ shared sub-context]) → answer-string contract:
+;; need a single-shot (prompt [+ shared context]) → answer-string contract:
 ;; the recursive sandbox loop, and the agent layer's `query$llm` command (which
-;; accepts either a single `:prompt` or a vector `:prompts`). Pure chat-completion
+;; takes a vector `:prompts`). Pure chat-completion
 ;; calls — no tools, no nested iteration.
 
-(def ^:private max-sub-context-chars
-  "Maximum characters for sub-context passed to a sub-LLM query."
+(def ^:private max-context-chars
+  "Maximum characters for context passed to a sub-LLM query."
   500000)
+
+(def ^:private sub-query-system-prompt
+  "Answer the query based on the provided context. Be concise and accurate.")
+
+(defn- sub-query-messages
+  "Messages for one sub-LLM query. The context rides the SYSTEM message and the
+   user turn is the prompt alone: the context is the material every prompt is
+   asked about, not part of any one question, so it belongs with the standing
+   instruction. In a batch it is also byte-identical across every call, which
+   keeps the shared prefix in front of the part that varies."
+  [prompt context]
+  (let [system (if context
+                 (let [ctx-str (str context)]
+                   (str sub-query-system-prompt "\n\n<context>\n"
+                        (subs ctx-str 0 (min max-context-chars (count ctx-str)))
+                        "\n</context>"))
+                 sub-query-system-prompt)]
+    [{:role "system" :content system}
+     {:role "user" :content prompt}]))
 
 (defn create-llm-query-fn
   "Create a single-shot sub-LLM query function.
 
    Returns a fn with two arities:
-     (f prompt)             — query with prompt only
-     (f prompt sub-context) — query with prompt + sub-context (truncated to ~500K chars)
+     (f prompt)         — query with prompt only
+     (f prompt context) — query with prompt, context appended to the system
+                          prompt (truncated to ~500K chars)
 
    Parameters:
      lm-config      - LM configuration for sub-calls
@@ -1212,21 +1232,12 @@
   ([lm-config usage-tracker {:keys [timeout-ms]}]
    (fn llm-query
      ([prompt] (llm-query prompt nil))
-     ([prompt sub-context]
+     ([prompt context]
       (mulog/debug ::llm-query-sub-call
                    :prompt-len (count prompt)
-                   :sub-context-len (when sub-context (count (str sub-context)))
+                   :context-len (when context (count (str context)))
                    :timeout-ms timeout-ms)
-      (let [content (if sub-context
-                      (let [ctx-str (str sub-context)
-                            truncated (subs ctx-str 0 (min max-sub-context-chars (count ctx-str)))]
-                        (str "Context:\n" truncated "\n\nQuery: " prompt))
-                      prompt)
-            messages [{:role "system"
-                       :content "Answer the query based on the provided context. Be concise and accurate."}
-                      {:role "user"
-                       :content content}]
-            response (chat-completion lm-config messages
+      (let [response (chat-completion lm-config (sub-query-messages prompt context)
                                       :usage-tracker usage-tracker
                                       :timeout-ms timeout-ms)]
         (extract-content response lm-config))))))
@@ -1259,7 +1270,7 @@
          single-fn  (create-llm-query-fn lm-config usage-tracker {:timeout-ms timeout-ms})]
      (fn llm-query-batched
        ([prompts] (llm-query-batched prompts nil))
-       ([prompts sub-context]
+       ([prompts context]
         (when-not (sequential? prompts)
           (throw (ex-info "llm-query-batched requires a vector/list of prompts"
                           {:got (type prompts)})))
@@ -1276,8 +1287,8 @@
               futures (mapv (fn [prompt]
                               (future
                                 (try
-                                  (if sub-context
-                                    (single-fn prompt sub-context)
+                                  (if context
+                                    (single-fn prompt context)
                                     (single-fn prompt))
                                   (catch Exception e
                                     (str "Error: " (.getMessage e))))))

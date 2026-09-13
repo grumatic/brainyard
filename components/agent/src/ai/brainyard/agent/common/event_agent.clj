@@ -315,7 +315,7 @@ KEYWORD (e.g. :order/shipped). reaction$add keeps `:on` for the trigger (its
 - list-tools, get-tool-info                    (discovery)
 
 ### Q&A
-- (query$llm :prompt <str>)                    → single-step sub-LLM
+- (query$llm :prompts [<str>])                  → single-step sub-LLM
 
 ### EXPLICITLY FORBIDDEN
 - writing :enable-reactions / :enable-scheduler / :enable-fsm   (→ config-agent)

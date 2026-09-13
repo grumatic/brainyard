@@ -56,8 +56,8 @@ CoAct (`docs/CoAct.md`) already provides every primitive needed to express this 
 | Need (RLM paper) | CoAct primitive |
 |---|---|
 | Programmatic access to a too-big context | `code-blocks` channel + sandbox file/grep tools |
-| Single-shot sub-LLM call | `(query$llm :prompt "...")` (auto-bound from `defcommand query$llm`) |
-| Batched concurrent sub-LLM calls (`llm_query_batched`) | `(query$llm :prompts [..] :sub-context "...")` (max 20 concurrent) |
+| Single-shot sub-LLM call | `(query$llm :prompts ["..."])` (auto-bound from `defcommand query$llm`) |
+| Batched concurrent sub-LLM calls (`llm_query_batched`) | `(query$llm :prompts [..] :context "...")` (max 20 concurrent) |
 | Code-side composition / aggregation | `clojure` fence with `def` persistence across iterations |
 | Parallel fan-out of heterogeneous work | `(pmap (fn [g] (g)) [#(…) #(…)])` in one clojure fence |
 | Long-running fan-out | `task$run` (`:job-type :tool|:bash`) |
@@ -143,14 +143,14 @@ THE RLM PLAYBOOK (chunk → map → reduce)
 
 3. CHUNK deliberately. A chunk should be:
    • Small enough for ONE sub-LLM call (target ~50–200K chars per prompt;
-     query$llm caps sub-context to ~500K).
+     query$llm caps context to ~500K).
    • Self-contained — never split a record across chunks if avoidable.
    • Stable — the same chunk i must yield the same result when retried, so
      prefer line/byte ranges over time-based windows.
 
 4. MAP — fan out one sub-LLM call per chunk via
         `(query$llm :prompts [<prompt-1> <prompt-2> …]
-                    :sub-context <shared-prefix>)`
+                    :context <shared-prefix>)`
    • Cap each batch at 20 prompts (the runtime limit). Larger fan-outs run
      across iterations or via task$run :job-type :tool.
    • Each prompt should be SELF-CONTAINED. The sub-LLM has NO tools, NO state,
@@ -161,8 +161,8 @@ THE RLM PLAYBOOK (chunk → map → reduce)
 5. REDUCE — combine map results in a clojure fence. Patterns:
    • Aggregate counts/labels — `(frequencies …)`, `(group-by …)`.
    • Stitch summaries — `(clojure.string/join "\n\n" results)`.
-   • Synthesize — one final `(query$llm :prompt "Given these N summaries:\n…
-                               produce a single coherent digest.")` call.
+   • Synthesize — one final `(query$llm :prompts ["Given these N summaries:\n…
+                               produce a single coherent digest."])` call.
    • Conservative verdict — for safety/classification fan-outs, "ANY chunk
      says X → final answer X" is the formally correct aggregator.
 
@@ -216,9 +216,9 @@ DECISION HEURISTICS
 ────────────────────────────────────────────────────────────────────────────
 1. Source fits in one read-file call AND question is O(1) → read + ANSWER.
 2. Source fits in one read-file call AND question is O(N) →
-     read + single (query$llm :prompt …) over the loaded text.
+     read + one (query$llm :prompts […]) over the loaded text.
 3. Source spans multiple files OR > 50K chars AND question is O(N) →
-     enumerate → chunk → (query$llm :prompts [...] :sub-context …) → reduce.
+     enumerate → chunk → (query$llm :prompts [...] :context …) → reduce.
 4. Source is huge (>10⁶ chars) → spill to /tmp via read-file's chunked
      :offset/:limit + spill markers; then chunk → batched map → reduce.
 5. Question implies pairwise comparison → MapReduce to per-chunk summaries
@@ -230,7 +230,7 @@ DECISION HEURISTICS
 BUDGET AWARENESS
 ────────────────────────────────────────────────────────────────────────────
 - Each batched query$llm call = N concurrent sub-LLM completions. Token cost
-  is N × (sub-context-size + per-prompt-size) + N × (response-size). DEFAULT
+  is N × (context-size + per-prompt-size) + N × (response-size). DEFAULT
   the sub-LLM to a smaller model (e.g. haiku/4-mini) via
   `agent-runtime$config { :key "sub-lm-config" :value "claude-haiku-4-5-20251001" }`.
 - Plan the chunk count BEFORE fanning out. If 200 files would be 10 batches
@@ -296,17 +296,16 @@ turn start; the rest of the tool-context describes general tools.
     ```
 
 ### C. MAP — fanning out sub-LLM calls
-Single primitive, two arities (auto-bound from `defcommand query$llm`):
-
-  Single-prompt:
-    (query$llm :prompt "<prompt>")                ; → {:result "<answer>"}
-    (query$llm :prompt "<prompt>"
-               :sub-context "<shared text>")      ; truncated to ~500K
+Single primitive, one shape (auto-bound from `defcommand query$llm`) —
+`:prompts` in, `:results` out, in input order:
 
   Batched (concurrent, the RLM workhorse):
     (query$llm :prompts [<p1> <p2> … <pN>])              ; → {:results [...]}
     (query$llm :prompts [<p1> <p2> … <pN>]
-               :sub-context "<shared text>")             ; sub-context shared
+               :context "<shared text>")             ; shared, truncated to ~500K
+
+  One prompt is a one-element vector:
+    (first (:results (query$llm :prompts ["<prompt>"])))  ; → "<answer>"
 
 Limits: max 20 prompts per batched call. For >20 chunks, run multiple batches
 across iterations and concat the :results vectors. Each prompt runs in an
@@ -321,7 +320,7 @@ is straightforward summarization/classification.
 ### D. REDUCE — folding map results in a clojure fence
 - Aggregation primitives: `frequencies`, `group-by`, `reduce`, `merge-with`.
 - Stitching: `(clojure.string/join "\n\n" results)`.
-- Final synthesis (optional): one more `(query$llm :prompt …)` over the
+- Final synthesis (optional): one more `(query$llm :prompts […])` over the
   stitched map outputs.
 - Robust parsing of structured map output:
     (defn parse-or-fail [s]
@@ -432,8 +431,8 @@ The router precedence is `answer > code > tool > repair`. RLM iterations look li
 |---|---|---|
 | 1 | code | enumerate input; `def` file list and total size |
 | 2 | code | grep pre-filter (optional); chunk; build prompt vector |
-| 3 | code | `(query$llm :prompts […] :sub-context …)`; `def` map results |
-| 4 | code | parse + reduce; possibly one final `(query$llm :prompt "synthesize")` |
+| 3 | code | `(query$llm :prompts […] :context …)`; `def` map results |
+| 4 | code | parse + reduce; possibly one final `(query$llm :prompts ["synthesize"])` |
 | 5 | answer | rendered markdown report (or `write-file` + inline summary + path) |
 
 For very large inputs, iterations 2–4 may repeat: enumerate next batch slice → batched map → accumulate. Iteration cap is the same as `coact-agent` (default 20 — `agent-runtime$config :key "max-iterations" :value "N"` overrides at runtime).
@@ -628,7 +627,7 @@ Inline these as "DON'T" examples in the instruction or tool-context if testing r
 |---|---|---|---|
 | 1 | One iteration per file (240 iterations of `read-file` + `query$llm`) | Linear time + linear LLM cost; ignores fan-out | One iteration per *batch of 20* via `query$llm :prompts` |
 | 2 | `read-file` an enormous file in one call | Triggers truncate-to-file → spilled marker → re-read loop | `:offset/:limit` slicing or grep first |
-| 3 | Sub-LLM prompt carries all 240 files in `:sub-context` | One prompt = one sub-LLM context window; no fan-out | Per-prompt content (or per-batch :sub-context shared across small group) |
+| 3 | Sub-LLM prompt carries all 240 files in `:context` | One prompt = one sub-LLM context window; no fan-out | Per-prompt content (or per-batch :context shared across small group) |
 | 4 | Asking sub-LLM for free-form prose, then regex-grepping the prose | Brittle, depends on phrasing | Ask for structured one-line JSON; parse-or-fail |
 | 5 | Reducing by re-feeding raw chunks into another `query$llm :prompts` | Tree of context, structure lost | Reduce in clojure fence with `frequencies`/`group-by`; one *final* synthesis call over the *aggregate* |
 | 6 | `query$clone` to "delegate the analysis" | Clones rlm-agent itself = depth-2 RLM recursion → Paper 2 failure modes. (Note: `(call-tool "<other-agent>" …)` to a *different* agent type is flat dispatch, not this anti-pattern — but in RLM the analysis should live in this loop.) | Stay flat; let the main loop do it |

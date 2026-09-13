@@ -325,7 +325,7 @@ forced-turn entry — the blast radius.")
 - list-tools, get-tool-info                    (discovery)
 
 ### Q&A
-- (query$llm :prompt <str>)                    → single-step sub-LLM
+- (query$llm :prompts [<str>])                  → single-step sub-LLM
 
 ### EXPLICITLY FORBIDDEN
 - writing :enable-fsm / :enable-scheduler / :fsm-allow-code   (→ config-agent)
