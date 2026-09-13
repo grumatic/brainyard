@@ -4,9 +4,10 @@
 Proposes giving the behavior tree's shared context — the `st-memory` atom — the
 same declared, checkable contract the tree itself already has. Status:
 **Phases 1 and 0 shipped** (CR-BT-26, CR-BT-27, CR-BT-32 — validation at the
-DSPy boundary; CR-BT-25 — the context-key registry); Phases 2 and 3 remain
-proposal, **re-ordered in light of what Phase 1 turned out to cover — see
-§5.1**. New contracts are numbered
+DSPy boundary; CR-BT-25 — the context-key registry). **Phases 2 and 3 are
+Proposed and not queued** — §5.2 retracts the argument that promoted this work
+and §5.4 says where it stops; read those before treating the rest as a
+programme to finish. New contracts are numbered
 **CR-BT-25+** (CR-BT-01..24 are taken by the existing spec; CR-BT-32 was added
 on top when Phase 1 landed).*
 
@@ -394,12 +395,14 @@ code block — on a schema typo, not a runtime fault.
 
 ## 5. Phasing
 
-Each phase is independently shippable and independently useful.
+Each phase is independently shippable and independently useful. Two shipped;
+**§5.2 retracts a claim this section originally made for Phase 0, and §5.4
+explains why the remaining two are not queued work.**
 
 | Phase | Scope | Value delivered alone |
 |---|---|---|
 | **1** ✅ | DSPy in/out validation (§3.6) against the schemas that already exist | Closes the invisible-degradation failure on the hot path — **shipped**; found three pre-existing `:iterations` drifts on its first run (§3.6.1) |
-| **0** ✅ | The registry ns + declarations. No enforcement. | `:lifetime` / `:persist?` are the first answer to three questions the codebase hand-maintains (§5.2) — **shipped**: 54 keys declared, 21 deliberately not, every claim pinned against the source by test |
+| **0** ✅ | The registry ns + declarations. No enforcement. | A checked description of 54 keys plus a harness that keeps it true (§5.2, §5.2.1) — **shipped**. Note §5.2 retracts the stronger claim originally made for this phase. |
 | **2** | `:requires`/`:provides` on coact's nodes + entry/exit checks in the tracing overrides, assert-gated | Failures name the node that broke the contract, not the node that noticed |
 | **3** | `build-bt` static fold (§3.5); derive `:dirty-keys` from `:provides` | Removes a hand-maintained list; catches a missing key on paths that reach no dspy node |
 
@@ -424,26 +427,43 @@ invalidated that argument, and the ordering above is the correction.
   §3.5's own conservatism — `:fallback` branches and `:repeat` first-ticks
   degrade to warnings rather than errors — covers most of coact's interesting
   structure, so the fold will warn often and error rarely.
-- **Phase 0's weakest-looking half is the one that pays.** See §5.2.
+- **Phase 0 was promoted on a premise that turned out to be false.** The
+  original third bullet here pointed at §5.2's "unlocks three capabilities"
+  argument, which is retracted — see §5.2. The ordering above still holds, but
+  only on the first two bullets: Phase 1 already catches a missing input where
+  it matters, and Phase 2/3 cost more than written. Phase 0 was cheap and
+  produced a checked description worth having; it was not the capability
+  unlock this section claimed when it promoted it.
 
-### 5.2 Why Phase 0 outranks enforcement now
+### 5.2 What Phase 0 is worth — RETRACTED and restated
 
-`:schema` and `:owner` are documentation. `:lifetime` and `:persist?` are a
-capability nothing in the codebase currently has — and three things are
-hand-maintained today for want of exactly that one fact:
+> **This section previously claimed that `:lifetime` / `:persist?` would make
+> three hand-maintained lists derived, and used that to promote Phase 0 over
+> Phase 2/3. Checked against the source after Phase 0 shipped, two of the three
+> claims are false and the third is weaker than stated. The original table is
+> retracted; what follows is what is actually true.**
 
-| Hand-maintained today | Where | What `:lifetime` / `:persist?` would make it |
-|---|---|---|
-| What survives a turn reset | `reset-st-memory!` resets to `st-memory-init` + `:question`, by convention | Derived: a key is kept iff `:lifetime :session` |
-| What may be dropped under budget pressure | `context-budget`'s list | Derived from `:lifetime`, not enumerated |
-| What can be restored on `--resume` | Nothing distinguishes a serialisable value from a runtime handle, so a key holding a function silently cannot come back | Derived from `:persist?` + `:opaque?` |
+What the retracted table claimed, and what the code says:
 
-That third row is the SCI fn-serialization limit already recorded against
-`--resume`. All three are the same missing fact asked in three places, which is
-the shape of a problem a declaration solves and an assertion does not.
+| Claimed | Reality |
+|---|---|
+| `context-budget` keeps a hand-maintained drop list that `:lifetime` would derive | **False.** `default-section-policies` is not a list of st-memory keys — it is a table of PROMPT SECTIONS (`:role`, `:tools`, `:critical-rules`, `:conversation-history`, …) carrying a `:priority` and a named `:compact` strategy. Four of its keys coincide with st-memory key names, but the fact it encodes is *prompt value per token*, which is orthogonal to when a value is wiped. Nothing there derives from this registry. |
+| `--resume` cannot restore a key holding a function, for want of `:persist?` | **False as stated.** `agent_tui_persist/core/restore.clj` reconstructs the SESSION MAP from `session.edn`; there is no st-memory restore path at all. `:persist?` would be an *input* to building one, not a replacement for something hand-maintained. |
+| `reset-st-memory!` decides what survives a turn "by convention" | **Weaker than stated.** It resets to `st-memory-init` + `:question`, so membership in `st-memory-init` already IS the mechanism. `:lifetime :session` documents and verifies that mechanism; it does not replace a list, because there is no list. |
 
-So the trade is: **Phase 2/3 buys enforcement of something Phase 1 already
-enforces where it matters; Phase 0 buys a capability that does not exist.**
+So Phase 0 was prioritised on a bad premise. It shipped anyway, and what it
+delivered stands on narrower but real ground:
+
+- **A checked description of 54 keys** — lifetime, writers, persistability,
+  opacity — where previously the only way to answer "who writes
+  `:evaluation-status`" was a grep across 5 bricks.
+- **A harness that keeps it true** (§5.2.1): 135 writer symbols and 9 schema
+  keywords resolved, and the `:iteration` lifetime pinned by running the real
+  reset. That is what stops this from becoming the next `::eval-entry`.
+
+That is documentation-and-verification value, not a capability unlock. It is
+worth having and it is now done; it is **not** an argument for building more of
+this design. See §5.4.
 
 #### 5.2.1 What Phase 0 found, as built
 
@@ -481,6 +501,27 @@ input schemas have become true. Promoting `:invalid` to fatal is then one line,
 per signature, with the evidence to justify it — and it cannot be
 short-circuited by writing more code now.
 
+### 5.4 Where this design stops
+
+With §5.2 retracted, **Phases 2 and 3 have no strong case left** and this
+document should not be read as a programme to finish.
+
+The case against them was already made on their own merits in §5.1 — Phase 1
+catches a missing input where it matters, `:provides` is ambiguous for several
+coact nodes, and §3.5's conservatism means the fold would warn often and error
+rarely. §5.2 was the remaining argument that the *declaration* half was worth
+extending into enforcement, and it does not survive contact with the source.
+Nothing since has raised either phase.
+
+What is genuinely left is smaller and bug-shaped rather than phased:
+`skill-behavior-fn` blind-merges a subtree's whole st-memory into its parent
+(`agent/core/bt.clj:161`) while its sibling `skill-behavior-fn*` works around
+the same problem with a caller-supplied `:dirty-keys` list it cannot verify.
+That is one concrete defect worth about an hour, and it needs neither
+`:requires`/`:provides` nor a build-time fold to fix.
+
+CR-BT-28..31 stay on the books as **Proposed**, not as work queued.
+
 ---
 
 ## 6. Proposed contracts
@@ -506,13 +547,17 @@ short-circuited by writing more code now.
    question becomes live again at Phase 2, where the per-node checks ARE
    mechanism and belong in `behavior-tree`, which must not depend on `agent`
    (CR-BT-23) — the same split as the node overrides in `agent/core/bt.clj`.
-2. **Does `:lifetime` subsume `st-memory-init`?** Sharper now that `:lifetime`
-   exists: `:session` is *defined* as "lives in `st-memory-init`, so it survives
-   `reset-st-memory!`", and the registry records 7 such keys. Only ONE of them —
-   `:previous-turns` — is written back into `st-memory-init` during a turn; the
-   rest are seeded once at agent setup. So making `st-memory-init` derived from
-   `:lifetime :session` rather than configured is a small change with one real
-   writer to reroute. It still alters CR-BT-12 and needs its own migration.
+2. **Does `:lifetime` subsume `st-memory-init`?** Re-opened, and narrower than
+   §5.2 originally implied. `:session` is *defined* as "lives in
+   `st-memory-init`, so it survives `reset-st-memory!`", and the registry
+   records 7 such keys — only `:previous-turns` is written back during a turn,
+   the rest being seeded once at agent setup. So inverting the relationship
+   (make `st-memory-init` membership derive from `:lifetime :session` rather
+   than the reverse) is a coherent refactor with one real writer to reroute.
+   But it closes no gap: `st-memory-init` membership already IS the mechanism,
+   and nothing today is hand-maintained for want of the declaration. It alters
+   CR-BT-12, needs its own migration, and should be done only if something
+   else makes it worth the churn.
 3. ~~**How much does Phase 1 actually cost per call?**~~ **Resolved by
    shipping.** Deep validation of `:iterations` was kept: it is bounded (the
    list is capped at 10 records) and malli walks structure, not string content,

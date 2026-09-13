@@ -163,12 +163,19 @@ Declaration only — nothing validates, gates, or derives from it at runtime yet
   hand-maintained lists (`reset-st-memory!`, `context-budget`'s drop set, and
   what `--resume` can restore). **CR-BT-25 has since landed**:
   54 keys declared, 21 deliberately not, every claim pinned against the source
-  by test (§8). It is declaration-only — the consumers that would make those
-  three lists derived are still to come. CR-BT-28..31 (per-node `:requires`/`:provides`, the `build-bt`
+  by test (§8). It is declaration-only, and the design doc **retracts** the
+  claim that it would make three hand-maintained lists derived: checked against
+  the source, `context-budget`'s table is prompt-section priorities rather than
+  st-memory keys, and there is no st-memory restore path for `:persist?` to
+  drive (design doc §5.2). What Phase 0 delivered is a checked description of 54
+  keys plus a harness that keeps it true. CR-BT-28..31 (per-node `:requires`/`:provides`, the `build-bt`
   dataflow fold, derived `:dirty-keys`) are demoted, not dropped — Phase 1
   already catches a missing input at the call, so their remaining unique value
-  is a key missing on a path reaching no dspy node. *(High value / medium
-  cost.)*
+  is a key missing on a path reaching no dspy node. With §5.2 retracted they
+  have no strong case left and are **Proposed, not queued** (design doc §5.4);
+  what remains genuinely worth doing here is the one bug-shaped item above —
+  `skill-behavior-fn`'s blind merge and the unverifiable `:dirty-keys` list.
+  *(Medium value / low cost.)*
 
 No `TODO`/`FIXME` markers exist in the BT engine or the agent-layer
 override file.
