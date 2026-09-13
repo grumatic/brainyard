@@ -12,7 +12,6 @@
    - JSON schema always included in system prompt (not just API-level enforcement)"
   (:require [ai.brainyard.clj-llm.core.schema :as schema]
             [ai.brainyard.clj-llm.core.usage :as usage]
-            [clojure.data.json :as json]
             [clojure.string :as str]
             [malli.core :as m]))
 
@@ -97,14 +96,12 @@
 ;; ============================================================================
 
 (defn- json-schema-instruction
-  "Build the JSON schema instruction for the system message.
-   Ensures the LLM sees the exact schema in its prompt context."
+  "Build the JSON schema instruction for the system message — the shared
+   `schema/json-schema-instruction`, so the DSPy prompt and the non-native
+   structured-output fallback in `chat-completion` say the same thing."
   [json-schema]
   (when json-schema
-    (str "IMPORTANT: You MUST respond with ONLY a valid JSON object matching this schema:\n"
-         (json/write-str json-schema)
-         "\nDo not include any text before or after the JSON."
-         "\nUse EXACTLY the field names specified in the schema.")))
+    (schema/json-schema-instruction json-schema)))
 
 ;; ============================================================================
 ;; Output Requirements (User Message Reminder)

@@ -513,17 +513,13 @@
 
 (defn- inject-json-schema-into-messages
   "When the provider doesn't support json_schema response_format,
-   append the JSON schema instruction to the first system message."
+   append the structured-output instruction to the first system message."
   [messages json-schema]
-  (let [schema-instruction (str "\n\nIMPORTANT: You MUST respond with ONLY a valid JSON object "
-                                "matching this schema:\n"
-                                (json/write-str json-schema)
-                                "\nDo not include any text before or after the JSON."
-                                "\nUse EXACTLY the field names specified in the schema.")]
+  (let [schema-instruction (str "\n\n" (schema/json-schema-instruction json-schema))]
     (if-let [idx (some (fn [[i m]] (when (= "system" (:role m)) i))
                        (map-indexed vector messages))]
       (update-in (vec messages) [idx :content] str schema-instruction)
-      (into [{:role "system" :content schema-instruction}] messages))))
+      (into [{:role "system" :content (subs schema-instruction 2)}] messages))))
 
 (def ^:private openai-cache-param-providers
   "Providers that accept OpenAI's prompt-cache parameters

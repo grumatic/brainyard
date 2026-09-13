@@ -550,3 +550,88 @@
                        child))
                    children)))
       :else resolved)))
+
+;; ============================================================================
+;; Structured-output instruction (prompt text)
+;; ============================================================================
+;;
+;; Providers without native structured output — and the DSPy prompt, which
+;; always carries it — learn the schema from text. Small models given a bare
+;; "respond with a JSON object matching this schema: {…}" read the schema as a
+;; template and send it back: measured on Bedrock, nova-lite returned the
+;; schema instead of an answer on 5 of 5 sentiment prompts and llama-3.1-8b on
+;; 1 of 5 extraction prompts. The fix that measured clean (0 of 80 across
+;; nova-micro, nova-lite, ministral-3b, llama-3.1-8b) says outright that the
+;; schema is a description, not the reply, and shows what the reply looks like
+;; as a skeleton with typed placeholders.
+;;
+;; Placeholders, never sample values: an example `"sentiment": "positive"` is
+;; an answer the model can copy, and a classifier biased toward its own
+;; example is a quieter failure than an echoed schema. A copied placeholder
+;; fails the enum/type check instead, where a validator can see it.
+
+(defn- skget
+  "Schema lookup tolerating keyword or string keys (mjs output mixes both)."
+  [m k]
+  (when (map? m)
+    (let [v (get m k ::none)]
+      (if (= ::none v) (get m (name k)) v))))
+
+(defn- skeleton
+  "A reply-shaped skeleton for `s`: objects and arrays keep their structure,
+   leaves become `<typed placeholder>` strings. `root` resolves local `$ref`s;
+   `depth` bounds recursive definitions."
+  [root s depth]
+  (let [t     (skget s :type)
+        t     (if (sequential? t) (first (remove #{"null"} t)) t)
+        range (fn [label]
+                (let [lo (skget s :minimum) hi (skget s :maximum)]
+                  (str "<" label
+                       (cond (and lo hi) (str " " lo "-" hi)
+                             lo          (str " >= " lo)
+                             hi          (str " <= " hi))
+                       ">")))]
+    (cond
+      (> depth 6)                  "<value>"
+      (not (map? s))               "<value>"
+      (skget s :$ref)
+      (let [ref  (str (skget s :$ref))
+            path (when (str/starts-with? ref "#/") (str/split (subs ref 2) #"/"))
+            tgt  (when path (reduce (fn [node seg] (skget node (keyword seg))) root path))]
+        (if (map? tgt) (skeleton root tgt (inc depth)) "<value>"))
+      (skget s :enum)              (str "<one of: " (str/join " | " (map #(if (string? %) % (json/write-str %))
+                                                                      (skget s :enum))) ">")
+      (contains? (set (map name (keys s))) "const") (skget s :const)
+      (seq (skget s :anyOf))       (skeleton root (first (skget s :anyOf)) (inc depth))
+      (seq (skget s :oneOf))       (skeleton root (first (skget s :oneOf)) (inc depth))
+      (seq (skget s :allOf))       (skeleton root (apply merge-with (fn [a b] (if (map? a) (merge a b) b))
+                                                         (skget s :allOf))
+                                             (inc depth))
+      (or (= t "object") (skget s :properties))
+      (into {} (map (fn [[k v]] [(name k) (skeleton root v (inc depth))]))
+            (skget s :properties))
+      (= t "array")                [(skeleton root (or (skget s :items) {}) (inc depth))]
+      (= t "string")               "<string>"
+      (= t "integer")              (range "integer")
+      (= t "number")               (range "number")
+      (= t "boolean")              "<true or false>"
+      (= t "null")                 nil
+      :else                        "<value>")))
+
+(defn json-schema-instruction
+  "The prompt text that asks for a reply conforming to `json-schema`: the schema
+   framed as a description of the reply, plus a skeleton of the reply itself.
+   Shared by the DSPy system message and the non-native structured-output
+   fallback in `chat-completion`, so the two cannot drift."
+  [json-schema]
+  (str "## Response format\n"
+       "Reply with a single JSON object that IS your answer, filled with real values.\n"
+       "The JSON Schema below only describes that object's shape. Never reply with "
+       "the schema itself, and never copy schema keywords such as \"type\", "
+       "\"properties\", \"required\" or \"enum\" into your answer.\n\n"
+       "JSON Schema:\n" (json/write-str json-schema) "\n\n"
+       "Your reply must look like this, with every <placeholder> replaced by a real value "
+       "of that type (numbers and booleans unquoted):\n"
+       (json/write-str (skeleton json-schema json-schema 0)) "\n\n"
+       "Output only the JSON object: no text before or after it, no markdown fences. "
+       "Use exactly the field names shown."))
