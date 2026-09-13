@@ -8,7 +8,7 @@
    `list-tools` used to inline full Malli `:input-schema`/`:output-schema` for
    every match as soon as ANY filter was given. Measured against the live
    registry that was 6,013 chars for `:pattern \"schedule\"` (9 matches) and
-   161,734 chars — ~40K tokens, 5× over the `:max-output-chars` cap — for
+   161,734 chars — ~40K tokens, 2.5× over the `:max-output-chars` cap — for
    `:type \"command\"`, a call the CoAct prompt recommends by name. The schemas
    were redundant besides: the prompt already tells the model to call
    `get-tool-info` before invoking anything unfamiliar, and that costs 219
@@ -27,7 +27,7 @@
 (defn- chars [x] (count (pr-str x)))
 
 ;; The inline cap a tool result is truncated at (:max-output-chars default).
-(def ^:private max-output-chars 32000)
+(def ^:private max-output-chars 64000)
 
 (deftest no-args-returns-the-grouped-index
   (let [r (list-tools {})]

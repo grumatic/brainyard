@@ -197,7 +197,7 @@ The remaining `ThinkActCode` signature inputs land in the user message:
 Per-iteration `inc-iter` resets `:tool-calls` / `:code-blocks` / `:last-reasoning` /
 `:last-channel` so the LLM never sees stale channel scratch. The `:iterations` field
 grows monotonically (cap 10, each entry sanitized via `truncate-iter-field`, which
-caps each field at the `:max-output-chars` config knob, default 32000).
+caps each field at the `:max-output-chars` config knob, default 64000).
 
 ### 2.4 Token-budget enforcement
 

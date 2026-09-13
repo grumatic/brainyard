@@ -356,7 +356,7 @@ The sandbox is **permission-gated**, not sealed:
   Runtime-config `:action-permissions` caches "always yes" / "always no"
   answers so the user is not spammed.
 - **Truncation**: results are truncated to a configurable char budget
-  (`:max-output-chars`, default 32 000 chars, structure-aware) before being
+  (`:max-output-chars`, default 64 000 chars, structure-aware) before being
   fed back to the LLM. Over-sized tool results spill to a project-scoped cache at
   `<project>/.brainyard/temp/clj-sandbox/truncation/<class>/<id>.txt` (with a
   `/tmp/<working-dir>/...` fallback when the agent component isn't on

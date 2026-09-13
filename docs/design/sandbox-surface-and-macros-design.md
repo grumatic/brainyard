@@ -956,7 +956,7 @@ unified behind a `ref://` handle.
 *The mechanism already exists, and it is shared.* `sanitize-tool-result` routes
 every `:tool-result` through `truncate-iter-field` → `clj-sandbox/truncate-to-file`
 — the identical path `sanitize-eval-entry` uses for `:result` and `:output`.
-Both are capped at `:max-output-chars` (32000, ~8k tokens), keep head 70% + tail
+Both are capped at `:max-output-chars` (64000, ~16k tokens), keep head 70% + tail
 20%, spill the full value to a temp file, and leave a `(read-file …)` pointer.
 That *is* the value handle the gap asked for; it addresses by filesystem path
 rather than a `ref://` scheme, which needs no new resolver.
