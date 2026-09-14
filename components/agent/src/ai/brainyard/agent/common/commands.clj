@@ -1097,8 +1097,33 @@ results are intentionally kept out of semantic recall so it stays focused on kno
     (try (clj-llm/parse-json-response s) (catch Exception _ s))
     s))
 
+(defn- validate-structured-values
+  "Validate `values` against a normalized JSON Schema `js` (via ->output-json-schema).
+   Returns {:valid? :invalid :errors} — shared by query$structured-output and query$llm."
+  [js values]
+  (let [string-ok? (let [t (:type js)]
+                      (or (nil? t) (= "string" (name t))
+                          (and (sequential? t) (some #(= "string" (name %)) t))))
+        checked    (map-indexed
+                    (fn [i v]
+                      (if (and (string? v) (not string-ok?))
+                        (let [parsed (try (clj-llm/parse-json-response v)
+                                          (catch Exception e {::unparseable (ex-message e)}))]
+                          (if-let [msg (and (map? parsed) (::unparseable parsed))]
+                            {:index i :errors [{:path [] :message (str "not valid JSON: " msg)}]}
+                            (assoc (clj-llm/validate-json-schema js parsed) :index i)))
+                        (assoc (clj-llm/validate-json-schema js v) :index i)))
+                    values)
+        errors     (vec (for [{:keys [index errors]} checked
+                              e errors]
+                          (assoc e :index index)))
+        invalid    (vec (distinct (map :index errors)))]
+    {:valid?  (empty? errors)
+     :invalid invalid
+     :errors  errors}))
+
 (defcommand query$llm
-  "Query a sub-LLM (no tools, no iteration). Pass :prompts (vector, 1..20, run concurrently) → :results in input order; :output-schema makes each result JSON; :lm-config picks the model."
+  "Query a sub-LLM (no tools, no iteration). Pass :prompts (vector, 1..20, run concurrently) → :results in input order; :output-schema makes each result JSON and adds :validation; :lm-config picks the model."
   (fn [& {:keys [prompts context timeout lm-config output-schema]}]
     (let [;; Seconds at the tool boundary, ms underneath: every other timeout an
           ;; LLM writes here is a wall-clock wait it is choosing for itself, and
@@ -1145,12 +1170,16 @@ results are intentionally kept out of semantic recall so it stays focused on kno
             ;; With a schema, each result is the parsed JSON value and the
             ;; schema that was sent rides along, so the pair can go straight to
             ;; `query$structured-output`. Parsing is not validation: a model may
-            ;; return well-formed JSON of the wrong shape, which only the
-            ;; validator reports.
-            (with-lm (if json-schema
-                       {:results       (mapv parse-structured results)
-                        :output-schema json-schema}
-                       {:results results})))
+            ;; return well-formed JSON of the wrong shape, so it is validated
+            ;; inline here (never throws) and reported under :validation.
+            (let [parsed     (if json-schema (mapv parse-structured results) results)
+                  validation (when json-schema
+                               (try (validate-structured-values json-schema parsed)
+                                    (catch Exception e
+                                      {:valid? false :invalid [] :errors [{:path [] :message (str "validation error: " (.getMessage e))}]})))]
+              (with-lm (cond-> {:results parsed}
+                         json-schema (assoc :output-schema json-schema)
+                         validation  (assoc :validation validation)))))
           (catch Exception e
             {:error (str "query$llm error: " (.getMessage e))})))))
   :input-schema  [:map
@@ -1162,6 +1191,7 @@ results are intentionally kept out of semantic recall so it stays focused on kno
   :output-schema [:map
                   [:results {:optional true} [:vector {:desc "Sub-LLM responses, one per prompt, in input order — strings, or parsed JSON values when :output-schema was given (a result that did not parse stays a string)"} :any]]
                   [:output-schema {:optional true} [:map {:desc "The JSON Schema sent to the sub-LLM (present only when :output-schema was given)"}]]
+                  [:validation {:optional true} [:map {:desc "Schema-validation report for :results, present only when :output-schema was given: {:valid? :invalid :errors}"}]]
                   [:lm {:optional true} [:string {:desc "The provider/model that served the call (present only when :lm-config was given)"}]]
                   [:error {:optional true} [:string {:desc "Error if the call failed"}]]])
 
@@ -1177,30 +1207,7 @@ results are intentionally kept out of semantic recall so it stays focused on kno
         {:error "query$structured-output: :values (vector of JSON values) is required"}
 
         :else
-        (let [;; A string where the schema does not admit one is JSON text —
-              ;; a raw answer, or a query$llm slot that failed to parse. Parse
-              ;; it and validate the data; if it still will not parse, that is
-              ;; the error to report, not "expected object, got string".
-              string-ok? (let [t (:type js)]
-                           (or (nil? t) (= "string" (name t))
-                               (and (sequential? t) (some #(= "string" (name %)) t))))
-              checked    (map-indexed
-                          (fn [i v]
-                            (if (and (string? v) (not string-ok?))
-                              (let [parsed (try (clj-llm/parse-json-response v)
-                                                (catch Exception e {::unparseable (ex-message e)}))]
-                                (if-let [msg (and (map? parsed) (::unparseable parsed))]
-                                  {:index i :errors [{:path [] :message (str "not valid JSON: " msg)}]}
-                                  (assoc (clj-llm/validate-json-schema js parsed) :index i)))
-                              (assoc (clj-llm/validate-json-schema js v) :index i)))
-                          values)
-              errors     (vec (for [{:keys [index errors]} checked
-                                    e errors]
-                                (assoc e :index index)))
-              invalid    (vec (distinct (map :index errors)))]
-          {:valid?  (empty? errors)
-           :invalid invalid
-           :errors  errors}))))
+        (validate-structured-values js values))))
   :input-schema  [:map
                   [:output-schema {:desc "The JSON Schema to validate against (map or JSON string), or a Malli schema — e.g. :output-schema from a query$llm result."} [:or :string :map [:vector :any]]]
                   [:values [:vector {:desc "JSON values to check, e.g. :results from a query$llm result. A JSON string is parsed first."} :any]]]

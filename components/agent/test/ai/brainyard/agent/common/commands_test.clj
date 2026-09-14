@@ -396,3 +396,30 @@
   (testing "an unusable schema is an :error"
     (is (str/includes? (:error (cmds/query$structured-output {:output-schema 42 :values []}))
                        ":output-schema"))))
+
+
+(deftest query-llm-output-schema-includes-validation
+  (testing "a valid result carries :validation with :valid? true"
+    (let [[r _] (structured-query {:prompts ["a"] :output-schema item-schema}
+                                  ["{\"label\":\"x\",\"count\":1}"])]
+      (is (= [{:label "x" :count 1}] (:results r)))
+      (is (true? (get-in r [:validation :valid?])))
+      (is (= [] (get-in r [:validation :invalid])))
+      (is (= [] (get-in r [:validation :errors])))))
+
+  (testing "an invalid result (wrong type) carries :validation with :valid? false and errors"
+    (let [[r _] (structured-query {:prompts ["a"] :output-schema item-schema}
+                                  ["{\"label\":\"x\",\"count\":\"not-a-number\"}"])]
+      (is (false? (get-in r [:validation :valid?])))
+      (is (= [0] (get-in r [:validation :invalid])))
+      (is (some #(and (= 0 (:index %)) (= ["count"] (:path %))) (get-in r [:validation :errors])))))
+
+  (testing "without :output-schema, no :validation key appears"
+    (let [[r _] (structured-query {:prompts ["a"]} ["plain"])]
+      (is (not (contains? r :validation)))))
+
+  (testing "validation never throws -- it reuses the same helper as query$structured-output"
+    (let [[r _] (structured-query {:prompts ["a"] :output-schema item-schema} ["not json at all"])]
+      (is (= ["not json at all"] (:results r)))
+      (is (map? (:validation r)))
+      (is (false? (get-in r [:validation :valid?]))))))
