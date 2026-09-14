@@ -51,6 +51,12 @@
 (defn- trace-cost [trace]
   (reduce + 0.0 (keep #(get-in % [:usage :cost :total-cost]) trace)))
 
+(defn- trace-tokens
+  "Input + output tokens across a trace. Provider :input-tokens already
+   include cache reads and writes, so they are not added again."
+  [trace]
+  (reduce + 0 (mapcat #(keep (fn [k] (get-in % [:usage k])) [:input-tokens :output-tokens]) trace)))
+
 (defn- demo-from-entry [entry ex-index]
   (cond-> {:inputs  (:inputs entry)
            :outputs (:outputs entry)
@@ -91,28 +97,31 @@
      :max-per-predictor stop once every predictor seen has this many (default 16)
      :budget-usd       stop starting new examples at this spend
      :max-calls        stop starting new examples after this many predictor calls
+     :max-tokens       stop starting new examples after this many input+output tokens
      :teacher-params   {pid params} bound while the teacher runs; `{pid {}}`
                        bootstraps from the zero-shot program even when a params
                        file exists (else the teacher sees current params)
 
    Returns {:pool {pid [demo …]}
-            :report {:attempted :passed :errors :cost :calls :scores :stopped}}.
+            :report {:attempted :passed :errors :cost :calls :tokens :scores :stopped}}.
    `:scores` is every teacher score in trainset order — a pass rate alone hides
    whether the threshold was missed by 0.01 or by 0.6.
    Transient errors are not retried here (a skipped example only shrinks the
    pool); a :fatal error stops the run."
-  [teacher trainset metric {:keys [threshold max-per-predictor budget-usd max-calls teacher-params]
+  [teacher trainset metric {:keys [threshold max-per-predictor budget-usd max-calls max-tokens
+                                   teacher-params]
                             :or   {threshold 1.0 max-per-predictor 16}}]
-  (let [pool (atom {}) spent (atom 0.0) calls (atom 0)
+  (let [pool (atom {}) spent (atom 0.0) calls (atom 0) tokens (atom 0)
         attempted (atom 0) passed (atom 0) errors (atom 0) scores (atom [])
         report (fn [stopped & {:as extra}]
                  (merge {:attempted @attempted :passed @passed :errors @errors
-                         :cost @spent :calls @calls :scores @scores :stopped stopped}
+                         :cost @spent :calls @calls :tokens @tokens :scores @scores :stopped stopped}
                         extra))]
     (loop [[[i ex] & more] (map-indexed vector trainset)]
       (let [full? (and (seq @pool) (every? #(>= (count %) max-per-predictor) (vals @pool)))
             over? (or (and budget-usd (>= @spent budget-usd))
-                      (and max-calls (>= @calls max-calls)))]
+                      (and max-calls (>= @calls max-calls))
+                      (and max-tokens (>= @tokens max-tokens)))]
         (if (or (nil? ex) full? over?)
           {:pool @pool :report (report (cond over? :budget full? :full :else nil))}
           (let [trace (atom [])
@@ -125,6 +134,7 @@
                             {:error e :class (:class (llm/classify-error e))}))]
             (swap! spent + (trace-cost @trace))
             (swap! calls + (max (count @trace) (if (:error outcome) 1 0)))
+            (swap! tokens + (trace-tokens @trace))
             (swap! attempted inc)
             (cond
               (= :fatal (:class outcome))
@@ -187,10 +197,13 @@
 ;; ============================================================================
 
 (defn- evaluate-candidate
-  [program valset metric params {:keys [parallel budget-usd max-calls]}]
+  [program valset metric params {:keys [parallel budget-usd max-calls max-tokens]}]
   (predictor/with-params params
     (evaluate/evaluate program valset metric :parallel (or parallel 1)
-                       :budget-usd budget-usd :max-calls max-calls)))
+                       :budget-usd budget-usd :max-calls max-calls :max-tokens max-tokens)))
+
+(defn- eval-tokens [r]
+  (+ (get-in r [:tokens :in] 0) (get-in r [:tokens :out] 0)))
 
 (defn bootstrap-random-search
   "The paper's BootstrapFewShotWithRandomSearch, over a single bootstrap pool.
@@ -207,8 +220,8 @@
      :trial-N        a seeded shuffle of the pool, 1..max-bootstrapped demos
 
    opts: :trials (default 6) :max-bootstrapped (4) :predictor-id :seed (0)
-         :threshold :teacher-params :parallel, :budget-usd / :max-calls
-         (both shared by the pool and every row), and :base-params
+         :threshold :teacher-params :parallel, :budget-usd / :max-calls /
+         :max-tokens (all shared by the pool and every row), and :base-params
          {pid params} laid under every row (e.g. instructions being compiled
          against).
 
@@ -219,8 +232,8 @@
    Ties keep the EARLIER candidate — zero-shot first — so a proposal that adds
    prompt tokens has to earn a strictly better score than one that adds none."
   [teacher program trainset valset metric
-   {:keys [trials max-bootstrapped predictor-id seed budget-usd max-calls teacher-baseline?
-           base-params]
+   {:keys [trials max-bootstrapped predictor-id seed budget-usd max-calls max-tokens
+           teacher-baseline? base-params]
     :or   {trials 6 max-bootstrapped 4 seed 0 teacher-baseline? true}
     :as   opts}]
   (let [{:keys [pool report]} (bootstrap-pool teacher trainset metric
@@ -228,10 +241,13 @@
         pids      (cond-> (set (keys pool)) predictor-id (conj predictor-id))
         spent     (atom (:cost report))
         calls     (atom (:calls report))
+        tokens    (atom (:tokens report))
         remaining #(when budget-usd (max 0.0 (- budget-usd @spent)))
         remaining-calls #(when max-calls (max 0 (- max-calls @calls)))
+        remaining-tokens #(when max-tokens (max 0 (- max-tokens @tokens)))
         exhausted? #(or (and budget-usd (<= (remaining) 0.0))
-                        (and max-calls (<= (remaining-calls) 0)))
+                        (and max-calls (<= (remaining-calls) 0))
+                        (and max-tokens (<= (remaining-tokens) 0)))
         zero      (into {} (map #(vector % {})) pids)
         ;; :base-params {pid params} is laid UNDER every row (candidate keys
         ;; win). Rows replace a params record whole, so without this a
@@ -263,12 +279,15 @@
             acc
             (let [r (evaluate-candidate (if reference teacher program) valset metric params
                                         (assoc opts :budget-usd (remaining)
-                                               :max-calls (remaining-calls)))]
+                                               :max-calls (remaining-calls)
+                                               :max-tokens (remaining-tokens)))]
               (swap! spent + (:cost r))
               (swap! calls + (:calls r))
+              (swap! tokens + (eval-tokens r))
               (recur more (conj acc (cond-> {:candidate cname :params params :score (:score r)
                                              :attempted (:attempted r) :n (:n r)
-                                             :cost (:cost r) :calls (:calls r) :stopped (:stopped r)}
+                                             :cost (:cost r) :calls (:calls r)
+                                             :tokens (eval-tokens r) :stopped (:stopped r)}
                                       reference (assoc :reference? true)))))))
         complete? #(and (nil? (:stopped %)) (= (:attempted %) (:n %)))
         ;; Only fully-evaluated STUDENT candidates may win: a budget-truncated
@@ -287,6 +306,7 @@
               :valset        (evaluate/dataset-hash valset)
               :cost          @spent
               :calls         @calls
+              :tokens        @tokens
               :stopped       (cond (nil? best) :no-complete-candidate
                                    (< (count leaderboard) (count candidates)) :budget
                                    :else nil)}}))

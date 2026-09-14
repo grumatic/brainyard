@@ -470,6 +470,7 @@
          "\n"
          "- cost: $" (format "%.4f" (double (or (:cost report) 0.0)))
          (when (:calls report) (str " · " (:calls report) " calls"))
+         (when (:tokens report) (str " · " (:tokens report) " tokens"))
          (when (:stopped report) (str "  stopped: `" (name (:stopped report)) "`"))
          "\n"
          (when-let [ps (seq (keep identity (get-in report [:pool :scores])))]
@@ -487,11 +488,11 @@
            (str " · teacher zero-shot " (format "%.3f" (double t))))
          "\n\n"
          (when (seq board)
-           (str "## Leaderboard (valset)\n\n| candidate | score | examples | calls | cost | stopped |\n|---|---|---|---|---|---|\n"
-                (str/join "\n" (for [{:keys [candidate score attempted n cost calls stopped reference?]} board]
-                                 (format "| %s | %.3f | %d/%d | %s | $%.4f | %s |"
+           (str "## Leaderboard (valset)\n\n| candidate | score | examples | calls | tokens | cost | stopped |\n|---|---|---|---|---|---|---|\n"
+                (str/join "\n" (for [{:keys [candidate score attempted n cost calls tokens stopped reference?]} board]
+                                 (format "| %s | %.3f | %d/%d | %s | %s | $%.4f | %s |"
                                          (str (name candidate) (when reference? " _(teacher, reference — not eligible)_"))
-                                         (double score) attempted n (or calls "") (double cost)
+                                         (double score) attempted n (or calls "") (or tokens "") (double cost)
                                          (or (some-> stopped name) ""))))
                 "\n\n"
                 (when (some #(and (:stopped %) (not (:reference? %))) board)
@@ -517,10 +518,11 @@
          :max-bootstrapped (4) :parallel (2) :threshold (1.0) :seed (0)
          :max-calls (nil — cap on predictor calls, the budget that binds on
          subscription providers whose USD is notional)
+         :max-tokens (nil — cap on input+output tokens across the whole run)
          :teacher-baseline? (true — score the teacher zero-shot on val as a
          reference row)"
   [pid dataset-name & {:keys [optimizer metric budget-usd trials max-bootstrapped
-                              parallel threshold seed max-calls teacher-baseline?]
+                              parallel threshold seed max-calls max-tokens teacher-baseline?]
                        :or   {optimizer "bootstrap-random-search" metric "exact-match"
                               budget-usd 2.0 trials 6 max-bootstrapped 4 parallel 2
                               threshold 1.0 seed 0 teacher-baseline? true}
@@ -551,7 +553,8 @@
         base     (select-keys (:params (clj-llm/resolve-params p)) [:instructions :field-descs])
         common   {:max-bootstrapped max-bootstrapped :predictor-id pid :seed seed
                   :threshold threshold :budget-usd budget-usd :parallel parallel
-                  :max-calls max-calls :teacher-baseline? teacher-baseline?
+                  :max-calls max-calls :max-tokens max-tokens
+                  :teacher-baseline? teacher-baseline?
                   :teacher-params {pid base}
                   :base-params {pid base}}
         {:keys [params report]}
@@ -571,21 +574,26 @@
         report   (if (or (:leaderboard report) (empty? val))
                    report
                    (clj-llm/with-trace-context {:suppress-log? true}
-                     (let [spent (atom (or (:cost report) 0.0))
-                           calls (atom (or (:calls report) 0))
+                     (let [spent  (atom (or (:cost report) 0.0))
+                           calls  (atom (or (:calls report) 0))
+                           tokens (atom (or (:tokens report) 0))
+                           row-tokens (fn [r] (+ (get-in r [:tokens :in] 0) (get-in r [:tokens :out] 0)))
                            eval-row (fn [prog params]
                                       (let [r (clj-llm/with-params params
                                                 (clj-llm/evaluate prog val m :parallel parallel
                                                                   :budget-usd (max 0.0 (- budget-usd @spent))
-                                                                  :max-calls (when max-calls (max 0 (- max-calls @calls)))))]
+                                                                  :max-calls (when max-calls (max 0 (- max-calls @calls)))
+                                                                  :max-tokens (when max-tokens (max 0 (- max-tokens @tokens)))))]
                                         (swap! spent + (:cost r))
                                         (swap! calls + (:calls r))
+                                        (swap! tokens + (row-tokens r))
                                         r))
                            z   (eval-row student {pid base})
                            t   (when teacher-baseline? (eval-row teacher {pid base}))
                            c   (eval-row student {pid (get params pid base)})
                            row (fn [cname r] {:candidate cname :score (:score r) :attempted (:attempted r)
-                                              :n (:n r) :cost (:cost r) :calls (:calls r) :stopped (:stopped r)})
+                                              :n (:n r) :cost (:cost r) :calls (:calls r)
+                                              :tokens (row-tokens r) :stopped (:stopped r)})
                            ok? #(and (nil? (:stopped %)) (= (:attempted %) (:n %)))
                            win (if (and (ok? c) (ok? z) (> (:score c) (:score z))) c z)]
                        (assoc report
@@ -597,7 +605,8 @@
                               :teacher-score (when (and t (ok? t)) (:score t))
                               :valset (clj-llm/dataset-hash val)
                               :cost @spent
-                              :calls @calls))))
+                              :calls @calls
+                              :tokens @tokens))))
         ;; params.edn is always the WINNER, so accepting does what the
         ;; leaderboard says. A blind candidate that lost to zero-shot is kept
         ;; as candidate.edn for the reviewer, never as what accept installs.
@@ -652,6 +661,7 @@
      :no-op (:no-op? meta)
      :cost (:cost report)
      :calls (:calls report)
+     :tokens (:tokens report)
      :stopped (some-> (:stopped report) name)}))
 
 (defn list-proposals [pid]
@@ -714,13 +724,14 @@
 (defcommand program$compile
   "Optimize a predictor's demos over a dataset and write a PROPOSAL for human review (never applied)."
   (fn [& {:keys [predictor-id dataset optimizer metric budget-usd trials max-bootstrapped
-                 parallel lm tier teacher-lm teacher-tier threshold max-calls]}]
+                 parallel lm tier teacher-lm teacher-tier threshold max-calls max-tokens]}]
     (try
       (apply compile-predictor predictor-id dataset
              (mapcat identity
                      (cond-> {}
                        threshold                (assoc :threshold threshold)
                        max-calls                (assoc :max-calls max-calls)
+                       max-tokens               (assoc :max-tokens max-tokens)
                        (non-blank optimizer)    (assoc :optimizer optimizer)
                        (non-blank metric)       (assoc :metric metric)
                        budget-usd               (assoc :budget-usd budget-usd)
@@ -747,7 +758,8 @@
                   [:teacher-lm       {:optional true} [:string {:desc "Teacher provider/model"}]]
                   [:teacher-tier     {:optional true} [:string {:desc "Teacher tier (default deep)"}]]
                   [:threshold        {:optional true} [:double {:desc "Min metric score for a teacher trace to become a demo (default 1.0; use <1 for F1-style metrics)"}]]
-                  [:max-calls        {:optional true} [:int {:desc "Cap on predictor calls (binds on subscription providers, whose USD is notional)"}]]]
+                  [:max-calls        {:optional true} [:int {:desc "Cap on predictor calls (binds on subscription providers, whose USD is notional)"}]]
+                  [:max-tokens       {:optional true} [:int {:desc "Cap on input+output tokens across the run"}]]]
   :output-schema [:map
                   [:proposal-id     {:optional true} [:string {:desc "Proposal id"}]]
                   [:review          {:optional true} [:string {:desc "REVIEW.md path for the human"}]]
@@ -756,6 +768,7 @@
                   [:zero-shot-score {:optional true} [:double {:desc "Baseline valset score"}]]
                   [:teacher-score   {:optional true} [:double {:desc "Teacher zero-shot valset score (reference)"}]]
                   [:calls           {:optional true} [:int {:desc "Predictor calls made"}]]
+                  [:tokens          {:optional true} [:int {:desc "Input+output tokens used"}]]
                   [:demos           {:optional true} [:int {:desc "Demos proposed"}]]
                   [:no-op           {:optional true} [:boolean {:desc "Zero-shot won; nothing to apply"}]]
                   [:cost            {:optional true} [:double {:desc "USD spent"}]]

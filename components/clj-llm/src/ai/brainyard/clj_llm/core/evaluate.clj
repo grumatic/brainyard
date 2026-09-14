@@ -223,6 +223,9 @@
      :max-calls              stop starting new examples once this many predictor
                              calls were made — the budget that means something
                              on subscription providers, whose USD is notional
+     :max-tokens             stop starting new examples once input+output tokens
+                             reach this (input includes cache reads/writes) —
+                             the budget that tracks a rate or context allowance
      :max-transient-retries  per example (default 2)
      :retry-delay-ms         linear backoff base (default 1000)
 
@@ -234,21 +237,25 @@
       :tokens    {:in :out}        :dataset    dataset-hash
       :elapsed-ms …
       :per-example [{:index :score :outputs|:error :error-class :cost :calls …}]}"
-  [program examples metric & {:keys [parallel budget-usd max-calls max-transient-retries retry-delay-ms]
+  [program examples metric & {:keys [parallel budget-usd max-calls max-tokens
+                                     max-transient-retries retry-delay-ms]
                               :or   {parallel 1 max-transient-retries 2 retry-delay-ms 1000}}]
   (let [examples (vec examples)
         t0       (System/currentTimeMillis)
         spent    (atom 0.0)
         calls    (atom 0)
+        tokens   (atom 0)
         stopped  (atom nil)
         run-opts {:max-transient-retries max-transient-retries :retry-delay-ms retry-delay-ms}
         may-start? #(and (nil? @stopped)
                          (or (and (or (nil? budget-usd) (< @spent budget-usd))
-                                  (or (nil? max-calls) (< @calls max-calls)))
+                                  (or (nil? max-calls) (< @calls max-calls))
+                                  (or (nil? max-tokens) (< @tokens max-tokens)))
                              (do (compare-and-set! stopped nil :budget) false)))
         record!  (fn [r]
                    (swap! spent + (:cost r))
                    (swap! calls + (:calls r))
+                   (swap! tokens + (get-in r [:tokens :in] 0) (get-in r [:tokens :out] 0))
                    (when (= :fatal (:error-class r))
                      (compare-and-set! stopped nil :fatal))
                    r)

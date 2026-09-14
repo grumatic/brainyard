@@ -111,6 +111,32 @@
       (is (= :zero-shot (:best report)) "every student candidate scored 0; the reference row is not eligible")
       (is (= {"t/upper" {}} params)))))
 
+(deftest max-tokens-bounds-the-search
+  ;; every fake call reports 100 in + 20 out = 120 tokens
+  (let [calls (atom [])
+        f (fake-llm 2 calls)]
+    (with-redefs [llm/chat-completion (fn [lm messages & more]
+                                        (assoc ((:chat f) lm messages)
+                                               ::llm/usage {:input-tokens 100 :output-tokens 20
+                                                            :cost {:total-cost 0.0}}))
+                  llm/extract-content (:extract f)]
+      (let [{:keys [report]} (opt/bootstrap-random-search teacher student
+                                                          (trainset ["a" "b" "c" "d"]) (trainset ["p" "q"]) metric
+                                                          {:trials 5 :max-bootstrapped 2 :max-tokens 840})]
+        (is (= :budget (:stopped report)))
+        (is (<= (:tokens report) 840) "sequential: 840 = 7 calls, never a call past the cap")
+        (is (= (* 120 (count @calls)) (:tokens report)) "reported tokens are the tokens actually used")
+        (is (every? :tokens (:leaderboard report)) "each row reports its tokens")))))
+
+(deftest evaluate-honours-max-tokens
+  (let [prog (fn [_]
+               (when-let [t p/*trace*]
+                 (swap! t conj {:predictor-id "t/upper" :usage {:input-tokens 50 :output-tokens 10}}))
+               {:outputs {:out "X"}})
+        r (ev/evaluate prog (trainset ["a" "b" "c" "d" "e"]) metric :max-tokens 120)]
+    (is (= :budget (:stopped r)))
+    (is (= 2 (:attempted r)) "starts no example once 120 tokens are used")))
+
 (deftest max-calls-bounds-the-search-like-a-budget
   (let [calls (atom [])]
     (with-fake-llm 2 calls
