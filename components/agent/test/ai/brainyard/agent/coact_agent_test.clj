@@ -877,6 +877,68 @@
 
 ;; --- Predicates ---
 
+(deftest resolve-channel-conflicts-action-test
+  ;; Every role prompt promises "populated-field-count > 1 is a conflict; code >
+  ;; tool > answer", but the router checks answer first. Observed live: a reply
+  ;; with a real clojure block AND an "I've executed the test…" answer ended the
+  ;; turn on the invented answer; the code never ran.
+  (let [code "```clojure\n(+ 1 2)\n```"]
+    (testing "answer + code-blocks → answer dropped, code kept, notice queued"
+      (let [st (fresh-st-memory :answer "## Results\nI ran it." :goal-achieved true :code-blocks code)]
+        (rca/coact-resolve-channel-conflicts-action {:st-memory st})
+        (is (= "" (:answer @st)))
+        (is (false? (:goal-achieved @st)))
+        (is (= code (:code-blocks @st)))
+        (is (str/includes? (:pending-format-guidance @st) "CHANNEL CONFLICT"))
+        (is (false? (rca/coact-answer-non-blank? {:st-memory st})))
+        (is (true? (rca/coact-has-code-blocks? {:st-memory st})))))
+
+    (testing "answer + tool-calls → answer dropped"
+      (let [st (fresh-st-memory :answer "done" :tool-calls [{:tool-name "read-file" :tool-args {:path "x"}}])]
+        (rca/coact-resolve-channel-conflicts-action {:st-memory st})
+        (is (= "" (:answer @st)))
+        (is (= 1 (count (:tool-calls @st))))))
+
+    (testing "an answer on its own is untouched"
+      (let [st (fresh-st-memory :answer "## final" :goal-achieved true)]
+        (rca/coact-resolve-channel-conflicts-action {:st-memory st})
+        (is (= "## final" (:answer @st)))
+        (is (true? (:goal-achieved @st)))
+        (is (nil? (:pending-format-guidance @st)))))
+
+    (testing "prose in code-blocks (no fence) is not an action, so it cannot drop a real answer"
+      (let [st (fresh-st-memory :answer "## final" :code-blocks "I will now write some code")]
+        (rca/coact-resolve-channel-conflicts-action {:st-memory st})
+        (is (= "## final" (:answer @st)))))
+
+    (testing "code + tool-calls → tool calls dropped (not run as well), named in the notice"
+      (let [st (fresh-st-memory :code-blocks code
+                                :tool-calls [{:tool-name "read-file" :tool-args {:path "x"}}])]
+        (rca/coact-resolve-channel-conflicts-action {:st-memory st})
+        (is (= [] (:tool-calls @st)))
+        (is (= code (:code-blocks @st)))
+        (is (str/includes? (:pending-format-guidance @st) "NOT executed: read-file"))))
+
+    (testing "answer + code + tool-calls → only the code survives; both drops are noticed"
+      (let [st (fresh-st-memory :answer "done" :code-blocks code
+                                :tool-calls [{:tool-name "grep" :tool-args {}}])]
+        (rca/coact-resolve-channel-conflicts-action {:st-memory st})
+        (is (= ["" []] [(:answer @st) (:tool-calls @st)]))
+        (is (str/includes? (:pending-format-guidance @st) "answer was DISCARDED"))
+        (is (str/includes? (:pending-format-guidance @st) "NOT executed: grep"))))
+
+    (testing "a code-only agent (tool channel off) never counts tool-calls as a conflict"
+      (let [st (fresh-st-memory :code-blocks code :tool-channel? false
+                                :tool-calls [{:tool-name "grep" :tool-args {}}])]
+        (rca/coact-resolve-channel-conflicts-action {:st-memory st})
+        (is (nil? (:pending-format-guidance @st)))))
+
+    (testing "an existing pending notice is kept, not overwritten"
+      (let [st (fresh-st-memory :answer "x" :code-blocks code :pending-format-guidance "FORMAT: earlier")]
+        (rca/coact-resolve-channel-conflicts-action {:st-memory st})
+        (is (str/starts-with? (:pending-format-guidance @st) "FORMAT: earlier"))
+        (is (str/includes? (:pending-format-guidance @st) "CHANNEL CONFLICT"))))))
+
 (deftest predicates-test
   (testing "answer-non-blank? predicate"
     (is (false? (rca/coact-answer-non-blank? {:st-memory (fresh-st-memory :answer "")})))

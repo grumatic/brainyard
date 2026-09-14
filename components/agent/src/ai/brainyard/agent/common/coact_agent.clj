@@ -3454,6 +3454,71 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
           (swap! st-memory assoc :tool-calls (get grouped true []))))))
   bt/success)
 
+(def ^:private premature-answer-notice
+  "Model-visible notice for an iteration whose answer was dropped because the
+   same reply also carried code or tool calls."
+  (str "CHANNEL CONFLICT: your previous reply populated `answer` together with "
+       "`code-blocks` or `tool-calls`. The action ran and the answer was DISCARDED — "
+       "it was written before the action's output existed, so any results it "
+       "described were invented. Read the actual results above, then answer in a "
+       "reply of its own, leaving `code-blocks` and `tool-calls` empty."))
+
+(defn- dropped-tool-calls-notice
+  "Model-visible notice for an iteration whose tool calls were dropped because
+   the same reply also carried code."
+  [tool-names]
+  (str "CHANNEL CONFLICT: your previous reply populated both `code-blocks` and "
+       "`tool-calls`. Only the code ran; these tool calls were NOT executed: "
+       (str/join ", " tool-names) ". Do not assume their results. If you still "
+       "need them, call them in a reply of their own (or from the code block)."))
+
+(defn- queue-notice [m notice]
+  (update m :pending-format-guidance
+          #(if (str/blank? %) notice (str % "\n\n" notice))))
+
+(defn coact-resolve-channel-conflicts-action
+  "BT action: enforce the conflict rule every role prompt states — \"the router
+   treats populated-field-count > 1 as a conflict and prefers code > tool >
+   answer\" — before the router runs, and tell the model what was dropped.
+
+   answer + (code or tool calls) → the answer is dropped and the action runs.
+     The router checks answer FIRST, so without this the answer won and the
+     action never ran. An answer written alongside code cannot know that code's
+     output: observed live, a reply carried a 2k-char clojure block plus an
+     answer saying \"I've executed a comprehensive test…\" with a results table,
+     and the user got those invented results as the turn's answer (21 of 1,685
+     logged CoAct replies paired code with an answer). Also clears
+     `:goal-achieved`, which only means anything alongside an answer.
+
+   code + tool calls → the tool calls are dropped and the code runs. The router
+     already picks code here, but used to drop the calls SILENTLY, so the model
+     could assume results it never got. They are not run as well: a reply that
+     fills both usually expresses one action twice (`(read-file …)` in code AND a
+     `read-file` call), and running both would repeat side effects.
+
+   Each drop logs a warning and queues a notice onto the next iteration record.
+   Runs after `coact-strip-unbound-tool-calls-action`, so a hallucinated tool
+   call can neither drop a real answer nor be reported as dropped."
+  [{:keys [st-memory] :as context}]
+  (let [code?   (coact-has-code-blocks? context)
+        tools?  (coact-has-tool-calls? context)
+        answer? (coact-answer-non-blank? context)]
+    (when (and answer? (or code? tools?))
+      (mulog/warn ::premature-answer-dropped
+                  :iteration (:iteration-count @st-memory)
+                  :code? (boolean code?) :tool? (boolean tools?)
+                  :answer-len (count (str (:answer @st-memory))))
+      (swap! st-memory #(-> % (assoc :answer "" :goal-achieved false)
+                            (queue-notice premature-answer-notice))))
+    (when (and code? tools?)
+      (let [names (mapv :tool-name (:tool-calls @st-memory))]
+        (mulog/warn ::tool-calls-dropped-for-code
+                    :iteration (:iteration-count @st-memory)
+                    :dropped names)
+        (swap! st-memory #(-> % (assoc :tool-calls [])
+                              (queue-notice (dropped-tool-calls-notice names)))))))
+  bt/success)
+
 (defn coact-tool-dispatch-action
   "BT action: dispatch tool-calls in parallel via pmap + call-tool-with-fast-eval.
    Per-tool hooks (tool-use/pre, tool-use/post) fire inside call-tool.
@@ -4718,11 +4783,14 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
 
 (defn- coact-dispatch-channel!
   "Route a freshly-populated ThinkActCode result to its channel, mirroring
-   the BT router's precedence (answer > code > tool). Used by the repair
+   the BT's pre-router steps and router (unbound tool calls stripped, channel
+   conflicts resolved, then answer > code > tool). Used by the repair
    path after an empty-result retry recovers a usable result, so it is acted
    on in the same iteration instead of costing an extra one."
   [context]
   (coact-display-think-action context)
+  (coact-strip-unbound-tool-calls-action context)
+  (coact-resolve-channel-conflicts-action context)
   (cond
     (coact-answer-non-blank? context)
     (coact-stamp-answer-action context)
@@ -5689,7 +5757,15 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
       [:action {:id (kw :action/strip-unbound-tools)}
        coact-strip-unbound-tool-calls-action]
 
-      ;; Router — precedence: answer > code > tool > repair
+      ;; Enforce the role prompts' "code > tool > answer" conflict rule: an
+      ;; answer sharing a reply with an action is dropped so the action runs;
+      ;; tool calls sharing a reply with code are dropped so only the code runs.
+      ;; Each drop is noticed to the model.
+      [:action {:id (kw :action/resolve-channel-conflicts)}
+       coact-resolve-channel-conflicts-action]
+
+      ;; Router — first match wins: answer > code > tool > repair. After the
+      ;; conflict step above at most one channel is populated.
       [:fallback {:id (kw :fallback/router)}
 
        ;; Path A — answer channel + in-loop hybrid refine gate.
