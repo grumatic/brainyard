@@ -57,8 +57,23 @@
 (deftest a-dotenv-entry-may-override-the-hardening
   ;; "inherited env is a default, not a ceiling" — `.env` is something the user
   ;; wrote, so it outranks a default this namespace chose for them.
-  (with-dotenv-var "GIT_ASKPASS" "/usr/bin/true"
-    (fn [] (is (= "[/usr/bin/true]" (sh-out "echo \"[$GIT_ASKPASS]\""))))))
+  ;;
+  ;; But `.env` never overrides a REAL variable (util `child-env`), and a JVM
+  ;; cannot unset its own environment. Hard-coding GIT_ASKPASS failed in any
+  ;; shell exporting `GIT_ASKPASS=false`. So exercise the first hardening var the
+  ;; real environment leaves unset or blank; if a shell exports all of them, assert
+  ;; the other half of the contract instead: the real value blocks `.env`, so the
+  ;; hardening default stands.
+  (let [ks   (sort (keys proc/non-interactive-env))
+        free (first (filter #(str/blank? (System/getenv %)) ks))
+        k    (or free (first ks))
+        echo (str "echo \"[$" k "]\"")]
+    (with-dotenv-var k "/usr/bin/true"
+      (fn []
+        (if free
+          (is (= "[/usr/bin/true]" (sh-out echo)))
+          (is (= (str "[" (get proc/non-interactive-env k) "]") (sh-out echo))
+              "a real env var outranks .env; the hardening default stands"))))))
 
 (deftest a-caller-entry-still-outranks-both
   (with-dotenv-var "BY_TEST_PROC_ORDER" "from-dotenv"

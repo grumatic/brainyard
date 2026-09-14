@@ -6,6 +6,7 @@
   "Unit tests for the unified config API in core.config — `get-config`,
    `set-config!`, `!global-config` cache, and the deprecated alias."
   (:require [ai.brainyard.agent.core.config :as cfg]
+            [ai.brainyard.util.interface :as util]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -418,6 +419,28 @@
     (try (System/setProperty k v) (f)
          (finally (if prior (System/setProperty k prior) (System/clearProperty k))))))
 
+(defn- without-real-env
+  "Run `f` as if the process environment did not carry any of `ks`.
+
+   `resolve-var` reads the real environment BEFORE the property table, and a
+   JVM cannot unset its own environment — so a developer shell exporting, say,
+   `BY_PROJECT_DIR` outranks the property a test sets and the test fails for a
+   reason unrelated to the code. `config` reads through the interface var, so
+   redefining it hides just the named variables; the property branch (the thing
+   under test) is kept verbatim, blank-as-unset included."
+  [ks f]
+  (let [real   util/resolve-var
+        hidden (set ks)]
+    (with-redefs [util/resolve-var
+                  (fn resolve-var*
+                    ([k] (resolve-var* k nil))
+                    ([k {:keys [blank-as-unset?] :or {blank-as-unset? true} :as opts}]
+                     (if (and k (contains? hidden (name k)))
+                       (let [v (System/getProperty (name k))]
+                         (if (and blank-as-unset? (str/blank? v)) nil v))
+                       (real k opts))))]
+      (f))))
+
 (deftest env-fn-sees-a-dotenv-supplied-property
   (testing "a boolean knob"
     (is (= cfg/env-unset (cfg/schema-env-value :nrepl-enabled?))
@@ -450,8 +473,9 @@
                  "/by-cfg-projdir-" (System/nanoTime))]
     (.mkdirs (java.io.File. tmp))
     (try
-      (with-prop "BY_PROJECT_DIR" tmp
-        #(is (= tmp (cfg/resolve-project-dir (System/getProperty "user.dir")))))
+      (without-real-env ["BY_PROJECT_DIR"]
+        #(with-prop "BY_PROJECT_DIR" tmp
+           (fn [] (is (= tmp (cfg/resolve-project-dir (System/getProperty "user.dir")))))))
       (finally (.delete (java.io.File. tmp))))))
 
 ;; ============================================================================
