@@ -123,14 +123,30 @@
   ;; /allow-path additions) is auto-allowed WITHOUT a popup — mirroring the read
   ;; gate. (:deny-by-default / :auto-approve use their own fns and never build
   ;; this interactive permission-fn, so mode-gating is preserved.)
+  ;;
+  ;; Hermetic about the allow-list: `agent/allowed-dirs` resolves through the
+  ;; config chain, so an ambient project config replaces the defaults — with
+  ;; BY_PROJECT_DIR pointing at a project whose config.edn sets
+  ;; `:allowed-dirs ["/private/var"]`, /tmp was no longer allowed and this test
+  ;; errored in `bb test`. Pin the list instead of trusting the defaults.
   (testing "path within allowed-dirs ⇒ {:allowed true}, popup never invoked"
     (with-mode-b-installed
       (fn [_stub]
-        (with-redefs [popup/show! (fn [& _]
+        (with-redefs [ai.brainyard.agent.interface/allowed-dirs (fn [& _] ["/tmp"])
+                      popup/show! (fn [& _]
                                     (throw (ex-info "popup must not be invoked" {})))]
           (let [pf (permission-fn)]
-            ;; /tmp is a default allowed-dir; a write under it must not prompt.
-            (is (= {:allowed true} (pf {:tool "Write" :path "/tmp/deep/nested/x"})))))))))
+            (is (= {:allowed true} (pf {:tool "Write" :path "/tmp/deep/nested/x"}))))))))
+  (testing "the same path outside the pinned allow-list DOES reach the popup"
+    ;; Proves the pin is what decides: without it the ambient config decides.
+    (with-mode-b-installed
+      (fn [_stub]
+        (with-redefs [ai.brainyard.agent.interface/allowed-dirs (fn [& _] ["/private/var/by-test-elsewhere"])
+                      popup/show! (fn [& _]
+                                    (throw (ex-info "popup invoked" {})))]
+          (let [pf (permission-fn)]
+            (is (thrown-with-msg? clojure.lang.ExceptionInfo #"popup invoked"
+                                  (pf {:tool "Write" :path "/tmp/deep/nested/x"})))))))))
 
 (deftest mode-a-permission-uses-in-stream-path
   (testing "When mode is :A, popup is bypassed even if a side channel exists"
