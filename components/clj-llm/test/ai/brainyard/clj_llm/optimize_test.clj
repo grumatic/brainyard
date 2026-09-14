@@ -111,6 +111,44 @@
       (is (= :zero-shot (:best report)) "every student candidate scored 0; the reference row is not eligible")
       (is (= {"t/upper" {}} params)))))
 
+(deftest select-best-requires-beating-zero-shot-beyond-noise
+  (let [row (fn [c s se] {:candidate c :score s :stderr se :completed-repeats 3
+                          :attempted 12 :n 12 :stopped nil})]
+    (testing "the first graph-extract result: +0.03 inside ~0.03 stderr loses to zero-shot"
+      (let [[best rows] (opt/select-best [(row :zero-shot 0.575 0.03) (row :labeled 0.605 0.03)])]
+        (is (= :zero-shot (:candidate best)))
+        (is (false? (get-in (second rows) [:vs-baseline :better?])))))
+    (testing "a clear gain wins; among several winners the highest mean"
+      (let [[best] (opt/select-best [(row :zero-shot 0.5 0.01) (row :a 0.8 0.01) (row :b 0.9 0.01)])]
+        (is (= :b (:candidate best)))))
+    (testing "the teacher reference row is never compared or chosen"
+      (let [[best rows] (opt/select-best [(row :zero-shot 0.5 0.01)
+                                          (assoc (row :teacher 0.99 0.0) :reference? true)])]
+        (is (= :zero-shot (:candidate best)))
+        (is (nil? (:vs-baseline (second rows))))))
+    (testing "a budget-cut row is not eligible"
+      (let [[best] (opt/select-best [(row :zero-shot 0.5 0.01) (assoc (row :a 0.9 0.01) :stopped :budget)])]
+        (is (= :zero-shot (:candidate best)))))
+    (testing "an unfinished baseline leaves nothing validated"
+      (let [[best] (opt/select-best [(assoc (row :zero-shot 0.5 0.01) :stopped :budget) (row :a 0.9 0.01)])]
+        (is (nil? best))))))
+
+(deftest random-search-with-repeats
+  (let [calls (atom [])]
+    (with-fake-llm 2 calls
+      (let [{:keys [report]}
+            (opt/bootstrap-random-search teacher student (trainset ["a" "b" "c" "d"]) (trainset ["p" "q"]) metric
+                                         {:trials 1 :max-bootstrapped 2 :predictor-id "t/upper"
+                                          :repeats 3 :teacher-baseline? false})
+            board (into {} (map (juxt :candidate identity)) (:leaderboard report))]
+        (is (= 3 (:repeats report)))
+        (is (= 3 (get-in board [:zero-shot :completed-repeats])))
+        (is (== 0.0 (get-in board [:bootstrap :stddev])) "the fake LM is deterministic")
+        (is (:better? (get-in board [:bootstrap :vs-baseline])) "zero noise: 1.0 vs 0.0 is a real gain")
+        (is (not= :zero-shot (:best report)))
+        (is (= (* 2 3 4) (count (filter #{"student"} @calls)))
+            "4 student rows (zero-shot, labeled, bootstrap, trial-0) × 2 val examples × 3 passes")))))
+
 (deftest max-tokens-bounds-the-search
   ;; every fake call reports 100 in + 20 out = 120 tokens
   (let [calls (atom [])

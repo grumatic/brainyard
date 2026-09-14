@@ -197,10 +197,39 @@
 ;; ============================================================================
 
 (defn- evaluate-candidate
-  [program valset metric params {:keys [parallel budget-usd max-calls max-tokens]}]
+  [program valset metric params {:keys [parallel budget-usd max-calls max-tokens repeats]}]
   (predictor/with-params params
-    (evaluate/evaluate program valset metric :parallel (or parallel 1)
+    (evaluate/evaluate program valset metric :parallel (or parallel 1) :repeats (or repeats 1)
                        :budget-usd budget-usd :max-calls max-calls :max-tokens max-tokens)))
+
+(def row-stat-keys
+  "Evaluation fields a leaderboard row keeps, so a comparison can be re-run."
+  [:score :attempted :n :cost :calls :stopped :repeats :completed-repeats
+   :repeat-scores :stddev :stderr :ci95])
+
+(defn select-best
+  "Pick the winning row of a leaderboard whose FIRST student row is the
+   zero-shot baseline. A later student row wins only when it is complete and
+   `compare-scores` says it beats the baseline by more than their combined
+   noise; among those, the highest mean wins (earlier on ties). Otherwise the
+   baseline wins — a proposal that adds prompt tokens must earn it.
+
+   Returns [best-row rows-annotated-with-:vs-baseline]."
+  [leaderboard]
+  (let [complete? #(and (nil? (:stopped %)) (= (:attempted %) (:n %)))
+        base      (first (remove :reference? leaderboard))
+        annotated (mapv (fn [row]
+                          (if (or (identical? row base) (:reference? row)
+                                  (not (complete? row)) (not (complete? base)))
+                            row
+                            (assoc row :vs-baseline (evaluate/compare-scores row base))))
+                        leaderboard)
+        winners   (filter #(get-in % [:vs-baseline :better?]) annotated)
+        best      (cond
+                    (seq winners) (reduce (fn [b c] (if (> (:score c) (:score b)) c b)) winners)
+                    (and base (complete? base)) (first (remove :reference? annotated))
+                    :else nil)]
+    [best annotated]))
 
 (defn- eval-tokens [r]
   (+ (get-in r [:tokens :in] 0) (get-in r [:tokens :out] 0)))
@@ -223,14 +252,17 @@
          :threshold :teacher-params :parallel, :budget-usd / :max-calls /
          :max-tokens (all shared by the pool and every row), and :base-params
          {pid params} laid under every row (e.g. instructions being compiled
-         against).
+         against), and :repeats (default 1) — passes per row over the valset.
 
    Returns {:params best-candidate-params
             :report {:best … :teacher-score …
                      :leaderboard [{:candidate :score :cost :calls :stopped :reference?}…]
                      :pool … :cost … :calls … :stopped …}}.
-   Ties keep the EARLIER candidate — zero-shot first — so a proposal that adds
-   prompt tokens has to earn a strictly better score than one that adds none."
+   Selection (`select-best`): a candidate wins only by beating the zero-shot row
+   — strictly with :repeats 1, and by more than the combined run-to-run noise
+   (Welch t on per-pass means) with :repeats ≥ 2. So a proposal that adds
+   prompt tokens has to earn it, and with repeats it has to earn it beyond
+   noise. Each compared row carries :vs-baseline {:better? :diff :margin :tested?}."
   [teacher program trainset valset metric
    {:keys [trials max-bootstrapped predictor-id seed budget-usd max-calls max-tokens
            teacher-baseline? base-params]
@@ -284,23 +316,22 @@
               (swap! spent + (:cost r))
               (swap! calls + (:calls r))
               (swap! tokens + (eval-tokens r))
-              (recur more (conj acc (cond-> {:candidate cname :params params :score (:score r)
-                                             :attempted (:attempted r) :n (:n r)
-                                             :cost (:cost r) :calls (:calls r)
-                                             :tokens (eval-tokens r) :stopped (:stopped r)}
+              (recur more (conj acc (cond-> (merge {:candidate cname :params params
+                                                    :tokens (eval-tokens r)}
+                                                   (select-keys r row-stat-keys))
                                       reference (assoc :reference? true)))))))
         complete? #(and (nil? (:stopped %)) (= (:attempted %) (:n %)))
-        ;; Only fully-evaluated STUDENT candidates may win: a budget-truncated
+        ;; Only fully-evaluated STUDENT candidates may win (a budget-truncated
         ;; run scored on fewer examples is not comparable, and the teacher row
-        ;; is a different model.
-        eligible (filter #(and (complete? %) (not (:reference? %))) leaderboard)
-        best     (reduce (fn [b c] (if (or (nil? b) (> (:score c) (:score b))) c b)) nil eligible)
+        ;; is a different model), and only by beating zero-shot beyond noise.
+        [best leaderboard] (select-best leaderboard)
         teacher-row (first (filter #(and (:reference? %) (complete? %)) leaderboard))]
     {:params (:params best)
      :report {:optimizer     :bootstrap-random-search
               :best          (:candidate best)
               :best-score    (:score best)
               :teacher-score (:score teacher-row)
+              :repeats       (or (:repeats opts) 1)
               :leaderboard   (mapv #(dissoc % :params) leaderboard)
               :pool          (assoc report :sizes (into {} (map (fn [[k v]] [k (count v)])) pool))
               :valset        (evaluate/dataset-hash valset)

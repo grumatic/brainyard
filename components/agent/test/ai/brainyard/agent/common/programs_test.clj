@@ -233,6 +233,24 @@
                 (is (str/includes? (slurp (:review r)) "installs the instructions/field-desc override")))))))
       (finally (clj-llm/set-params-roots! [])))))
 
+(deftest repeats-reach-the-review-and-eval-summary
+  (write-upper-dataset!)
+  (with-upper-llm 2
+    (let [r (programs/compile-predictor "test/upper" "words" :trials 1 :max-bootstrapped 2
+                                        :parallel 1 :repeats 2)
+          review (slurp (:review r))]
+      (is (str/includes? review "2 passes per row"))
+      (is (str/includes? review "| ± sd | vs zero-shot |"))
+      (is (str/includes? review "✅"))
+      (is (str/includes? review "beats zero-shot by more than the combined run-to-run noise"))))
+  (with-upper-llm 0
+    (let [{:keys [summary]} (programs/eval-predictor "test/upper" "words" "exact-match"
+                                                     :split "val" :parallel 1 :repeats 3)]
+      (is (= 3 (:completed-repeats summary)))
+      (is (== 0.0 (:stddev summary)))
+      (is (vector? (:least-stable summary)))
+      (is (nil? (:per-example summary)) "the summary stays small"))))
+
 (deftest max-calls-caps-a-compile
   (write-upper-dataset!)
   (with-upper-llm 2

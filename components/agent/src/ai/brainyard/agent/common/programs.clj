@@ -269,18 +269,26 @@
 (defn- summarize-report
   "The report minus per-example outputs — small enough to return to an LLM."
   [report]
-  (-> report
-      (dissoc :per-example)
-      (assoc :worst (->> (:per-example report)
-                         (sort-by :score)
-                         (take 5)
-                         (mapv #(select-keys % [:index :score :error :error-class]))))))
+  (cond-> (-> report
+              (dissoc :per-example)
+              (assoc :worst (->> (:per-example report)
+                                 (sort-by :score)
+                                 (take 5)
+                                 (mapv #(select-keys % [:index :score :error :error-class])))))
+    ;; With repeats, name the examples whose score moves the most between
+    ;; passes — where the noise comes from, and the first labels to re-check.
+    (> (or (:repeats report) 1) 1)
+    (assoc :least-stable (->> (:per-example report)
+                              (filter #(pos? (:spread % 0)))
+                              (sort-by :spread >)
+                              (take 5)
+                              (mapv #(select-keys % [:index :score :scores :spread]))))))
 
 (defn eval-predictor
   "Evaluate predictor `pid` on a dataset with a named metric; writes the full
    report under evals/ and returns {:report-path … :summary …}."
-  [pid dataset-name metric-name & {:keys [split budget-usd parallel params-source]
-                                   :or   {budget-usd 1.0 parallel 2}
+  [pid dataset-name metric-name & {:keys [split budget-usd parallel repeats max-calls max-tokens]
+                                   :or   {budget-usd 1.0 parallel 2 repeats 1}
                                    :as opts}]
   (let [p       (or (clj-llm/get-predictor pid)
                     (throw (ex-info (str "Unknown predictor " pid " (registered: "
@@ -298,7 +306,8 @@
         report  (clj-llm/with-trace-context {:suppress-log? true}
                   (clj-llm/evaluate (clj-llm/predictor-program p :lm-config lm)
                                     exs ((:make mdef))
-                                    :parallel parallel :budget-usd budget-usd))
+                                    :parallel parallel :repeats repeats :budget-usd budget-usd
+                                    :max-calls max-calls :max-tokens max-tokens))
         full    (assoc report
                        :predictor-id pid
                        :dataset dataset-name
@@ -374,12 +383,14 @@
 
 (defcommand program$eval
   "Evaluate a predictor on a dataset with a named metric under a spend cap; writes a report."
-  (fn [& {:keys [predictor-id dataset metric split budget-usd parallel lm tier]}]
+  (fn [& {:keys [predictor-id dataset metric split budget-usd parallel lm tier repeats max-calls max-tokens]}]
     (try
       (eval-predictor predictor-id dataset (or (non-blank metric) "exact-match")
                       :split split
                       :budget-usd (or budget-usd 1.0)
                       :parallel (or parallel 2)
+                      :repeats (or repeats 1)
+                      :max-calls max-calls :max-tokens max-tokens
                       :lm lm :tier tier)
       (catch Exception e
         {:error (ex-message e)})))
@@ -391,7 +402,10 @@
                   [:budget-usd   {:optional true} [:double {:desc "Spend cap in USD (default 1.0)"}]]
                   [:parallel     {:optional true} [:int {:desc "Worker threads (default 2)"}]]
                   [:lm           {:optional true} [:string {:desc "provider/model to evaluate (default: sub-LM)"}]]
-                  [:tier         {:optional true} [:string {:desc "light | standard | deep (via :agent-lm-tiers)"}]]]
+                  [:tier         {:optional true} [:string {:desc "light | standard | deep (via :agent-lm-tiers)"}]]
+                  [:repeats      {:optional true} [:int {:desc "Passes over the set; ≥2 reports stddev and a 95% interval (default 1)"}]]
+                  [:max-calls    {:optional true} [:int {:desc "Cap on predictor calls"}]]
+                  [:max-tokens   {:optional true} [:int {:desc "Cap on input+output tokens"}]]]
   :output-schema [:map
                   [:report-path {:optional true} [:string {:desc "Full report file"}]]
                   [:summary     {:optional true} [:map {:desc "Score, cost, tokens, stopped, worst examples"}]]
@@ -488,13 +502,24 @@
            (str " · teacher zero-shot " (format "%.3f" (double t))))
          "\n\n"
          (when (seq board)
-           (str "## Leaderboard (valset)\n\n| candidate | score | examples | calls | tokens | cost | stopped |\n|---|---|---|---|---|---|---|\n"
-                (str/join "\n" (for [{:keys [candidate score attempted n cost calls tokens stopped reference?]} board]
-                                 (format "| %s | %.3f | %d/%d | %s | %s | $%.4f | %s |"
+           (str "## Leaderboard (valset"
+                (when (> (or (:repeats report) 1) 1) (str ", " (:repeats report) " passes per row"))
+                ")\n\n| candidate | score | ± sd | vs zero-shot | examples | calls | tokens | cost | stopped |\n|---|---|---|---|---|---|---|---|---|\n"
+                (str/join "\n" (for [{:keys [candidate score stddev vs-baseline attempted n cost calls tokens stopped reference?]} board]
+                                 (format "| %s | %.3f | %s | %s | %d/%d | %s | %s | $%.4f | %s |"
                                          (str (name candidate) (when reference? " _(teacher, reference — not eligible)_"))
-                                         (double score) attempted n (or calls "") (or tokens "") (double cost)
+                                         (double score)
+                                         (if stddev (format "%.3f" (double stddev)) "—")
+                                         (if-let [{:keys [better? diff margin tested?]} vs-baseline]
+                                           (format "%s %+.3f%s" (if better? "✅" "✗") (double diff)
+                                                   (if tested? (format " (needs >%.3f)" (double margin)) ""))
+                                           "")
+                                         attempted n (or calls "") (or tokens "") (double cost)
                                          (or (some-> stopped name) ""))))
                 "\n\n"
+                (if (> (or (:repeats report) 1) 1)
+                  "_A candidate wins only if it beats zero-shot by more than the combined run-to-run noise (Welch t, 95%)._\n\n"
+                  "_Single pass per row: differences are NOT tested against noise — rerun with `:repeats 3` before trusting a small gap._\n\n")
                 (when (some #(and (:stopped %) (not (:reference? %))) board)
                   "_Rows marked stopped were cut by the budget and are not eligible to win._\n\n")))
          (when (:instructions params)
@@ -522,10 +547,10 @@
          :teacher-baseline? (true — score the teacher zero-shot on val as a
          reference row)"
   [pid dataset-name & {:keys [optimizer metric budget-usd trials max-bootstrapped
-                              parallel threshold seed max-calls max-tokens teacher-baseline?]
+                              parallel threshold seed max-calls max-tokens teacher-baseline? repeats]
                        :or   {optimizer "bootstrap-random-search" metric "exact-match"
                               budget-usd 2.0 trials 6 max-bootstrapped 4 parallel 2
-                              threshold 1.0 seed 0 teacher-baseline? true}
+                              threshold 1.0 seed 0 teacher-baseline? true repeats 1}
                        :as   opts}]
   (let [p        (or (clj-llm/get-predictor pid)
                      (throw (ex-info (str "Unknown predictor " pid) {:predictor-id pid})))
@@ -553,7 +578,7 @@
         base     (select-keys (:params (clj-llm/resolve-params p)) [:instructions :field-descs])
         common   {:max-bootstrapped max-bootstrapped :predictor-id pid :seed seed
                   :threshold threshold :budget-usd budget-usd :parallel parallel
-                  :max-calls max-calls :max-tokens max-tokens
+                  :max-calls max-calls :max-tokens max-tokens :repeats repeats
                   :teacher-baseline? teacher-baseline?
                   :teacher-params {pid base}
                   :base-params {pid base}}
@@ -580,7 +605,7 @@
                            row-tokens (fn [r] (+ (get-in r [:tokens :in] 0) (get-in r [:tokens :out] 0)))
                            eval-row (fn [prog params]
                                       (let [r (clj-llm/with-params params
-                                                (clj-llm/evaluate prog val m :parallel parallel
+                                                (clj-llm/evaluate prog val m :parallel parallel :repeats repeats
                                                                   :budget-usd (max 0.0 (- budget-usd @spent))
                                                                   :max-calls (when max-calls (max 0 (- max-calls @calls)))
                                                                   :max-tokens (when max-tokens (max 0 (- max-tokens @tokens)))))]
@@ -591,17 +616,19 @@
                            z   (eval-row student {pid base})
                            t   (when teacher-baseline? (eval-row teacher {pid base}))
                            c   (eval-row student {pid (get params pid base)})
-                           row (fn [cname r] {:candidate cname :score (:score r) :attempted (:attempted r)
-                                              :n (:n r) :cost (:cost r) :calls (:calls r)
-                                              :tokens (row-tokens r) :stopped (:stopped r)})
+                           row (fn [cname r] (merge {:candidate cname :tokens (row-tokens r)}
+                                                    (select-keys r clj-llm/leaderboard-row-keys)))
                            ok? #(and (nil? (:stopped %)) (= (:attempted %) (:n %)))
-                           win (if (and (ok? c) (ok? z) (> (:score c) (:score z))) c z)]
+                           ;; same rule as random search: beat zero-shot beyond noise
+                           [win board] (clj-llm/select-best
+                                        (cond-> [(row :zero-shot z)]
+                                          t (conj (assoc (row :teacher t) :reference? true))
+                                          true (conj (row :proposal c))))]
                        (assoc report
-                              :leaderboard (cond-> [(row :zero-shot z)]
-                                             t (conj (assoc (row :teacher t) :reference? true))
-                                             true (conj (row :proposal c)))
-                              :best (if (identical? win c) :proposal :zero-shot)
+                              :leaderboard board
+                              :best (:candidate win)
                               :best-score (:score win)
+                              :repeats repeats
                               :teacher-score (when (and t (ok? t)) (:score t))
                               :valset (clj-llm/dataset-hash val)
                               :cost @spent
@@ -610,9 +637,11 @@
         ;; params.edn is always the WINNER, so accepting does what the
         ;; leaderboard says. A blind candidate that lost to zero-shot is kept
         ;; as candidate.edn for the reviewer, never as what accept installs.
-        losing-candidate (when (and (= :zero-shot (:best report)) (seq (get-in params [pid :demos])))
+        ;; nil best = even the zero-shot baseline did not finish (budget):
+        ;; nothing was validated, so nothing but the base may be proposed.
+        losing-candidate (when (and (#{:zero-shot nil} (:best report)) (seq (get-in params [pid :demos])))
                            (get params pid))
-        params   (if (= :zero-shot (:best report)) {pid base} params)
+        params   (if (#{:zero-shot nil} (:best report)) {pid base} params)
         ts       (System/currentTimeMillis)
         pid-params (-> (get params pid {})
                        traj-export/redact-example
@@ -724,7 +753,7 @@
 (defcommand program$compile
   "Optimize a predictor's demos over a dataset and write a PROPOSAL for human review (never applied)."
   (fn [& {:keys [predictor-id dataset optimizer metric budget-usd trials max-bootstrapped
-                 parallel lm tier teacher-lm teacher-tier threshold max-calls max-tokens]}]
+                 parallel lm tier teacher-lm teacher-tier threshold max-calls max-tokens repeats]}]
     (try
       (apply compile-predictor predictor-id dataset
              (mapcat identity
@@ -732,6 +761,7 @@
                        threshold                (assoc :threshold threshold)
                        max-calls                (assoc :max-calls max-calls)
                        max-tokens               (assoc :max-tokens max-tokens)
+                       repeats                  (assoc :repeats repeats)
                        (non-blank optimizer)    (assoc :optimizer optimizer)
                        (non-blank metric)       (assoc :metric metric)
                        budget-usd               (assoc :budget-usd budget-usd)
@@ -759,7 +789,8 @@
                   [:teacher-tier     {:optional true} [:string {:desc "Teacher tier (default deep)"}]]
                   [:threshold        {:optional true} [:double {:desc "Min metric score for a teacher trace to become a demo (default 1.0; use <1 for F1-style metrics)"}]]
                   [:max-calls        {:optional true} [:int {:desc "Cap on predictor calls (binds on subscription providers, whose USD is notional)"}]]
-                  [:max-tokens       {:optional true} [:int {:desc "Cap on input+output tokens across the run"}]]]
+                  [:max-tokens       {:optional true} [:int {:desc "Cap on input+output tokens across the run"}]]
+                  [:repeats          {:optional true} [:int {:desc "Passes per leaderboard row; ≥2 requires beating zero-shot beyond noise (default 1)"}]]]
   :output-schema [:map
                   [:proposal-id     {:optional true} [:string {:desc "Proposal id"}]]
                   [:review          {:optional true} [:string {:desc "REVIEW.md path for the human"}]]

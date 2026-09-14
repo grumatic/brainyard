@@ -261,6 +261,18 @@
   "(teacher student trainset valset metric opts) → best candidate {:params … :report {:leaderboard …}}."
   optimize/bootstrap-random-search)
 
+(def compare-scores
+  "(a b) → {:better? :diff :margin :tested?}: does evaluation a beat b beyond
+   their run-to-run noise (Welch t on per-pass means)? Plain > without repeats."
+  evaluate/compare-scores)
+(def select-best
+  "(leaderboard) → [best rows]: first student row is the baseline; another row
+   wins only by beating it per compare-scores."
+  optimize/select-best)
+(def leaderboard-row-keys
+  "Evaluation fields a leaderboard row keeps."
+  optimize/row-stat-keys)
+
 (def render-demos
   "Render demos as the system-message examples part (nil when none)."
   prompt/render-demos)

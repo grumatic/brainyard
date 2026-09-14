@@ -126,6 +126,80 @@
     (is (= (:score seq-r) (:score par-r) 1.0))
     (is (= (mapv :index (:per-example seq-r)) (mapv :index (:per-example par-r))))))
 
+;; ---------------------------------------------------------------------------
+;; Repeats and variance
+;; ---------------------------------------------------------------------------
+
+(deftest single-pass-reports-no-variance
+  (let [r (ev/evaluate (fake-traced-program 0.0 (fn [_] {:answer "x"})) (examples 3) (ev/exact-match))]
+    (is (= 1 (:repeats r) (:completed-repeats r)))
+    (is (nil? (:stddev r)))
+    (is (nil? (:stderr r)))
+    (is (nil? (:ci95 r)) "one pass says nothing about its own noise")))
+
+(deftest deterministic-repeats-have-zero-spread
+  (let [prog (fake-traced-program 0.01 (fn [{:keys [question]}]
+                                         {:answer (if (= "q1" question) "wrong" (str/replace question "q" "a"))}))
+        r (ev/evaluate prog (examples 4) (ev/exact-match) :repeats 3)]
+    (is (= 3 (:completed-repeats r)))
+    (is (= [0.75 0.75 0.75] (:repeat-scores r)))
+    (is (== 0.75 (:score r)))
+    (is (== 0.0 (:stddev r) (:stderr r)))
+    (is (= [0.75 0.75] (mapv double (:ci95 r))))
+    (is (< 0.1199 (:cost r) 0.1201) "cost sums across passes")
+    (is (= 12 (:calls r)))
+    (is (= [[1.0 1.0 1.0] [0.0 0.0 0.0]] (mapv :scores (take 2 (:per-example r)))))
+    (is (every? #(== 0.0 (:spread %)) (:per-example r)))))
+
+(deftest noisy-repeats-report-spread-and-interval
+  ;; q0 flips between right and wrong on every call; q1..q3 always right
+  (let [flip (atom 0)
+        prog (fn [{:keys [question]}]
+               {:outputs {:answer (if (and (= "q0" question) (odd? (swap! flip inc)))
+                                    "wrong"
+                                    (str/replace question "q" "a"))}})
+        r (ev/evaluate prog (examples 4) (ev/exact-match) :repeats 4)]
+    (is (= [0.75 1.0 0.75 1.0] (:repeat-scores r)))
+    (is (== 0.875 (:score r)))
+    (is (< 0.144 (:stddev r) 0.145) "sample sd of [0.75 1 0.75 1]")
+    (let [[lo hi] (:ci95 r)]
+      (is (< lo 0.875 hi))
+      (is (< 0.22 (- hi 0.875) 0.24) "t(3)=3.182 × se 0.0722"))
+    (is (= 1.0 (:spread (first (:per-example r)))) "the flipping example is visible per-example")
+    (is (= [0.0 1.0 0.0 1.0] (:scores (first (:per-example r)))))))
+
+(deftest budget-cut-repeats-score-only-complete-passes
+  (let [prog (fake-traced-program 0.5 (fn [_] {:answer "a0"}))
+        r (ev/evaluate prog (examples 2) (ev/exact-match) :repeats 3 :budget-usd 2.5)]
+    ;; pass 1 costs 1.0, pass 2 costs 1.0, pass 3 starts at 2.0 and is cut after one example
+    (is (= :budget (:stopped r)))
+    (is (= 2 (:completed-repeats r)))
+    (is (== 0.5 (:score r)) "the partial third pass is excluded from the mean")))
+
+(deftest compare-scores-tests-against-noise
+  (testing "no variance estimate: plain comparison, flagged untested"
+    (let [c (ev/compare-scores {:score 0.6} {:score 0.5})]
+      (is (true? (:better? c)))
+      (is (false? (:tested? c)))
+      (is (== 0.0 (:margin c)))
+      (is (< 0.0999 (:diff c) 0.1001))))
+  (testing "a gap inside the noise is not a win"
+    (let [c (ev/compare-scores {:score 0.605 :stderr 0.03 :completed-repeats 3}
+                               {:score 0.575 :stderr 0.03 :completed-repeats 3})]
+      (is (:tested? c))
+      (is (false? (:better? c)))
+      (is (> (:margin c) (:diff c)))))
+  (testing "a gap well past the noise is a win"
+    (is (:better? (ev/compare-scores {:score 0.9 :stderr 0.01 :completed-repeats 5}
+                                     {:score 0.5 :stderr 0.01 :completed-repeats 5}))))
+  (testing "zero noise on both sides: any positive gap is real"
+    (is (:better? (ev/compare-scores {:score 0.51 :stderr 0.0 :completed-repeats 3}
+                                     {:score 0.50 :stderr 0.0 :completed-repeats 3}))))
+  (testing "t critical values"
+    (is (= 4.303 (ev/t-critical 2)))
+    (is (= 4.303 (ev/t-critical 2.9)) "fractional df rounds down, the conservative way")
+    (is (= 1.96 (ev/t-critical 100)))))
+
 (deftest parallel-workers-see-with-params
   (let [pred (p/predictor {:id "t/qa" :signature qa})
         seen (atom #{})]
