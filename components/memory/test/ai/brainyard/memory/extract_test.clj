@@ -12,7 +12,9 @@
             [ai.brainyard.memory.core.episodic :as episodic]
             [ai.brainyard.memory.core.capture.extractor :as extractor]
             [ai.brainyard.memory.interface :as mem]
-            [ai.brainyard.memory.interface.protocol :as proto]))
+            [ai.brainyard.memory.interface.protocol :as proto]
+            [ai.brainyard.clj-llm.interface :as llm]
+            [ai.brainyard.clj-llm.core.llm :as clj-llm-core]))
 
 (def ^:dynamic *store* nil)
 
@@ -152,6 +154,19 @@
 (deftest make-extract-fn-nil-without-lm-test
   (is (nil? (extract/make-extract-fn nil))
       "no lm-config ⇒ no extract-fn ⇒ extraction disabled"))
+
+(deftest make-extract-fn-runs-the-graph-extract-predictor-test
+  (let [lm {:provider :openai :model "extract-model" :message-format :openai}
+        f  (extract/make-extract-fn lm)]
+    (llm/with-trace [t]
+      (with-redefs [clj-llm-core/chat-completion (fn [& _] {})
+                    clj-llm-core/extract-content
+                    (constantly "{\"entities\":[{\"name\":\"X\",\"type\":\"concept\"}],\"relations\":[]}")]
+        (is (= {:entities [{:name "X" :type "concept"}] :relations []}
+               (f "some session activity"))))
+      (testing "the call is attributed to the named predictor, on the configured LM"
+        (is (= ["memory/graph-extract"] (mapv :predictor-id @t)))
+        (is (= "extract-model" (:model (first @t))))))))
 
 ;; =====================================================
 ;; Incremental graph-build watermark (extract-l2-graph!)

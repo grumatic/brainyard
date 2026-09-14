@@ -112,9 +112,9 @@
                           :confidence 0.9
                           :source-ids ["ep1"]
                           :rationale "user said so explicitly"}]]
-      (with-redefs [clj-llm/chain-of-thought
+      (with-redefs [clj-llm/run-predictor
                     (fn [sig inputs & _]
-                      (is (= ma-sig/EssenceExtraction sig))
+                      (is (= ma-sig/EssenceExtraction (:signature sig)))
                       (is (= "summary text" (:turn-summary inputs)))
                       (is (= "alice" (:user-id inputs)))
                       {:outputs {:essences stub-essences}
@@ -132,7 +132,7 @@
 (deftest essence-extract-empty-output-test
   (testing "empty essences vector flows through cleanly (most turns)"
     (let [agent (make-stub :memory-agent/test)]
-      (with-redefs [clj-llm/chain-of-thought
+      (with-redefs [clj-llm/run-predictor
                     (fn [_ _ & _] {:outputs {:essences []}
                                    :reasoning "nothing worth lifting"})]
         (proto/with-agent agent
@@ -143,7 +143,7 @@
 (deftest essence-extract-error-surface-test
   (testing "chain-of-thought exceptions surface as :error, not as throws"
     (let [agent (make-stub :memory-agent/test)]
-      (with-redefs [clj-llm/chain-of-thought
+      (with-redefs [clj-llm/run-predictor
                     (fn [& _] (throw (ex-info "llm down" {})))]
         (proto/with-agent agent
           (let [r (ma-cmds/memory$essence-extract :turn-summary "x")]

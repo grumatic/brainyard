@@ -12,7 +12,7 @@
 
    Outputs are Malli-validated by `clj-llm/predict`, so the extractor no
    longer hand-parses JSON. See `extract/make-extract-fn`."
-  (:require [ai.brainyard.clj-llm.interface :refer [defsignature]]
+  (:require [ai.brainyard.clj-llm.interface :refer [defsignature defpredictor]]
             [ai.brainyard.memory.interface.protocol :as proto]))
 
 ;; Enums computed from the curated vocab — evaluated when the `def` loads, so
@@ -63,3 +63,11 @@ nothing durable is worth recording (the common case for operational chatter)."
                [:dst        [:string {:desc "Target entity name (must appear in :entities)"}]]
                [:fact       {:optional true} [:string {:desc "One-sentence statement of the relation"}]]
                [:confidence {:optional true} [:double {:min 0.0 :max 1.0 :desc "0.0..1.0"}]]]]}})
+
+;; The named, parameterized use of GraphExtraction. Params (instructions, field
+;; descriptions, demos) resolve from `<root>/memory/graph-extract.edn` at call
+;; time; with none, the call is identical to `predict` on the signature.
+(defpredictor graph-extract
+  {:id        "memory/graph-extract"
+   :signature GraphExtraction
+   :strategy  :predict})

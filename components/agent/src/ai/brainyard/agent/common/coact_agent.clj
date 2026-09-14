@@ -47,6 +47,7 @@
             [ai.brainyard.agent.common.self-improve-nudge :as self-improve-nudge]
             [ai.brainyard.agent.common.skill-distill :as skill-distill]
             [ai.brainyard.agent.common.skill-refine :as skill-refine]
+            [ai.brainyard.agent.common.predictions :as predictions]
             [ai.brainyard.agent.common.skill-watch :as skill-watch]
             [ai.brainyard.agent.common.usage-nudge :as usage-nudge]
             [ai.brainyard.agent.common.procedure-nudge :as procedure-nudge]
@@ -2743,6 +2744,9 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
     ;; Self-improvement loop: skill-refinement observer (idempotent,
     ;; runtime-only; no-op unless :enable-skill-refinement is set).
     (skill-refine/ensure-global-hooks!)
+    ;; Named-predictor call log (idempotent, runtime-only; writes nothing
+    ;; unless :enable-prediction-log is set).
+    (predictions/ensure-installed!)
     ;; Skill-registry coherence: auto-reload once per turn that wrote under a
     ;; .brainyard/skills/ path, so a file-authored skill registers without
     ;; relying on the model to remember skills$reload (idempotent, runtime-only).
@@ -4962,6 +4966,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                         {:id          :coact.action/repair-retry-transient
                          :signature   bt/signature-from-st-memory
                          :operation   :chain-of-thought
+                         :predictor-id "coact/think-act-code"
                          :stable-keys [:agent-core :session-context :history-context :user-context]
                  ;; :user-context is the volatile tail — rendered in the
                  ;; system text but with NO breakpoint of its own (the
@@ -5112,6 +5117,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                               {:id         :coact.action/repair-retry-think
                                :signature  bt/signature-from-st-memory
                                :operation  :chain-of-thought
+                               :predictor-id "coact/think-act-code"
                                :stable-keys [:agent-core :session-context :history-context :user-context]
                  ;; :user-context is the volatile tail — rendered in the
                  ;; system text but with NO breakpoint of its own (the
@@ -5731,6 +5737,9 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
        [:action {:id (kw :action/think-act-code)
                  :signature bt/signature-from-st-memory
                  :operation :chain-of-thought
+                 ;; Named for tracing/prediction logs. Shared by every
+                 ;; CoAct-derived agent; with no params file it is inert.
+                 :predictor-id "coact/think-act-code"
                  ;; The three cache zones ride the system message in
                  ;; ascending-volatility order: static agent core,
                  ;; session-stable overlays, per-turn context.
@@ -5810,6 +5819,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
             [:action {:id (kw :action/evaluate-answer)
                       :signature #'evaluation/EvaluateAnswer
                       :operation :chain-of-thought
+                      :predictor-id "coact/evaluate-answer"
                       :lm-config (fn [context]
                                    (config/resolve-eval-lm (:agent context)))
                       :debug {:source :reasoning}}

@@ -156,6 +156,11 @@
                                 :doc "Persist the SCI sandbox state (defs/bindings) across turns so --resume can restore it."}
    :enable-trajectory-recording {:type "boolean" :default true
                                  :doc "Append one EDN record per turn (all iterations + final answer) to <project>/.brainyard/sessions/<id>/trajectory.edn; master data switch for session analytics."}
+   :enable-prediction-log      {:type "boolean"
+                                :env-fn #(if-some [v (env/resolve-var "BY_ENABLE_PREDICTION_LOG")]
+                                           (= "true" v) ::env-unset)
+                                :default false
+                                :doc "Append one EDN record per named-predictor LLM call (predictor id, inputs, outputs, reasoning, usage; strings clipped) to <project>/.brainyard/sessions/<id>/predictions.edn — the candidate pool for demo bootstrapping. Off by default: one line per LLM call, carrying raw prompt inputs. Env: BY_ENABLE_PREDICTION_LOG."}
    :compaction-target-ratio    {:type "number"  :default 0.2
                                 :doc "Cross-turn auto-compaction target: shrink carryover to this fraction × :max-context-tokens (gated by :enable-context-budget)."}
    :max-iterations             {:type "integer" :default 100
@@ -1386,6 +1391,10 @@
    "config.edn"    :both
    "BRAINYARD.md"  :both
    "skills"        :both
+   ;; Predictor params (`<id>.edn`: instructions, demos, lm/tier hints).
+   ;; Project wins over user: a repo's compiled extraction style travels with
+   ;; the repo, a user's applies everywhere else. See clj-llm core.predictor.
+   "programs"      :both
 
    ;; dual-scope agents: artifacts mirror the scope of the file they edit
    ;; (config.edn for config-agent, BRAINYARD.md for init-agent). Agent

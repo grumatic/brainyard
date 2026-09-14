@@ -593,6 +593,14 @@
     :lifecycle :live
     :doc       "Append-only per-session trajectory log."}
 
+   :analytics/predictions
+   {:title     "Prediction log"
+    :family    :analytics
+    :gate      :enable-prediction-log
+    :keys      []
+    :lifecycle :live
+    :doc       "Per-session log of named predictor calls (inputs/outputs) for demo bootstrapping."}
+
    :analytics/scoring
    {:title     "Trajectory scoring"
     :family    :analytics

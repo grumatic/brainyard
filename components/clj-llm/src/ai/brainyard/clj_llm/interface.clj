@@ -22,6 +22,7 @@
             [ai.brainyard.clj-llm.core.llm :as llm]
             [ai.brainyard.clj-llm.core.predict :as predict-impl]
             [ai.brainyard.clj-llm.core.chain-of-thought :as cot-impl]
+            [ai.brainyard.clj-llm.core.predictor :as predictor]
             [ai.brainyard.clj-llm.core.usage :as usage]
             [ai.brainyard.clj-llm.core.oauth :as oauth]))
 
@@ -143,6 +144,86 @@
    Returns {:outputs {<field> <value>} :reasoning \"...\" :usage {...}}"
   [signature inputs & {:as opts}]
   (apply cot-impl/chain-of-thought signature inputs (mapcat identity opts)))
+
+;; ============================================================================
+;; Predictors (parameterized signatures — see core.predictor)
+;; ============================================================================
+
+(defmacro defpredictor
+  "Define and register a named predictor over a signature.
+
+     (defpredictor graph-extract
+       {:id \"memory/graph-extract\" :signature GraphExtraction :strategy :predict})
+
+   Spec keys: :id (stable; also the params-file path), :signature,
+   :strategy (:predict | :cot), :tier, :params (lowest-precedence defaults)."
+  [sym spec]
+  `(predictor/defpredictor ~sym ~spec))
+
+(def predictor
+  "Build (without registering) a predictor value from a spec — see defpredictor."
+  predictor/predictor)
+
+(def run-predictor
+  "Run a predictor: resolve params (with-params > params roots > defaults),
+   apply them to the signature, call its strategy. Same kwargs as `predict`
+   except :demos. A call-site :lm-config always wins over params.
+   Returns the strategy result + :predictor-id :params-source."
+  predictor/run)
+
+(def list-predictors
+  "Registered predictors, sorted by id."
+  predictor/list-predictors)
+
+(def get-predictor
+  "Registered predictor by id, or nil."
+  predictor/get-predictor)
+
+(def resolve-params
+  "{:params p :source s} a predictor would run with now, or {}."
+  predictor/resolve-params)
+
+(def validate-params
+  "{:valid? bool :errors …} for a params record."
+  predictor/validate-params)
+
+(defmacro with-params
+  "Evaluate body with {predictor-id params} as the highest-precedence layer."
+  [params-map & body]
+  `(predictor/with-params ~params-map ~@body))
+
+(defmacro with-trace
+  "Evaluate body with a trace atom bound to sym; predictor calls append
+   {:predictor-id :inputs :outputs :reasoning? :usage? :error? …} entries."
+  [binding & body]
+  `(predictor/with-trace ~binding ~@body))
+
+(defmacro with-trace-context
+  "Evaluate body with ctx merged into the :context of every trace entry
+   (e.g. {:agent a :node-id id}) — what a trace sink routes on."
+  [ctx & body]
+  `(predictor/with-trace-context ~ctx ~@body))
+
+(def set-params-roots!
+  "Install params directories, highest precedence first (app-owned path policy)."
+  predictor/set-params-roots!)
+
+(def set-lm-resolver!
+  "Install (fn [{:keys [lm tier predictor-id]}] -> lm-config|nil)."
+  predictor/set-lm-resolver!)
+
+(def set-trace-sink!
+  "Install (fn [entry]) called for every predictor call; nil uninstalls."
+  predictor/set-trace-sink!)
+
+(def with-instructions "Signature with instructions replaced." predictor/with-instructions)
+(def with-field-descs "Signature with {field desc} overrides." predictor/with-field-descs)
+(def prepend-output "Signature with a new first output field." predictor/prepend-output)
+(def append-input "Signature with a new last input field." predictor/append-input)
+
+(def render-demos
+  "Render demos as the system-message examples part (nil when none)."
+  prompt/render-demos)
 
 ;; ============================================================================
 ;; LM Configuration

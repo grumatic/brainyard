@@ -675,6 +675,26 @@
         (clj-llm/load-catalog-overlay!)))
     (catch Throwable _ nil)))
 
+(defn- install-predictor-params!
+  "Point predictor params resolution at `<project>/.brainyard/programs` then
+   `~/.brainyard/programs`, and let a params `:tier` resolve through
+   `:agent-lm-tiers`.
+
+   Same injection shape as `install-catalog-cache!`, for the same reason:
+   `clj-llm` cannot see `.brainyard` or config. Nothing is read here — params
+   files are read lazily per call — so it costs nothing on startup, and with
+   no files present every predictor runs exactly as its bare signature."
+  []
+  (try
+    (let [dirs (agent/init-dirs!)]
+      (clj-llm/set-params-roots! [(agent/brainyard-subdir dirs "programs" :project)
+                                  (agent/brainyard-subdir dirs "programs" :user)])
+      (clj-llm/set-lm-resolver! (fn [{:keys [lm tier]}]
+                                  (cond
+                                    lm   (clj-llm/parse-lm-str lm)
+                                    tier (agent/resolve-tier-lm nil tier)))))
+    (catch Throwable _ nil)))
+
 (defn- maybe-refresh-catalog!
   "Kick a background refresh when the cache is past its TTL.
 
@@ -702,6 +722,7 @@
   ;; registry above, for the same reason: neither may block a session.
   (install-catalog-cache!)
   (maybe-refresh-catalog!)
+  (install-predictor-params!)
   ;; Offload the heavy graph-mode session-end consolidation to a detached
   ;; `by memory reduce` child so /quit never blocks on it (this process knows how
   ;; to re-exec the binary; components/agent can't). No-op unless graph memory is
@@ -1345,6 +1366,7 @@
         opts (parse-legacy-provider opts)
         _ (install-working-dir! opts)
         _ (register-project!)
+        _ (install-predictor-params!)
         ;; Register user-authored defs (skills, user tools, user agents) BEFORE
         ;; the agent is built. Synchronous for skills specifically: a one-shot
         ;; ask has few turns and often exactly one, so a background scan would
@@ -1619,6 +1641,9 @@
   ;; stays because of the paired teardown in the finally below — an
   ;; idempotent no-op when the process already started it.
   (setup-app-log!)
+  ;; Graph extraction runs the `memory/graph-extract` predictor — the detached
+  ;; `by memory reduce` child must see the same params the TUI would.
+  (install-predictor-params!)
   (let [mm (agent/create-memory-manager user-id)]
     (try
       (mem/initialize mm)

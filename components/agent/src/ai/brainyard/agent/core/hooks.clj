@@ -38,10 +38,11 @@
      :agent.iteration/post     {:agent :iteration :max-iterations :repeat-id :result
                                 :observation :goal-achieved}
      :agent.iteration/exhausted {:agent :iteration-count :max-iterations}
-     :agent.dspy-action/pre    {:agent :node-id :signature :operation :stable-keys :inputs}
+     :agent.dspy-action/pre    {:agent :node-id :signature :operation :stable-keys :inputs
+                                :predictor-id?}
      :agent.dspy-action/chunk  {:agent :node-id :signature :chunk :accumulated}
      :agent.dspy-action/post   {:agent :node-id :signature :operation :stable-keys :inputs
-                                :result :outputs :reasoning :usage :error}
+                                :result :outputs :reasoning :usage :error :predictor-id?}
      :agent.context/budgeted   {:agent :total-tokens :budget :section-tokens
                                 :compactions :over-budget?}
      :agent.tool-calls/pre     {:agent :iteration :calls}
@@ -129,10 +130,13 @@
    :agent.iteration/post        {:keys #{:agent :iteration :max-iterations :repeat-id :result
                                          :observation :last-reasoning :notices :goal-achieved}}
    :agent.iteration/exhausted   {:keys #{:agent :iteration-count :max-iterations}}
-   :agent.dspy-action/pre       {:keys #{:agent :node-id :signature :operation :stable-keys :inputs}}
+   ;; `:predictor-id` is present only when the BT node names one (see
+   ;; clj-llm core.predictor) — the key an observer groups calls by.
+   :agent.dspy-action/pre       {:keys #{:agent :node-id :signature :operation :stable-keys :inputs
+                                         :predictor-id}}
    :agent.dspy-action/chunk     {:keys #{:agent :node-id :signature :chunk :accumulated}}
    :agent.dspy-action/post      {:keys #{:agent :node-id :signature :operation :stable-keys :inputs
-                                         :result :outputs :reasoning :usage :error}}
+                                         :result :outputs :reasoning :usage :error :predictor-id}}
    :agent.context/budgeted      {:keys #{:agent :total-tokens :budget :section-tokens
                                          :compactions :over-budget?}}
    :agent.tool-calls/pre        {:keys #{:agent :iteration :calls}}

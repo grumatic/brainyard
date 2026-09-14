@@ -334,7 +334,7 @@
                 get-config get-config-snapshot set-config! unset-config!
                 config-overview search-config-keys redact-config-snapshot
                 config-source
-                resolve-sub-lm resolve-sandbox-interop)
+                resolve-sub-lm resolve-tier-lm resolve-sandbox-interop)
 
 ;; ============================================================================
 ;; Feature Registry

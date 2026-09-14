@@ -15,7 +15,7 @@
    Outputs are Malli-validated; the `memory$essence-extract` command
    in `memory_agent.commands` wraps the signature so the LLM that
    drives memory-agent doesn't have to hand-craft JSON."
-  (:require [ai.brainyard.clj-llm.interface :refer [defschemas defsignature]]))
+  (:require [ai.brainyard.clj-llm.interface :refer [defpredictor defschemas defsignature]]))
 
 ;; ============================================================================
 ;; Shared schema fragments
@@ -189,3 +189,15 @@ Rules:
                [:confidence          ::confidence]
                [:source-episode-ids  ::source-id-vec]
                [:supersedes-fact-ids [:vector {:desc "Prior L3 fact ids this distillation refines/replaces (empty when no overlap)"} :string]]]]}})
+
+;; Named, parameterized uses of the signatures above (clj-llm core.predictor).
+;; Params resolve from <root>/memory-agent/<name>.edn at call time; with none,
+;; each call is identical to chain-of-thought on the bare signature.
+(defpredictor essence-extraction
+  {:id "memory-agent/essence-extraction" :signature EssenceExtraction :strategy :cot})
+
+(defpredictor fact-verification
+  {:id "memory-agent/fact-verification" :signature FactVerification :strategy :cot})
+
+(defpredictor llm-reducer
+  {:id "memory-agent/llm-reducer" :signature LlmReducer :strategy :cot})

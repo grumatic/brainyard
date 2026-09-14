@@ -12,6 +12,7 @@
    - JSON schema always included in system prompt (not just API-level enforcement)"
   (:require [ai.brainyard.clj-llm.core.schema :as schema]
             [ai.brainyard.clj-llm.core.usage :as usage]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [malli.core :as m]))
 
@@ -119,43 +120,6 @@
          ".")))
 
 ;; ============================================================================
-;; System Messages
-;; ============================================================================
-
-(defn- build-system-message
-  "Build the system message from a signature.
-   Order follows DSPy convention: field descriptions → JSON schema → format → instructions (last)."
-  [signature json-schema]
-  (let [{:keys [instructions inputs outputs]} signature
-        parts (cond-> []
-                (seq inputs)    (conj (str "Your input fields are:\n" (indexed-fields inputs)))
-                (seq outputs)   (conj (str "Your output fields are:\n" (indexed-fields outputs)))
-                json-schema     (conj (json-schema-instruction json-schema))
-                true            (conj "Respond with a JSON object containing the output fields.")
-                instructions    (conj (str "In adhering to this structure, your objective is:\n" instructions)))]
-    {:role    "system"
-     :content (str/join "\n\n" parts)}))
-
-(defn- build-cot-system-message
-  "Build the system message for chain-of-thought.
-   Prepends reasoning as the first output field (DSPy convention:
-   structural position alone forces reasoning-first, no explicit
-   'think step by step' instruction needed) — with a length budget, which
-   position alone does not impose (see reasoning-field-desc).
-   Includes augmented JSON schema with reasoning field."
-  [signature json-schema]
-  (let [{:keys [instructions inputs outputs]} signature
-        cot-outputs (into [reasoning-field] outputs)
-        parts (cond-> []
-                (seq inputs)   (conj (str "Your input fields are:\n" (indexed-fields inputs)))
-                true           (conj (str "Your output fields are:\n" (indexed-fields-raw cot-outputs)))
-                json-schema    (conj (json-schema-instruction json-schema))
-                true           (conj "Respond with a JSON object containing all output fields.")
-                instructions   (conj (str "In adhering to this structure, your objective is:\n" instructions)))]
-    {:role    "system"
-     :content (str/join "\n\n" parts)}))
-
-;; ============================================================================
 ;; User Messages
 ;; ============================================================================
 
@@ -210,14 +174,70 @@
      :content (str (str/join "\n" input-lines) "\n\n" reminder)}))
 
 ;; ============================================================================
+;; Demonstrations
+;; ============================================================================
+
+(defn- demo-output-json
+  "The JSON object a demo's model turn would have emitted: `reasoning` first
+   when chain-of-thought (the same position the live schema forces), then the
+   signature's output fields in declared order. Keys the signature does not
+   declare are dropped — a demo must never show the model a field its schema
+   will reject."
+  [signature {:keys [outputs reasoning]} chain-of-thought?]
+  (let [declared (keys (:outputs signature))
+        pairs    (cond-> []
+                   (and chain-of-thought? reasoning) (conj ["reasoning" reasoning])
+                   true (into (for [k declared :when (contains? outputs k)]
+                                [(name k) (get outputs k)])))]
+    ;; array-map from the pair list keeps render order at any size; a hash-map
+    ;; past 8 keys would reorder fields and put reasoning after the answer.
+    (json/write-str (apply array-map (mapcat identity pairs)))))
+
+(defn render-demos
+  "Render demonstrations as one system-message part, or nil when there are
+   none. Each demo is `{:inputs {…} :outputs {…} :reasoning \"…\"?}`.
+
+   Inputs render with the SAME `name: value` lines, in the SAME order, as the
+   live user message — the example must look like the call it teaches.
+
+   Demos sit in the system message, which is the stable cache prefix: they
+   change only when a predictor's params change, never per call. They are also
+   untrusted text elevated to system position (a bootstrapped demo contains
+   whatever the program read), which is why they arrive only through reviewed
+   params, never from the call site's own inputs."
+  [signature demos {:keys [chain-of-thought?]}]
+  (when (seq demos)
+    (str "Here are examples of inputs and the JSON object to respond with:\n\n"
+         (str/join "\n\n"
+                   (map-indexed
+                    (fn [i {:keys [inputs] :as demo}]
+                      (str "Example " (inc i) "\n"
+                           "Input:\n"
+                           (str/join "\n" (map input-line (ordered-input-pairs signature inputs)))
+                           "\nOutput:\n"
+                           (demo-output-json signature demo chain-of-thought?)))
+                    demos)))))
+
+;; ============================================================================
 ;; Parts Collection (for token breakdown)
 ;; ============================================================================
 
 (defn- collect-system-parts
-  "Collect system message parts as a named map before joining.
-   Returns ordered pairs [[category-kw text] ...]."
-  [signature json-schema chain-of-thought?]
-  (let [{:keys [instructions inputs outputs]} signature]
+  "Collect system message parts as ordered [[category-kw text] ...] pairs.
+   Order follows DSPy convention: field descriptions → JSON schema → format →
+   demonstrations → instructions (last).
+
+   Chain-of-thought prepends reasoning as the first output field — structural
+   position alone forces reasoning-first, no 'think step by step' instruction
+   needed — with a length budget, which position alone does not impose (see
+   reasoning-field-desc).
+
+   This is the ONLY place the system message is assembled: `build-messages`
+   and `build-messages-with-breakdown` both join these parts, so the
+   attributed breakdown can never describe a different prompt than was sent."
+  [signature json-schema chain-of-thought? demos]
+  (let [{:keys [instructions inputs outputs]} signature
+        demo-text (render-demos signature demos {:chain-of-thought? chain-of-thought?})]
     (if chain-of-thought?
       (let [cot-outputs (into [reasoning-field] outputs)]
         (cond-> []
@@ -225,12 +245,14 @@
           true           (conj [:output-fields (str "Your output fields are:\n" (indexed-fields-raw cot-outputs))])
           json-schema    (conj [:json-schema (json-schema-instruction json-schema)])
           true           (conj [:format "Respond with a JSON object containing all output fields."])
+          demo-text      (conj [:demos demo-text])
           instructions   (conj [:instructions (str "In adhering to this structure, your objective is:\n" instructions)])))
       (cond-> []
         (seq inputs)    (conj [:input-fields (str "Your input fields are:\n" (indexed-fields inputs))])
         (seq outputs)   (conj [:output-fields (str "Your output fields are:\n" (indexed-fields outputs))])
         json-schema     (conj [:json-schema (json-schema-instruction json-schema)])
         true            (conj [:format "Respond with a JSON object containing the output fields."])
+        demo-text       (conj [:demos demo-text])
         instructions    (conj [:instructions (str "In adhering to this structure, your objective is:\n" instructions)])))))
 
 (defn- collect-user-parts
@@ -266,13 +288,13 @@
   "Build the full message list for an LLM call.
    opts:
      :chain-of-thought? - Use CoT prompting (prepend reasoning field)
-     :json-schema       - JSON Schema to include in system prompt"
-  [signature inputs {:keys [chain-of-thought? json-schema] :as opts}]
-  (let [sys-msg (if chain-of-thought?
-                  (build-cot-system-message signature json-schema)
-                  (build-system-message signature json-schema))
-        usr-msg (build-user-message signature inputs opts)]
-    [sys-msg usr-msg]))
+     :json-schema       - JSON Schema to include in system prompt
+     :demos             - Demonstrations (see render-demos); absent/empty
+                          leaves the prompt byte-identical to no demos"
+  [signature inputs {:keys [chain-of-thought? json-schema demos] :as opts}]
+  [{:role    "system"
+    :content (parts->content (collect-system-parts signature json-schema chain-of-thought? demos))}
+   (build-user-message signature inputs opts)])
 
 (defn build-messages-with-breakdown
   "Like build-messages, but also returns hierarchical token breakdown.
@@ -284,8 +306,8 @@
    turn-stable prefix is large enough to cache), the result carries
    :user-cache-prefix — the exact leading substring of the user message a
    provider adapter can mark as a cache breakpoint."
-  [signature inputs {:keys [chain-of-thought? json-schema user-cache-boundary] :as opts}]
-  (let [sys-parts  (collect-system-parts signature json-schema chain-of-thought?)
+  [signature inputs {:keys [chain-of-thought? json-schema user-cache-boundary demos] :as opts}]
+  (let [sys-parts  (collect-system-parts signature json-schema chain-of-thought? demos)
         usr-parts  (collect-user-parts signature inputs opts)
         sys-msg    {:role "system" :content (parts->content sys-parts)}
         ;; Content comes from build-user-message, NOT parts->content:

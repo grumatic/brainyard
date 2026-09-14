@@ -102,9 +102,9 @@
 (deftest verify-fact-still-true-test
   (testing ":still-true verdict flows through cleanly"
     (let [agent (make-stub :memory-agent/test *mm* "s1")]
-      (with-redefs [clj-llm/chain-of-thought
+      (with-redefs [clj-llm/run-predictor
                     (fn [sig inputs & _]
-                      (is (= ma-sig/FactVerification sig))
+                      (is (= ma-sig/FactVerification (:signature sig)))
                       (is (= "user prefers polylith"
                              (-> inputs :fact :content)))
                       {:outputs {:verdict         "still-true"
@@ -129,7 +129,7 @@
 (deftest verify-fact-refine-test
   (testing ":refine verdict surfaces the refined content"
     (let [agent (make-stub :memory-agent/test *mm* "s1")]
-      (with-redefs [clj-llm/chain-of-thought
+      (with-redefs [clj-llm/run-predictor
                     (fn [_ _ & _]
                       {:outputs {:verdict         "refine"
                                  :refined-content "user prefers polylith for backend services"
@@ -148,7 +148,7 @@
 (deftest verify-fact-wrong-test
   (testing ":wrong verdict surfaces the counter-fact in refined-content"
     (let [agent (make-stub :memory-agent/test *mm* "s1")]
-      (with-redefs [clj-llm/chain-of-thought
+      (with-redefs [clj-llm/run-predictor
                     (fn [_ _ & _]
                       {:outputs {:verdict         "wrong"
                                  :refined-content "user prefers monorepo with deps.edn"
@@ -167,7 +167,7 @@
 (deftest verify-fact-error-surface-test
   (testing "chain-of-thought exception surfaces as :error"
     (let [agent (make-stub :memory-agent/test *mm* "s1")]
-      (with-redefs [clj-llm/chain-of-thought
+      (with-redefs [clj-llm/run-predictor
                     (fn [& _] (throw (ex-info "lm 5xx" {})))]
         (proto/with-agent agent
           (let [r (ma-cmds/memory$verify-fact
@@ -178,7 +178,7 @@
 (deftest verify-fact-fills-defaults-test
   (testing "missing fact keys are filled with safe defaults so the schema is satisfied"
     (let [agent (make-stub :memory-agent/test *mm* "s1")]
-      (with-redefs [clj-llm/chain-of-thought
+      (with-redefs [clj-llm/run-predictor
                     (fn [_ inputs & _]
                       (let [f (:fact inputs)]
                         (is (string? (:id f)))

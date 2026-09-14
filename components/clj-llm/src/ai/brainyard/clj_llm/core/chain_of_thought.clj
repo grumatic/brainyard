@@ -77,13 +77,15 @@
    opts       - Optional map:
                 :lm-config     - LM configuration (falls back to default)
                 :usage-tracker - Atom from create-usage-tracker (optional)
+                :demos         - Demonstrations rendered into the system
+                                 message (see prompt/render-demos)
 
    Returns {:outputs {<output-field> <value>} :reasoning \"...\" :usage {...}}
    Throws on LLM error."
   [signature inputs & {:keys [lm-config usage-tracker system-context
                               stream? on-chunk
                               input-token-breakdown cache-zones
-                              user-cache-boundary]
+                              user-cache-boundary demos]
                        :as opts}]
   (let [lm (or lm-config (providers/get-default-lm))
         _  (when-not lm
@@ -95,7 +97,8 @@
         {:keys [messages token-breakdown user-cache-prefix]}
         (prompt/build-messages-with-breakdown
          signature inputs {:chain-of-thought? true :json-schema json-schema
-                           :user-cache-boundary user-cache-boundary})
+                           :user-cache-boundary user-cache-boundary
+                           :demos demos})
         ;; Merge caller-provided breakdown (hierarchical — :system-prompt group from BT)
         breakdown (merge token-breakdown input-token-breakdown)
         ;; Append system-context to the signature system message

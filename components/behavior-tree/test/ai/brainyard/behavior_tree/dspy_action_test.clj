@@ -400,3 +400,56 @@
             required — this is what keeps every pre-existing node working"
     (is (= [] (dspy-action/input-violations nil {})))
     (is (= [] (dspy-action/input-violations {} {:anything 1})))))
+
+;; ============================================================================
+;; :predictor-id — named predictor routing
+;; ============================================================================
+
+(def ^:private qa-sig
+  (clj-llm/compile-signature "QA" "Answer." {:question :string} {:answer :string}))
+
+(defn- run-node [opts]
+  (let [built (bt/build [:action (merge {:id :qa :signature qa-sig :operation :predict} opts)
+                         bt/dspy]
+                        {:st-memory {:question "q"}})]
+    [(bt/run built) @(:st-memory (:context built))]))
+
+(deftest predictor-id-routes-through-run-predictor-test
+  (let [seen (atom nil)]
+    (with-redefs [clj-llm/run-predictor (fn [p inputs & _]
+                                          (reset! seen {:p p :inputs inputs})
+                                          {:outputs {:answer "via-predictor"}})
+                  clj-llm/predict (fn [& _] (throw (ex-info "direct call" {})))]
+      (let [[result st] (run-node {:predictor-id "test/qa"})]
+        (is (= bt/success result))
+        (is (= "via-predictor" (:answer st)))
+        (testing "the ad-hoc predictor carries the node's signature and strategy"
+          (is (= "test/qa" (:predictor/id (:p @seen))))
+          (is (= qa-sig (:signature (:p @seen))))
+          (is (= :predict (:strategy (:p @seen))))
+          (is (= {:question "q"} (:inputs @seen))))))
+    (testing "chain-of-thought maps to the :cot strategy"
+      (with-redefs [clj-llm/run-predictor (fn [p & _] (reset! seen {:p p}) {:outputs {:answer "a"}})]
+        (run-node {:predictor-id "test/qa" :operation :chain-of-thought})
+        (is (= :cot (:strategy (:p @seen))))))))
+
+(deftest no-predictor-id-calls-the-signature-directly-test
+  (with-redefs [clj-llm/run-predictor (fn [& _] (throw (ex-info "predictor call" {})))
+                clj-llm/predict (fn [_ _ & _] {:outputs {:answer "direct"}})]
+    (let [[result st] (run-node {})]
+      (is (= bt/success result))
+      (is (= "direct" (:answer st))))))
+
+(deftest predictor-params-apply-to-the-node-signature-test
+  (let [sent (atom nil)]
+    ;; run-predictor is real here; only the terminal predict it dispatches to
+    ;; is stubbed, so params resolution and tracing run for real.
+    (with-redefs [ai.brainyard.clj-llm.core.predict/predict
+                  (fn [sig _ & _] (reset! sent sig) {:outputs {:answer "x"}})]
+      (clj-llm/with-params {"test/qa" {:instructions "PARAM-INSTR"}}
+        (clj-llm/with-trace [t]
+          (run-node {:predictor-id "test/qa"})
+          (is (= "PARAM-INSTR" (:instructions @sent)))
+          (testing "the trace entry carries the BT node as context"
+            (is (= :qa (get-in (first @t) [:context :node-id])))
+            (is (= "test/qa" (:predictor-id (first @t))))))))))

@@ -95,6 +95,17 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
   and `auth-targets`' `:env-alts`. All three report the **primary** name when
   nothing is set — that is the credential to recommend to someone who has neither.
 - **`BY_JAR=1`** — run the uberjar instead of the native binary (reflection-config debugging).
+- **`BY_ENABLE_PREDICTION_LOG`** — append one EDN line per named-predictor LLM
+  call (`:predictor-id`, inputs, outputs, reasoning, usage) to
+  `<project>/.brainyard/sessions/<id>/predictions.edn` (`:enable-prediction-log`,
+  default **false**). The raw material for demo bootstrapping
+  (`docs/design/dspy-programming-model-proposal.md`). Off by default because
+  `:inputs` are the literal prompt inputs — recalled memory, file contents —
+  and it grows per LLM call, not per turn. Predictor **params** (instructions,
+  demos, LM/tier hints) are read from `<project>/.brainyard/programs/<id>.edn`
+  then `~/.brainyard/programs/<id>.edn`; with no file a predictor is
+  byte-identical to its bare signature, and a configured `:lm-config` always
+  outranks a params `:lm`.
 - **`BY_ENV_FILE`** / **`BY_NO_DOTENV=1`** — force a specific `.env`, or skip `.env` discovery.
 - **`BY_MEMORY_SELF`** — override for how the interactive TUI re-execs itself to
   run the **detached session-end memory consolidation**. On a graph-mode root

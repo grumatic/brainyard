@@ -32,17 +32,19 @@
 
 (defn make-extract-fn
   "Build an `extract-fn` `(fn [text] -> {:entities [...] :relations [...]})`
-  over the `GraphExtraction` signature, or nil when `lm-config` is absent
-  (extraction disabled). `predict` returns Malli-validated `:outputs`, so no
-  JSON hand-parsing. Failures log and yield nil rather than propagating."
+  over the `graph-extract` predictor (the `GraphExtraction` signature plus any
+  params), or nil when `lm-config` is absent (extraction disabled). Outputs
+  are Malli-validated, so no JSON hand-parsing. The configured `lm-config`
+  always wins over a params `:lm`. Failures log and yield nil rather than
+  propagating."
   [lm-config & {:keys [model]}]
   (when lm-config
     (let [lm (if model (assoc lm-config :model model) lm-config)]
       (fn [text]
         (try
-          (let [out (-> (llm/predict sig/GraphExtraction
-                                     {:activity (str text)}
-                                     :lm-config lm)
+          (let [out (-> (llm/run-predictor sig/graph-extract
+                                           {:activity (str text)}
+                                           :lm-config lm)
                         :outputs)]
             ;; Surface the yield so silent no-extract cases (e.g. a model that
             ;; ignores the contract) are visible in the app log rather than

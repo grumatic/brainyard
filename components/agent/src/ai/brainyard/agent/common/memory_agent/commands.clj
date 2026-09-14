@@ -558,8 +558,8 @@
   "Run EssenceExtraction over a just-finished turn; returns 0..3 essence maps."
   (fn [& {:keys [turn-summary turn-messages recent-episodes user-id]}]
     (try
-      (let [result (clj-llm/chain-of-thought
-                    ma-sig/EssenceExtraction
+      (let [result (clj-llm/run-predictor
+                    ma-sig/essence-extraction
                     {:turn-summary    (or turn-summary "")
                      :turn-messages   (or turn-messages "")
                      :recent-episodes (or recent-episodes "")
@@ -592,8 +592,8 @@
                        (nil? (:content fact))    (assoc :content "")
                        (nil? (:confidence fact)) (assoc :confidence 0.5)
                        (nil? (:tags fact))       (assoc :tags []))
-            result   (clj-llm/chain-of-thought
-                      ma-sig/FactVerification
+            result   (clj-llm/run-predictor
+                      ma-sig/fact-verification
                       {:fact         fact-map
                        :fresh-recall (or fresh-recall "")
                        :evidence     (or evidence "")}
@@ -624,8 +624,8 @@
   "Run LlmReducer over a windowed slice of L2 episodes; returns up to 5 distilled L3 facts."
   (fn [& {:keys [episodes window-desc existing-l3-hits user-id]}]
     (try
-      (let [result (clj-llm/chain-of-thought
-                    ma-sig/LlmReducer
+      (let [result (clj-llm/run-predictor
+                    ma-sig/llm-reducer
                     {:episodes         (or episodes [])
                      :window-desc      (or window-desc "")
                      :existing-l3-hits (or existing-l3-hits "")

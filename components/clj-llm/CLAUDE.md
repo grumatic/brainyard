@@ -38,7 +38,10 @@ defsignature → compile-signature → {:name :instructions :inputs :outputs
 ```
 
 `signature` / `prompt` / `llm` / `schema` / `predict` / `chain_of_thought` are
-the spine. The rest of `core/` is provider adapters, the model catalog and
+the spine. `predictor` sits on top: a named, parameterized use of a signature
+(`defpredictor` → `run-predictor`) whose instructions/field descs/demos/LM hint
+resolve at call time from `with-params` > params roots (EDN, app-injected) >
+defaults. The rest of `core/` is provider adapters, the model catalog and
 usage accounting — read the directory, not a list here.
 
 ## Key Design Decisions
@@ -55,6 +58,15 @@ usage accounting — read the directory, not a list here.
   `core/dspy_action.clj` defines its own same-named one that resolves
   signature/LM from BT context and then calls `clj-llm/predict`. Different
   vars — when tracing a BT `dspy-action`, check which you are reading.
+- **No params ⇒ byte-identical prompt.** `collect-system-parts` is the only
+  system-message assembler (both `build-messages*` join it), and an empty
+  `:demos` adds no part. A predictor with no params record anywhere must send
+  exactly what `predict` on its bare signature sends — `predictor_test`
+  asserts it; keep it true when touching `prompt.clj`.
+- **Params are hints, not configuration.** A call-site `:lm-config` always
+  beats a params `:lm`/`:tier`; demos come only from params, never call opts
+  (they are untrusted text promoted into the system message). Invalid params
+  files are skipped with a warning, falling through to the next layer.
 - **The provider/model roster is not documented here.** `core/providers.clj` is
   the authority for providers and their env vars; the catalog is the authority
   for models. Root `CLAUDE.md` covers the catalog-refresh design.

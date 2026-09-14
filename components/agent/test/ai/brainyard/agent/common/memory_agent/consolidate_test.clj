@@ -112,9 +112,9 @@
                        :confidence 0.85
                        :source-episode-ids ["e1" "e2"]
                        :supersedes-fact-ids []}]]
-      (with-redefs [clj-llm/chain-of-thought
+      (with-redefs [clj-llm/run-predictor
                     (fn [sig inputs & _]
-                      (is (= ma-sig/LlmReducer sig))
+                      (is (= ma-sig/LlmReducer (:signature sig)))
                       (is (vector? (:episodes inputs)))
                       (is (= "session s1" (:window-desc inputs)))
                       {:outputs {:facts stub-facts}
@@ -133,7 +133,7 @@
 (deftest llm-consolidate-error-surface-test
   (testing "chain-of-thought exception surfaces as :error"
     (let [agent (make-stub :memory-agent/test *mm* "s1")]
-      (with-redefs [clj-llm/chain-of-thought
+      (with-redefs [clj-llm/run-predictor
                     (fn [& _] (throw (ex-info "lm timeout" {})))]
         (proto/with-agent agent
           (let [r (ma-cmds/memory$llm-consolidate :episodes [])]

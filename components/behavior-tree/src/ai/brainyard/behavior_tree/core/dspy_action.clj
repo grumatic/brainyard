@@ -372,6 +372,29 @@
               (:user-cache-boundary node-opts)
               (assoc :user-cache-boundary (:user-cache-boundary node-opts))))))
 
+(defn- invoke-llm
+  "Call the signature directly, or — when the node names a `:predictor-id` —
+   through `run-predictor`, so that predictor's params (instructions, field
+   descs, demos) apply to the signature this node resolved, and the call is
+   traced under that id.
+
+   The signature still comes from the NODE (it may be built per turn, as
+   ThinkActCode's is), so the ad-hoc predictor is rebuilt per call rather than
+   registered. With no params record for the id the prompt is byte-identical
+   to the direct call; the node's resolved `:lm-config` always outranks any
+   params `:lm`, exactly as a call-site LM does."
+  [operation sig context inputs call-opts]
+  (if-let [pid (get-in context [:opts :predictor-id])]
+    (apply clj-llm/run-predictor
+           (clj-llm/predictor {:id pid
+                               :signature sig
+                               :strategy (case operation :predict :predict :cot)})
+           inputs call-opts)
+    (apply (case operation
+             :predict clj-llm/predict
+             clj-llm/chain-of-thought)
+           sig inputs call-opts)))
+
 (defmethod execute-dspy-operation :predict
   [_ signature context inputs]
   (let [sig (resolve-signature signature context)
@@ -386,9 +409,9 @@
         (build-system-prompt (:state inputs) (:stable-keys inputs)
                              (:no-zone-keys inputs))
         _ (log-cache-zones! (get-in context [:opts :id]) zones)
-        result (apply clj-llm/predict sig (:inputs inputs)
-                      (build-llm-call-opts context lm-config usage-tracker
-                                           on-chunk text token-breakdown zones))]
+        result (invoke-llm :predict sig context (:inputs inputs)
+                           (build-llm-call-opts context lm-config usage-tracker
+                                                on-chunk text token-breakdown zones))]
     {:outputs (:outputs result)
      :usage (:usage result)}))
 
@@ -406,9 +429,9 @@
         (build-system-prompt (:state inputs) (:stable-keys inputs)
                              (:no-zone-keys inputs))
         _ (log-cache-zones! (get-in context [:opts :id]) zones)
-        result (apply clj-llm/chain-of-thought sig (:inputs inputs)
-                      (build-llm-call-opts context lm-config usage-tracker
-                                           on-chunk text token-breakdown zones))]
+        result (invoke-llm :chain-of-thought sig context (:inputs inputs)
+                           (build-llm-call-opts context lm-config usage-tracker
+                                                on-chunk text token-breakdown zones))]
     (cond-> {:outputs (:outputs result)
              :reasoning (:reasoning result)
              :usage (:usage result)}
@@ -421,6 +444,9 @@
    - :id          — node identifier
    - :signature   — DSPy signature (var or compiled map)
    - :operation   — :predict or :chain-of-thought
+   - :predictor-id — (optional) run as that named predictor: its params apply
+                     to this node's signature, the call is traced under the id,
+                     and the id rides the pre/post hook events
    - :stable-keys — (optional) keys to lift into system-context. Prefer an
                      ORDERED VECTOR — zones render (and cache breakpoints
                      land) in declared order; contract: ascending volatility,
@@ -449,8 +475,10 @@
         stable-keys (normalize-stable-keys
                      (if (some? stable-keys) stable-keys default-stable-keys))
         fire!       (when agent (force !fire-hook))
-        base-event  {:agent agent :node-id id :signature signature
-                     :operation operation :stable-keys stable-keys}]
+        predictor-id (:predictor-id (:opts context))
+        base-event  (cond-> {:agent agent :node-id id :signature signature
+                             :operation operation :stable-keys stable-keys}
+                      predictor-id (assoc :predictor-id predictor-id))]
     (try
       (let [state @st-memory
             ;; Build on-chunk callback via agent.core.bt/chunk-factory-handler
@@ -522,10 +550,11 @@
             p/failure)
 
           (seq all-inputs)
-          (let [result (execute-dspy-operation operation signature context
-                                               {:inputs filtered-inputs :state state
-                                                :stable-keys stable-keys
-                                                :no-zone-keys (set (get-in context [:opts :no-zone-keys]))})
+          (let [result (clj-llm/with-trace-context {:agent agent :node-id id}
+                         (execute-dspy-operation operation signature context
+                                                 {:inputs filtered-inputs :state state
+                                                  :stable-keys stable-keys
+                                                  :no-zone-keys (set (get-in context [:opts :no-zone-keys]))}))
                 ;; CR-BT-27 — only signature-declared keys reach the bus.
                 [kept dropped] (filter-declared-outputs (:outputs result) output-keys)
                 result         (assoc result :outputs kept)]
