@@ -24,7 +24,16 @@
     (when (.isDirectory f) (doseq [c (.listFiles f)] (rm-rf c)))
     (.delete f)))
 
-(defn with-tmp-project [t]
+(defn with-tmp-project
+  "Point every project-dir lookup at a fresh temp root for one test.
+
+   Setting the `BY_PROJECT_DIR` system property is NOT enough on its own:
+   `resolve-var` reads the process environment first, so a developer shell that
+   exports `BY_PROJECT_DIR` outranks the property — and this suite then read and
+   WROTE `.env` files (plus a `.gitignore`) in that real project. Redefining
+   `resolve-project-dir` is what makes the fixture hermetic; the property stays
+   for anything that reads the variable directly."
+  [t]
   (let [root (str (System/getProperty "java.io.tmpdir") "/by-envfiles-" (System/nanoTime))
         prior (System/getProperty "BY_PROJECT_DIR")]
     (.mkdirs (io/file root ".brainyard"))
@@ -32,7 +41,8 @@
       (try
         (System/setProperty "BY_PROJECT_DIR" root)
         (ef/invalidate-cache!)
-        (t)
+        (with-redefs [cfg/resolve-project-dir (fn [_working-dir] root)]
+          (t))
         (finally
           (if prior (System/setProperty "BY_PROJECT_DIR" prior)
               (System/clearProperty "BY_PROJECT_DIR"))
