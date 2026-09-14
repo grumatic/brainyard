@@ -187,7 +187,7 @@
   "Run the program on one example: retry transient failures, classify the
    rest. Returns a per-example record (never throws, except on interrupt)."
   [program metric ex idx {:keys [max-transient-retries retry-delay-ms]}]
-  (loop [attempt 0]
+  (loop [attempt 0 prior-calls 0]
     (let [trace (atom [])
           t0    (System/currentTimeMillis)
           outcome (try
@@ -199,9 +199,13 @@
                       {:error e :class (:class (llm/classify-error e))}))]
       (if (and (= :transient (:class outcome)) (< attempt max-transient-retries))
         (do (Thread/sleep (long (* retry-delay-ms (inc attempt))))
-            (recur (inc attempt)))
+            ;; a failed attempt still made its calls — they count against
+            ;; :max-calls even though their trace is discarded
+            (recur (inc attempt) (+ prior-calls (max 1 (count @trace)))))
         (let [cost (trace-cost @trace)
               base {:index idx :cost cost :tokens (trace-tokens @trace)
+                    ;; an exception before any trace entry was still one call
+                    :calls (+ prior-calls (max (count @trace) (if (:error outcome) 1 0)))
                     :elapsed-ms (- (System/currentTimeMillis) t0)
                     :attempts (inc attempt)}]
           (if-let [e (:error outcome)]
@@ -216,6 +220,9 @@
   "Run `program` over `examples`, scoring with `metric`. opts:
      :parallel               worker threads (default 1)
      :budget-usd             stop starting new examples once spend reaches it
+     :max-calls              stop starting new examples once this many predictor
+                             calls were made — the budget that means something
+                             on subscription providers, whose USD is notional
      :max-transient-retries  per example (default 2)
      :retry-delay-ms         linear backoff base (default 1000)
 
@@ -223,22 +230,25 @@
      {:score     mean over attempted examples (errors score 0)
       :n         examples given   :attempted  examples run
       :errors    count             :stopped    nil | :budget | :fatal
-      :cost      usd               :tokens     {:in :out}
-      :dataset   dataset-hash      :elapsed-ms …
-      :per-example [{:index :score :outputs|:error :error-class :cost …}]}"
-  [program examples metric & {:keys [parallel budget-usd max-transient-retries retry-delay-ms]
+      :cost      usd               :calls      predictor calls
+      :tokens    {:in :out}        :dataset    dataset-hash
+      :elapsed-ms …
+      :per-example [{:index :score :outputs|:error :error-class :cost :calls …}]}"
+  [program examples metric & {:keys [parallel budget-usd max-calls max-transient-retries retry-delay-ms]
                               :or   {parallel 1 max-transient-retries 2 retry-delay-ms 1000}}]
   (let [examples (vec examples)
         t0       (System/currentTimeMillis)
         spent    (atom 0.0)
+        calls    (atom 0)
         stopped  (atom nil)
         run-opts {:max-transient-retries max-transient-retries :retry-delay-ms retry-delay-ms}
         may-start? #(and (nil? @stopped)
-                         (or (nil? budget-usd)
-                             (< @spent budget-usd)
+                         (or (and (or (nil? budget-usd) (< @spent budget-usd))
+                                  (or (nil? max-calls) (< @calls max-calls)))
                              (do (compare-and-set! stopped nil :budget) false)))
         record!  (fn [r]
                    (swap! spent + (:cost r))
+                   (swap! calls + (:calls r))
                    (when (= :fatal (:error-class r))
                      (compare-and-set! stopped nil :fatal))
                    r)
@@ -270,6 +280,7 @@
      :errors     (count (filter :error results))
      :stopped    @stopped
      :cost       @spent
+     :calls      @calls
      :tokens     {:in  (reduce + 0 (map #(get-in % [:tokens :in]) results))
                   :out (reduce + 0 (map #(get-in % [:tokens :out]) results))}
      :dataset    (dataset-hash examples)

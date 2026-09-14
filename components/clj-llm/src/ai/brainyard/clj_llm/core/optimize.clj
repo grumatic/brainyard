@@ -90,56 +90,64 @@
      :threshold        default 1.0 — only fully-passing traces teach
      :max-per-predictor stop once every predictor seen has this many (default 16)
      :budget-usd       stop starting new examples at this spend
+     :max-calls        stop starting new examples after this many predictor calls
      :teacher-params   {pid params} bound while the teacher runs; `{pid {}}`
                        bootstraps from the zero-shot program even when a params
                        file exists (else the teacher sees current params)
 
-   Returns {:pool {pid [demo …]} :report {:attempted :passed :errors :cost :stopped}}.
+   Returns {:pool {pid [demo …]}
+            :report {:attempted :passed :errors :cost :calls :scores :stopped}}.
+   `:scores` is every teacher score in trainset order — a pass rate alone hides
+   whether the threshold was missed by 0.01 or by 0.6.
    Transient errors are not retried here (a skipped example only shrinks the
    pool); a :fatal error stops the run."
-  [teacher trainset metric {:keys [threshold max-per-predictor budget-usd teacher-params]
+  [teacher trainset metric {:keys [threshold max-per-predictor budget-usd max-calls teacher-params]
                             :or   {threshold 1.0 max-per-predictor 16}}]
-  (loop [[[i ex] & more] (map-indexed vector trainset)
-         pool {} spent 0.0 attempted 0 passed 0 errors 0]
-    (let [full? (and (seq pool) (every? #(>= (count %) max-per-predictor) (vals pool)))
-          over? (and budget-usd (>= spent budget-usd))]
-      (if (or (nil? ex) full? over?)
-        {:pool pool
-         :report {:attempted attempted :passed passed :errors errors :cost spent
-                  :stopped (cond over? :budget full? :full :else nil)}}
-        (let [trace (atom [])
-              outcome (try
-                        {:result (binding [predictor/*trace* trace]
-                                   (predictor/with-params (or teacher-params {})
-                                     (teacher (:inputs ex))))}
-                        (catch InterruptedException e (throw e))
-                        (catch Exception e
-                          {:error e :class (:class (llm/classify-error e))}))
-              spent (+ spent (trace-cost @trace))]
-          (cond
-            (= :fatal (:class outcome))
-            {:pool pool
-             :report {:attempted (inc attempted) :passed passed :errors (inc errors)
-                      :cost spent :stopped :fatal :error (ex-message (:error outcome))}}
+  (let [pool (atom {}) spent (atom 0.0) calls (atom 0)
+        attempted (atom 0) passed (atom 0) errors (atom 0) scores (atom [])
+        report (fn [stopped & {:as extra}]
+                 (merge {:attempted @attempted :passed @passed :errors @errors
+                         :cost @spent :calls @calls :scores @scores :stopped stopped}
+                        extra))]
+    (loop [[[i ex] & more] (map-indexed vector trainset)]
+      (let [full? (and (seq @pool) (every? #(>= (count %) max-per-predictor) (vals @pool)))
+            over? (or (and budget-usd (>= @spent budget-usd))
+                      (and max-calls (>= @calls max-calls)))]
+        (if (or (nil? ex) full? over?)
+          {:pool @pool :report (report (cond over? :budget full? :full :else nil))}
+          (let [trace (atom [])
+                outcome (try
+                          {:result (binding [predictor/*trace* trace]
+                                     (predictor/with-params (or teacher-params {})
+                                       (teacher (:inputs ex))))}
+                          (catch InterruptedException e (throw e))
+                          (catch Exception e
+                            {:error e :class (:class (llm/classify-error e))}))]
+            (swap! spent + (trace-cost @trace))
+            (swap! calls + (max (count @trace) (if (:error outcome) 1 0)))
+            (swap! attempted inc)
+            (cond
+              (= :fatal (:class outcome))
+              (do (swap! errors inc)
+                  {:pool @pool :report (report :fatal :error (ex-message (:error outcome)))})
 
-            (:error outcome)
-            (recur more pool spent (inc attempted) passed (inc errors))
+              (:error outcome)
+              (do (swap! errors inc)
+                  (swap! scores conj nil)
+                  (recur more))
 
-            :else
-            (let [score (try (evaluate/score->double (metric ex (:result outcome) @trace))
-                             (catch Exception e
-                               (mulog/warn ::metric-failed :error (ex-message e))
-                               0.0))]
-              (if (>= score threshold)
-                (recur more
-                       (reduce (fn [acc entry]
-                                 (if (or (:error entry) (nil? (:predictor-id entry)))
-                                   acc
-                                   (update acc (:predictor-id entry)
-                                           (fnil conj []) (demo-from-entry entry i))))
-                               pool @trace)
-                       spent (inc attempted) (inc passed) errors)
-                (recur more pool spent (inc attempted) passed errors)))))))))
+              :else
+              (let [score (try (evaluate/score->double (metric ex (:result outcome) @trace))
+                               (catch Exception e
+                                 (mulog/warn ::metric-failed :error (ex-message e))
+                                 0.0))]
+                (swap! scores conj score)
+                (when (>= score threshold)
+                  (swap! passed inc)
+                  (doseq [entry @trace
+                          :when (and (not (:error entry)) (:predictor-id entry))]
+                    (swap! pool update (:predictor-id entry) (fnil conj []) (demo-from-entry entry i))))
+                (recur more)))))))))
 
 ;; ============================================================================
 ;; BootstrapFewShot
@@ -179,40 +187,54 @@
 ;; ============================================================================
 
 (defn- evaluate-candidate
-  [program valset metric params {:keys [parallel budget-usd]}]
+  [program valset metric params {:keys [parallel budget-usd max-calls]}]
   (predictor/with-params params
-    (evaluate/evaluate program valset metric :parallel (or parallel 1) :budget-usd budget-usd)))
+    (evaluate/evaluate program valset metric :parallel (or parallel 1)
+                       :budget-usd budget-usd :max-calls max-calls)))
 
 (defn bootstrap-random-search
   "The paper's BootstrapFewShotWithRandomSearch, over a single bootstrap pool.
 
-   Candidates, all evaluated on `valset` with `program` (the STUDENT):
-     :zero-shot      {pid {}} for every predictor in the pool
+   Rows, all evaluated on `valset`:
+     :zero-shot      the STUDENT with {pid {}} for every predictor in the pool
+     :teacher        the TEACHER, zero-shot — a REFERENCE row, never a winner
+                     (it is a different model, so it is not a proposal). It is
+                     the number the tier question needs: how close do demos
+                     bring the cheap model to the expensive one?
+                     `:teacher-baseline? false` skips it.
      :labeled        labeled-few-shot (only when :predictor-id is given)
      :bootstrap      first `max-bootstrapped` pool demos per predictor
      :trial-N        a seeded shuffle of the pool, 1..max-bootstrapped demos
 
    opts: :trials (default 6) :max-bootstrapped (4) :predictor-id :seed (0)
-         :threshold :teacher-params :parallel :budget-usd (shared by the
-         pool and every candidate).
+         :threshold :teacher-params :parallel, and :budget-usd / :max-calls
+         (both shared by the pool and every row).
 
    Returns {:params best-candidate-params
-            :report {:best … :leaderboard [{:candidate :score :cost :stopped}…]
-                     :pool … :cost … :stopped …}}.
+            :report {:best … :teacher-score …
+                     :leaderboard [{:candidate :score :cost :calls :stopped :reference?}…]
+                     :pool … :cost … :calls … :stopped …}}.
    Ties keep the EARLIER candidate — zero-shot first — so a proposal that adds
    prompt tokens has to earn a strictly better score than one that adds none."
   [teacher program trainset valset metric
-   {:keys [trials max-bootstrapped predictor-id seed budget-usd]
-    :or   {trials 6 max-bootstrapped 4 seed 0}
+   {:keys [trials max-bootstrapped predictor-id seed budget-usd max-calls teacher-baseline?]
+    :or   {trials 6 max-bootstrapped 4 seed 0 teacher-baseline? true}
     :as   opts}]
   (let [{:keys [pool report]} (bootstrap-pool teacher trainset metric
                                               (assoc opts :max-per-predictor (* 3 max-bootstrapped)))
         pids      (cond-> (set (keys pool)) predictor-id (conj predictor-id))
         spent     (atom (:cost report))
+        calls     (atom (:calls report))
         remaining #(when budget-usd (max 0.0 (- budget-usd @spent)))
+        remaining-calls #(when max-calls (max 0 (- max-calls @calls)))
+        exhausted? #(or (and budget-usd (<= (remaining) 0.0))
+                        (and max-calls (<= (remaining-calls) 0)))
+        zero      (into {} (map #(vector % {})) pids)
         candidates
         (concat
-         [[:zero-shot (into {} (map #(vector % {})) pids)]]
+         [[:zero-shot zero]]
+         (when teacher-baseline?
+           [[:teacher zero :reference]])
          (when predictor-id
            [[:labeled (:params (labeled-few-shot predictor-id trainset {:k max-bootstrapped :seed seed}))]])
          (when (seq pool)
@@ -225,27 +247,35 @@
                                       [pid {:demos (vec (take k (shuffle-seeded demos (+ seed t 1))))}]))
                             pool)])))))
         leaderboard
-        (loop [[[cname params] & more] candidates acc []]
-          (if (or (nil? cname) (and budget-usd (<= (remaining) 0.0)))
+        (loop [[[cname params reference] & more] candidates acc []]
+          (if (or (nil? cname) (exhausted?))
             acc
-            (let [r (evaluate-candidate program valset metric params
-                                        (assoc opts :budget-usd (remaining)))]
+            (let [r (evaluate-candidate (if reference teacher program) valset metric params
+                                        (assoc opts :budget-usd (remaining)
+                                               :max-calls (remaining-calls)))]
               (swap! spent + (:cost r))
-              (recur more (conj acc {:candidate cname :params params :score (:score r)
-                                     :attempted (:attempted r) :n (:n r)
-                                     :cost (:cost r) :stopped (:stopped r)})))))
-        ;; Only fully-evaluated candidates may win: a budget-truncated run
-        ;; scored on fewer examples is not comparable.
-        complete (filter #(and (nil? (:stopped %)) (= (:attempted %) (:n %))) leaderboard)
-        best     (reduce (fn [b c] (if (or (nil? b) (> (:score c) (:score b))) c b)) nil complete)]
+              (swap! calls + (:calls r))
+              (recur more (conj acc (cond-> {:candidate cname :params params :score (:score r)
+                                             :attempted (:attempted r) :n (:n r)
+                                             :cost (:cost r) :calls (:calls r) :stopped (:stopped r)}
+                                      reference (assoc :reference? true)))))))
+        complete? #(and (nil? (:stopped %)) (= (:attempted %) (:n %)))
+        ;; Only fully-evaluated STUDENT candidates may win: a budget-truncated
+        ;; run scored on fewer examples is not comparable, and the teacher row
+        ;; is a different model.
+        eligible (filter #(and (complete? %) (not (:reference? %))) leaderboard)
+        best     (reduce (fn [b c] (if (or (nil? b) (> (:score c) (:score b))) c b)) nil eligible)
+        teacher-row (first (filter #(and (:reference? %) (complete? %)) leaderboard))]
     {:params (:params best)
-     :report {:optimizer   :bootstrap-random-search
-              :best        (:candidate best)
-              :best-score  (:score best)
-              :leaderboard (mapv #(dissoc % :params) leaderboard)
-              :pool        (assoc report :sizes (into {} (map (fn [[k v]] [k (count v)])) pool))
-              :valset      (evaluate/dataset-hash valset)
-              :cost        @spent
-              :stopped     (cond (nil? best) :no-complete-candidate
-                                 (< (count leaderboard) (count candidates)) :budget
-                                 :else nil)}}))
+     :report {:optimizer     :bootstrap-random-search
+              :best          (:candidate best)
+              :best-score    (:score best)
+              :teacher-score (:score teacher-row)
+              :leaderboard   (mapv #(dissoc % :params) leaderboard)
+              :pool          (assoc report :sizes (into {} (map (fn [[k v]] [k (count v)])) pool))
+              :valset        (evaluate/dataset-hash valset)
+              :cost          @spent
+              :calls         @calls
+              :stopped       (cond (nil? best) :no-complete-candidate
+                                   (< (count leaderboard) (count candidates)) :budget
+                                   :else nil)}}))

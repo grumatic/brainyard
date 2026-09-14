@@ -167,12 +167,17 @@
       (is (nil? (:error r)))
       (is (= 1.0 (:best-score r)))
       (is (= 0.0 (:zero-shot-score r)))
+      (is (= 1.0 (:teacher-score r)) "the teacher reference row is reported")
+      (is (pos? (:calls r)))
       (is (pos? (:demos r)))
       (is (not (.exists (programs/params-file-for "test/upper"))) "compile never installs params")
       (let [review (slurp (:review r))]
         (is (str/includes? review "Here are examples of inputs"))
         (is (str/includes? review "teacher: `openai/teacher`"))
         (is (str/includes? review "| zero-shot | 0.000"))
+        (is (str/includes? review "teacher, reference — not eligible"))
+        (is (str/includes? review "teacher zero-shot 1.000"))
+        (is (str/includes? review "passed the threshold · scores"))
         (is (str/includes? review "by programs accept test/upper")))
       (is (= [:pending] (mapv :status (programs/list-proposals "test/upper"))))
       (testing "accept installs the winner"
@@ -197,6 +202,14 @@
       (is (.exists (io/file dir "candidate.edn")) "the losing candidate is kept for review")
       (is (= {:status :rejected} (programs/reject-proposal! "test/upper" (:proposal-id r))))
       (is (= [:rejected] (mapv :status (programs/list-proposals "test/upper")))))))
+
+(deftest max-calls-caps-a-compile
+  (write-upper-dataset!)
+  (with-upper-llm 2
+    (let [r (programs/compile-predictor "test/upper" "words" :trials 4 :max-bootstrapped 3
+                                        :parallel 1 :max-calls 20)]
+      (is (<= (:calls r) 20))
+      (is (= "budget" (:stopped r))))))
 
 (deftest accept-and-reject-are-not-llm-tools
   (let [names (set (map #(-> % meta :name str) programs/program-commands))]

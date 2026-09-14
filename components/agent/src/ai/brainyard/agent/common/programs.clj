@@ -469,21 +469,30 @@
          (when (= (:student meta) (:teacher meta)) "  ⚠ teacher is the student")
          "\n"
          "- cost: $" (format "%.4f" (double (or (:cost report) 0.0)))
+         (when (:calls report) (str " · " (:calls report) " calls"))
          (when (:stopped report) (str "  stopped: `" (name (:stopped report)) "`"))
          "\n"
+         (when-let [ps (seq (keep identity (get-in report [:pool :scores])))]
+           (str "- teacher on train: " (get-in report [:pool :passed]) "/" (get-in report [:pool :attempted])
+                " passed the threshold · scores " (str/join " " (map #(format "%.2f" (double %)) ps)) "\n"))
          "- recommendation: "
          (cond (:no-op? meta) (str "**no change** — zero-shot scored best; accepting writes empty params"
                                    (when (:candidate-file? meta) " (the losing candidate is in candidate.edn)"))
                :else (str "**" (some-> (:best report) name) "** at " (:best-score report)
                           (when-let [z (:zero-shot-score meta)] (str " (zero-shot " z ")"))))
+         (when-let [t (:teacher-score report)]
+           (str " · teacher zero-shot " (format "%.3f" (double t))))
          "\n\n"
          (when (seq board)
-           (str "## Leaderboard (valset)\n\n| candidate | score | examples | cost | stopped |\n|---|---|---|---|---|\n"
-                (str/join "\n" (for [{:keys [candidate score attempted n cost stopped]} board]
-                                 (format "| %s | %.3f | %d/%d | $%.4f | %s |"
-                                         (name candidate) (double score) attempted n (double cost)
+           (str "## Leaderboard (valset)\n\n| candidate | score | examples | calls | cost | stopped |\n|---|---|---|---|---|---|\n"
+                (str/join "\n" (for [{:keys [candidate score attempted n cost calls stopped reference?]} board]
+                                 (format "| %s | %.3f | %d/%d | %s | $%.4f | %s |"
+                                         (str (name candidate) (when reference? " _(teacher, reference — not eligible)_"))
+                                         (double score) attempted n (or calls "") (double cost)
                                          (or (some-> stopped name) ""))))
-                "\n\n"))
+                "\n\n"
+                (when (some #(and (:stopped %) (not (:reference? %))) board)
+                  "_Rows marked stopped were cut by the budget and are not eligible to win._\n\n")))
          (when (:instructions params)
            (str "## Instructions override\n\n```\n" (:instructions params) "\n```\n\n"))
          "## Demos — exact system-prompt text (" (count demos) ")\n\n"
@@ -502,12 +511,16 @@
    opts: :optimizer (default bootstrap-random-search) :metric (exact-match)
          :lm/:tier (student; default sub-LM) :teacher-lm/:teacher-tier
          (default :deep tier) :budget-usd (2.0) :trials (6)
-         :max-bootstrapped (4) :parallel (2) :threshold (1.0) :seed (0)"
+         :max-bootstrapped (4) :parallel (2) :threshold (1.0) :seed (0)
+         :max-calls (nil — cap on predictor calls, the budget that binds on
+         subscription providers whose USD is notional)
+         :teacher-baseline? (true — score the teacher zero-shot on val as a
+         reference row)"
   [pid dataset-name & {:keys [optimizer metric budget-usd trials max-bootstrapped
-                              parallel threshold seed]
+                              parallel threshold seed max-calls teacher-baseline?]
                        :or   {optimizer "bootstrap-random-search" metric "exact-match"
                               budget-usd 2.0 trials 6 max-bootstrapped 4 parallel 2
-                              threshold 1.0 seed 0}
+                              threshold 1.0 seed 0 teacher-baseline? true}
                        :as   opts}]
   (let [p        (or (clj-llm/get-predictor pid)
                      (throw (ex-info (str "Unknown predictor " pid) {:predictor-id pid})))
@@ -529,6 +542,7 @@
         teacher  (clj-llm/predictor-program p :lm-config teacher-lm)
         common   {:max-bootstrapped max-bootstrapped :predictor-id pid :seed seed
                   :threshold threshold :budget-usd budget-usd :parallel parallel
+                  :max-calls max-calls :teacher-baseline? teacher-baseline?
                   :teacher-params {pid {}}}
         {:keys [params report]}
         (clj-llm/with-trace-context {:suppress-log? true}
@@ -546,22 +560,33 @@
         report   (if (or (:leaderboard report) (empty? val))
                    report
                    (clj-llm/with-trace-context {:suppress-log? true}
-                     (let [remaining (max 0.0 (- budget-usd (or (:cost report) 0.0)))
-                           z  (clj-llm/with-params {pid {}}
-                                (clj-llm/evaluate student val m :parallel parallel :budget-usd remaining))
-                           c  (clj-llm/with-params {pid (get params pid {})}
-                                (clj-llm/evaluate student val m :parallel parallel
-                                                  :budget-usd (max 0.0 (- remaining (:cost z)))))
+                     (let [spent (atom (or (:cost report) 0.0))
+                           calls (atom (or (:calls report) 0))
+                           eval-row (fn [prog params]
+                                      (let [r (clj-llm/with-params params
+                                                (clj-llm/evaluate prog val m :parallel parallel
+                                                                  :budget-usd (max 0.0 (- budget-usd @spent))
+                                                                  :max-calls (when max-calls (max 0 (- max-calls @calls)))))]
+                                        (swap! spent + (:cost r))
+                                        (swap! calls + (:calls r))
+                                        r))
+                           z   (eval-row student {pid {}})
+                           t   (when teacher-baseline? (eval-row teacher {pid {}}))
+                           c   (eval-row student {pid (get params pid {})})
                            row (fn [cname r] {:candidate cname :score (:score r) :attempted (:attempted r)
-                                              :n (:n r) :cost (:cost r) :stopped (:stopped r)})
+                                              :n (:n r) :cost (:cost r) :calls (:calls r) :stopped (:stopped r)})
                            ok? #(and (nil? (:stopped %)) (= (:attempted %) (:n %)))
                            win (if (and (ok? c) (ok? z) (> (:score c) (:score z))) c z)]
                        (assoc report
-                              :leaderboard [(row :zero-shot z) (row :proposal c)]
+                              :leaderboard (cond-> [(row :zero-shot z)]
+                                             t (conj (assoc (row :teacher t) :reference? true))
+                                             true (conj (row :proposal c)))
                               :best (if (identical? win c) :proposal :zero-shot)
                               :best-score (:score win)
+                              :teacher-score (when (and t (ok? t)) (:score t))
                               :valset (clj-llm/dataset-hash val)
-                              :cost (+ (or (:cost report) 0.0) (:cost z) (:cost c))))))
+                              :cost @spent
+                              :calls @calls))))
         ;; params.edn is always the WINNER, so accepting does what the
         ;; leaderboard says. A blind candidate that lost to zero-shot is kept
         ;; as candidate.edn for the reviewer, never as what accept installs.
@@ -611,9 +636,11 @@
      :best (some-> (:best report) name)
      :best-score (:best-score report)
      :zero-shot-score zero
+     :teacher-score (:teacher-score report)
      :demos (count (:demos pid-params))
      :no-op (:no-op? meta)
      :cost (:cost report)
+     :calls (:calls report)
      :stopped (some-> (:stopped report) name)}))
 
 (defn list-proposals [pid]
@@ -676,11 +703,13 @@
 (defcommand program$compile
   "Optimize a predictor's demos over a dataset and write a PROPOSAL for human review (never applied)."
   (fn [& {:keys [predictor-id dataset optimizer metric budget-usd trials max-bootstrapped
-                 parallel lm tier teacher-lm teacher-tier]}]
+                 parallel lm tier teacher-lm teacher-tier threshold max-calls]}]
     (try
       (apply compile-predictor predictor-id dataset
              (mapcat identity
                      (cond-> {}
+                       threshold                (assoc :threshold threshold)
+                       max-calls                (assoc :max-calls max-calls)
                        (non-blank optimizer)    (assoc :optimizer optimizer)
                        (non-blank metric)       (assoc :metric metric)
                        budget-usd               (assoc :budget-usd budget-usd)
@@ -705,13 +734,17 @@
                   [:lm               {:optional true} [:string {:desc "Student provider/model (default sub-LM)"}]]
                   [:tier             {:optional true} [:string {:desc "Student tier"}]]
                   [:teacher-lm       {:optional true} [:string {:desc "Teacher provider/model"}]]
-                  [:teacher-tier     {:optional true} [:string {:desc "Teacher tier (default deep)"}]]]
+                  [:teacher-tier     {:optional true} [:string {:desc "Teacher tier (default deep)"}]]
+                  [:threshold        {:optional true} [:double {:desc "Min metric score for a teacher trace to become a demo (default 1.0; use <1 for F1-style metrics)"}]]
+                  [:max-calls        {:optional true} [:int {:desc "Cap on predictor calls (binds on subscription providers, whose USD is notional)"}]]]
   :output-schema [:map
                   [:proposal-id     {:optional true} [:string {:desc "Proposal id"}]]
                   [:review          {:optional true} [:string {:desc "REVIEW.md path for the human"}]]
                   [:best            {:optional true} [:string {:desc "Winning candidate"}]]
                   [:best-score      {:optional true} [:double {:desc "Its valset score"}]]
                   [:zero-shot-score {:optional true} [:double {:desc "Baseline valset score"}]]
+                  [:teacher-score   {:optional true} [:double {:desc "Teacher zero-shot valset score (reference)"}]]
+                  [:calls           {:optional true} [:int {:desc "Predictor calls made"}]]
                   [:demos           {:optional true} [:int {:desc "Demos proposed"}]]
                   [:no-op           {:optional true} [:boolean {:desc "Zero-shot won; nothing to apply"}]]
                   [:cost            {:optional true} [:double {:desc "USD spent"}]]

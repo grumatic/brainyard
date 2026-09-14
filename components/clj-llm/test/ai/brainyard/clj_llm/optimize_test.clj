@@ -94,8 +94,32 @@
         (testing "ties keep the earlier candidate, so zero-shot must be beaten strictly"
           (is (not= :zero-shot (:best report))))
         (is (every? #{"teacher" "student"} @calls))
-        (is (= 6 (count (filter #{"teacher"} @calls)))
-            "the teacher runs once over the trainset (a pool), not once per trial")))))
+        (is (= (+ 6 3) (count (filter #{"teacher"} @calls)))
+            "the teacher runs once over the trainset (a pool) plus once over val as the reference — not once per trial")
+        (testing "the teacher reference row is scored but can never win"
+          (is (= 1.0 (:teacher board) (:teacher-score report)))
+          (is (not= :teacher (:best report)))
+          (is (:reference? (first (filter #(= :teacher (:candidate %)) (:leaderboard report))))))
+        (is (= (count (get-in report [:pool :scores])) 6) "every teacher score is reported, not just the pass count")))))
+
+(deftest a-stronger-teacher-row-does-not-win
+  (with-fake-llm 99 (atom [])
+    (let [{:keys [report params]}
+          (opt/bootstrap-random-search teacher student (trainset ["a" "b"]) (trainset ["p" "q"]) metric
+                                       {:trials 1 :max-bootstrapped 1 :predictor-id "t/upper"})]
+      (is (= 1.0 (:teacher-score report)))
+      (is (= :zero-shot (:best report)) "every student candidate scored 0; the reference row is not eligible")
+      (is (= {"t/upper" {}} params)))))
+
+(deftest max-calls-bounds-the-search-like-a-budget
+  (let [calls (atom [])]
+    (with-fake-llm 2 calls
+      (let [{:keys [report]} (opt/bootstrap-random-search teacher student
+                                                          (trainset ["a" "b" "c" "d"]) (trainset ["p" "q"]) metric
+                                                          {:trials 5 :max-bootstrapped 2 :max-calls 7})]
+        (is (= :budget (:stopped report)))
+        (is (<= (count @calls) 7) "sequential: never a call past the cap")
+        (is (= (count @calls) (:calls report)) "reported calls are the calls actually made")))))
 
 (deftest random-search-prefers-zero-shot-when-demos-do-not-help
   (with-fake-llm 0 (atom [])
