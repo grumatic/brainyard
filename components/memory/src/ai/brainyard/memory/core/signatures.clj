@@ -31,10 +31,12 @@ WHOLE input and extract durable knowledge from EVERY turn — do NOT summarize,
 and do NOT fixate on the most prominent turn while skipping the rest. Each
 turn may add its own entities and relations.
 
-Capture GLOBAL, CONCEPTUAL knowledge — concepts, architecture and
-components, people, decisions, preferences, config knobs, and how they
-relate. This graph is long-term memory: prefer generalizable, durable facts
-over specifics that are obvious from re-reading the code.
+Capture only TOP-LEVEL knowledge: systems, agents, services, projects,
+people, and core concepts — the things a newcomer would need named to
+understand this environment. Do NOT record individual functions, commands
+(`x$y`), scripts, backlog/issue items, config variables, or test fixtures;
+they are re-findable detail. Add a relation only when both ends are
+top-level entities and the link is stated, not inferred.
 
 Do NOT record specific, re-searchable artifacts as entities — individual
 files touched in passing, one-off paths, and one-off values can be re-found
