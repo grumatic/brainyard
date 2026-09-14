@@ -251,6 +251,20 @@
       (is (vector? (:least-stable summary)))
       (is (nil? (:per-example summary)) "the summary stays small"))))
 
+(deftest an-unfinished-baseline-proposes-nothing
+  ;; Found by the CLI smoke test: with the zero-shot row cut by the budget,
+  ;; labeled-few-shot still proposed its 4 unvalidated demos.
+  (write-upper-dataset!)
+  (with-upper-llm 0
+    (let [r   (programs/compile-predictor "test/upper" "words" :optimizer "labeled-few-shot"
+                                          :parallel 1 :max-calls 1 :teacher-baseline? false)
+          dir (.getParentFile (io/file (:review r)))]
+      (is (nil? (:best r)))
+      (is (zero? (:demos r)) "nothing was validated, so no demos are proposed")
+      (is (:no-op r))
+      (is (= {} (edn/read-string (slurp (io/file dir "params.edn")))))
+      (is (.exists (io/file dir "candidate.edn")) "the unvalidated candidate is kept for inspection"))))
+
 (deftest max-calls-caps-a-compile
   (write-upper-dataset!)
   (with-upper-llm 2

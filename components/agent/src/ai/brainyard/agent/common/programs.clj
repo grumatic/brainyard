@@ -639,9 +639,12 @@
         ;; as candidate.edn for the reviewer, never as what accept installs.
         ;; nil best = even the zero-shot baseline did not finish (budget):
         ;; nothing was validated, so nothing but the base may be proposed.
-        losing-candidate (when (and (#{:zero-shot nil} (:best report)) (seq (get-in params [pid :demos])))
+        ;; `contains?`, never `(#{:zero-shot nil} best)`: a set called as a
+        ;; function returns the MATCHED element, and the matched nil is falsy.
+        no-winner? (contains? #{:zero-shot nil} (:best report))
+        losing-candidate (when (and no-winner? (seq (get-in params [pid :demos])))
                            (get params pid))
-        params   (if (#{:zero-shot nil} (:best report)) {pid base} params)
+        params   (if no-winner? {pid base} params)
         ts       (System/currentTimeMillis)
         pid-params (-> (get params pid {})
                        traj-export/redact-example

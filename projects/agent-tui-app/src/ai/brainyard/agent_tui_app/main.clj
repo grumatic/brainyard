@@ -434,6 +434,29 @@
    :as "Replace names that already exist in the target (default: keep + report)"
    :type :with-flag :default false})
 
+;; `by programs eval|compile` flags. Floats (--budget-usd, --threshold) are
+;; :string and parsed by `program-number` — the CLI has no float type.
+(def program-eval-opts
+  [{:option "metric" :as "Metric name (see `by programs list`); default exact-match" :type :string}
+   {:option "split" :as "all (default) | train | val | test" :type :string}
+   {:option "lm" :as "provider/model to evaluate (default: sub-LM)" :type :string}
+   {:option "tier" :as "light | standard | deep, via :agent-lm-tiers" :type :string}
+   {:option "repeats" :as "Passes over the set; >=2 reports sd and a 95% interval (default 1)" :type :int}
+   {:option "parallel" :as "Worker threads per pass (default 2)" :type :int}
+   {:option "budget-usd" :as "Spend cap in USD (notional on subscription providers)" :type :string}
+   {:option "max-calls" :as "Cap on predictor calls" :type :int}
+   {:option "max-tokens" :as "Cap on input+output tokens" :type :int}])
+
+(def program-compile-opts
+  (into (vec (remove #(= "split" (:option %)) program-eval-opts))
+        [{:option "optimizer" :as "bootstrap-random-search (default) | bootstrap-few-shot | labeled-few-shot" :type :string}
+         {:option "teacher-lm" :as "Teacher provider/model" :type :string}
+         {:option "teacher-tier" :as "Teacher tier (default deep)" :type :string}
+         {:option "trials" :as "Random-search trials (default 6)" :type :int}
+         {:option "max-bootstrapped" :as "Max demos per predictor (default 4)" :type :int}
+         {:option "threshold" :as "Min metric score for a teacher trace to become a demo (default 1.0)" :type :string}
+         {:option "teacher-baseline" :as "Score the teacher zero-shot on val as a reference row (default on)" :type :with-flag :default true}]))
+
 (def yes-opt
   {:option "yes" :short "y"
    :as "Skip the interactive confirmation for destructive verbs (forget/sweep/prune)"
@@ -3711,6 +3734,113 @@
         (if (:json opts) (print-json! r) (println "Rejected" proposal-id)))
       (catch Exception e (exit-err! (ex-message e))))))
 
+(defn- program-number
+  "Parse a numeric --flag given as a string (the CLI has no float type).
+   Exits 1 on garbage rather than silently ignoring a budget the user set."
+  [opts k]
+  (when-let [s (some-> (get opts k) str str/trim not-empty)]
+    (or (parse-double s)
+        (exit-err! (str "--" (name k) " must be a number, got " (pr-str s))))))
+
+(defn- program-run-opts
+  "Shared eval/compile kwargs from CLI opts; absent flags stay absent so the
+   library defaults apply."
+  [opts]
+  (cond-> {}
+    (:metric opts)     (assoc :metric (:metric opts))
+    (:split opts)      (assoc :split (:split opts))
+    (:lm opts)         (assoc :lm (:lm opts))
+    (:tier opts)       (assoc :tier (:tier opts))
+    (:repeats opts)    (assoc :repeats (:repeats opts))
+    (:parallel opts)   (assoc :parallel (:parallel opts))
+    (:max-calls opts)  (assoc :max-calls (:max-calls opts))
+    (:max-tokens opts) (assoc :max-tokens (:max-tokens opts))
+    (program-number opts :budget-usd) (assoc :budget-usd (program-number opts :budget-usd))))
+
+(defn- fmt3 [x] (if (number? x) (format "%.3f" (double x)) (str x)))
+
+(defn cmd-programs-eval
+  "Evaluate a predictor on a dataset: by programs eval <predictor-id> <dataset>.
+
+   Runs through `-dispatch` like every command, so the evaluation's structured
+   events land in the app log with this process's pid — which is the reason
+   this exists instead of calling `eval-predictor` from a script."
+  [opts]
+  (install-working-dir! opts)
+  (install-predictor-params!)
+  (let [[pid dataset] (program-args opts 2 "Usage: by programs eval <predictor-id> <dataset> [--metric m] [--split val] [--repeats k]")
+        run-opts (program-run-opts opts)
+        metric   (or (:metric run-opts) "exact-match")]
+    (binding [*out* *err*]
+      (println (str "Evaluating " pid " on " dataset
+                    " (metric " metric ", split " (or (:split run-opts) "all")
+                    ", repeats " (or (:repeats run-opts) 1) ") …")))
+    (try
+      (let [{:keys [report-path summary]}
+            (apply agent/eval-predictor pid dataset metric
+                   (mapcat identity (dissoc run-opts :metric)))]
+        (if (:json opts)
+          (print-json! (assoc summary :report-path report-path))
+          (let [{:keys [score repeats repeat-scores stddev ci95 n attempted errors
+                        calls tokens cost stopped model least-stable worst]} summary]
+            (println (str "score " (fmt3 score)
+                          (when stddev (str " ± " (fmt3 stddev) " sd"))
+                          (when ci95 (str "  95% CI " (fmt3 (first ci95)) "–" (fmt3 (second ci95))))))
+            (when (> (or repeats 1) 1)
+              (println (str "passes " (str/join " " (map fmt3 repeat-scores)))))
+            (println (str "model " model " · " attempted "/" n " examples · " errors " errors · "
+                          calls " calls · " (+ (:in tokens 0) (:out tokens 0)) " tokens · $"
+                          (format "%.4f" (double (or cost 0.0)))
+                          (when stopped (str " · stopped: " (name stopped)))))
+            (when (seq least-stable)
+              (println (str "least stable: "
+                            (str/join ", " (for [{:keys [index spread]} least-stable]
+                                             (str "#" index " (spread " (fmt3 spread) ")"))))))
+            (when (seq worst)
+              (println (str "worst: "
+                            (str/join ", " (for [{:keys [index score error]} worst]
+                                             (str "#" index " " (fmt3 score) (when error " error")))))))
+            (println "report" report-path))))
+      (catch Exception e (exit-err! (ex-message e))))))
+
+(defn cmd-programs-compile
+  "Optimize a predictor's demos and write a proposal for review:
+   by programs compile <predictor-id> <dataset>. Never installs anything —
+   follow with `by programs accept` after reading REVIEW.md."
+  [opts]
+  (install-working-dir! opts)
+  (install-predictor-params!)
+  (let [[pid dataset] (program-args opts 2 "Usage: by programs compile <predictor-id> <dataset> [--metric m] [--tier light --teacher-tier deep] [--repeats k] [--max-calls n]")
+        compile-opts (cond-> (dissoc (program-run-opts opts) :split)
+                       (:optimizer opts)        (assoc :optimizer (:optimizer opts))
+                       (:teacher-lm opts)       (assoc :teacher-lm (:teacher-lm opts))
+                       (:teacher-tier opts)     (assoc :teacher-tier (:teacher-tier opts))
+                       (:trials opts)           (assoc :trials (:trials opts))
+                       (:max-bootstrapped opts) (assoc :max-bootstrapped (:max-bootstrapped opts))
+                       (program-number opts :threshold) (assoc :threshold (program-number opts :threshold))
+                       (false? (:teacher-baseline opts)) (assoc :teacher-baseline? false))]
+    (binding [*out* *err*]
+      (println (str "Compiling " pid " on " dataset " (" (or (:optimizer compile-opts) "bootstrap-random-search")
+                    ", metric " (or (:metric compile-opts) "exact-match")
+                    ", repeats " (or (:repeats compile-opts) 1) ") …")))
+    (try
+      (let [r (apply agent/compile-predictor pid dataset (mapcat identity compile-opts))]
+        (if (:json opts)
+          (print-json! r)
+          (let [{:keys [proposal-id best best-score zero-shot-score teacher-score demos no-op
+                        calls tokens cost stopped review]} r]
+            (println (str "proposal " proposal-id " · best "
+                          (if best (str best " " (fmt3 best-score)) "none (the zero-shot baseline did not finish)")
+                          " · zero-shot " (fmt3 zero-shot-score)
+                          (when teacher-score (str " · teacher " (fmt3 teacher-score)))))
+            (println (str (if no-op "no demos proposed" (str demos " demos proposed"))
+                          " · " calls " calls · " tokens " tokens · $" (format "%.4f" (double (or cost 0.0)))
+                          (when stopped (str " · stopped: " stopped))))
+            (println "review" review)
+            (println (str "next: by programs accept " pid " " proposal-id
+                          "  |  by programs reject " pid " " proposal-id)))))
+      (catch Exception e (exit-err! (ex-message e))))))
+
 (defn cmd-projects-prune
   "Drop registry entries whose project directory no longer exists.
 
@@ -3977,7 +4107,15 @@
                                 {:command     "reject"
                                  :description "Reject a proposal: by programs reject <predictor-id> <proposal-id>"
                                  :opts        [working-dir-opt json-opt]
-                                 :runs        cmd-programs-reject}]}
+                                 :runs        cmd-programs-reject}
+                                {:command     "eval"
+                                 :description "Evaluate a predictor on a dataset: by programs eval <predictor-id> <dataset>"
+                                 :opts        (into program-eval-opts [working-dir-opt json-opt])
+                                 :runs        cmd-programs-eval}
+                                {:command     "compile"
+                                 :description "Optimize demos into a reviewable proposal: by programs compile <predictor-id> <dataset>"
+                                 :opts        (into program-compile-opts [working-dir-opt json-opt])
+                                 :runs        cmd-programs-compile}]}
                  {:command     "env"
                   :description "Manage the .env files brainyard owns (project, user, per-agent)"
                   :subcommands [{:command     "list"
