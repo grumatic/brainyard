@@ -645,7 +645,30 @@ What it says, in order of weight:
 Implication for the design: for extraction-style predictors whose "right
 answer" is a labelling policy, instructions and labels have to agree before
 demos can do anything, and the evaluator needs variance handling (repeat k,
-report spread) before optimizers compare candidates. Note the live run's record carried recalled L3
+report spread) before optimizers compare candidates.
+
+### Repeat-k re-measurement (2026-09-15)
+
+`:repeats 3` on the same 12 val examples, Haiku via `claude-code`:
+
+| wording | pass means | mean | sd | 95% CI |
+|---|---|---|---|---|
+| new "top-level only" (source default) | 0.542 0.462 0.412 | 0.472 | 0.066 | 0.31–0.64 |
+| old "global, conceptual" (params override) | 0.585 0.338 0.511 | 0.478 | 0.127 | 0.16–0.79 |
+
+`compare-scores` new vs old: diff −0.006, margin needed 0.262 — **no
+detectable difference**. The earlier single-pass numbers (0.527 old, 0.559 and
+0.605 new) were favourable draws from this spread; the instruction change
+stands as a labelling-policy decision, not a measured improvement.
+
+Why the noise is this large: individual examples flip between 0 and 1 across
+passes (old wording, val examples 9 and 10: `[1.0 0.0 1.0]`). The `claude-code`
+provider adapter never sends a temperature, so every call samples at the CLI's
+default rather than 0. With pass-mean sd ≈ 0.07–0.13, three passes can only
+detect differences above ~0.26; a 0.05 effect would need on the order of 30
+passes, or a several-times-larger valset. Measurement on this predictor should
+use a provider that honours temperature 0 (anthropic / bedrock API) before
+more repeats or more examples are bought. Note the live run's record carried recalled L3
 memory verbatim in `:inputs` — the reason the log is off by default and why
 dataset builders must redact before anything becomes a demo.
 
