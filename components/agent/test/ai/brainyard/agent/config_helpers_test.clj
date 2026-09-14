@@ -873,6 +873,13 @@
           git-root (ai.brainyard.agent.core.config/find-git-root start)]
       (when git-root
         (let [deep-subdir (str git-root "/components/agent/src")]
-          (is (= git-root
-                 (ai.brainyard.agent.core.config/resolve-project-dir deep-subdir))
-              "subdir inside the repo should resolve to the repo root, not the subdir"))))))
+          ;; Same guard as the branch above: BY_PROJECT_DIR is rule 1 and
+          ;; outranks the git root, so a developer shell exporting it would
+          ;; otherwise fail this test for a reason unrelated to the fallback.
+          (if-let [override (System/getenv "BY_PROJECT_DIR")]
+            (is (= override
+                   (ai.brainyard.agent.core.config/resolve-project-dir deep-subdir))
+                "BY_PROJECT_DIR outranks the git root")
+            (is (= git-root
+                   (ai.brainyard.agent.core.config/resolve-project-dir deep-subdir))
+                "subdir inside the repo should resolve to the repo root, not the subdir")))))))
