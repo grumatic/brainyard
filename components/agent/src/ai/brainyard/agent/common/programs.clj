@@ -476,7 +476,10 @@
            (str "- teacher on train: " (get-in report [:pool :passed]) "/" (get-in report [:pool :attempted])
                 " passed the threshold · scores " (str/join " " (map #(format "%.2f" (double %)) ps)) "\n"))
          "- recommendation: "
-         (cond (:no-op? meta) (str "**no change** — zero-shot scored best; accepting writes empty params"
+         (cond (:no-op? meta) (str "**no demos** — zero-shot scored best; accepting installs "
+                                   (if (or (:instructions params) (seq (:field-descs params)))
+                                     "the instructions/field-desc override below, with no demos"
+                                     "empty params")
                                    (when (:candidate-file? meta) " (the losing candidate is in candidate.edn)"))
                :else (str "**" (some-> (:best report) name) "** at " (:best-score report)
                           (when-let [z (:zero-shot-score meta)] (str " (zero-shot " z ")"))))

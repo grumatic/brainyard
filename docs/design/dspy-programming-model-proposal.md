@@ -608,9 +608,44 @@ project lives in the agent. Revisit if optimizers grow large.
   "teacher runs once per example" and "zero-shot wins when demos don't help"
   are asserted, not assumed. No new reflection warnings.
 
-**Not yet:** a real compile on a hand-labelled `memory/graph-extract` gold set
-(RH2), `ensemble`, `knn-few-shot`, instruction proposal, skill-distill
-signatures. Note the live run's record carried recalled L3
+**Not yet:** `ensemble`, `knn-few-shot`, automated instruction proposal,
+skill-distill signatures.
+
+### First real results — memory/graph-extract (2026-09-15)
+
+Dataset `gold-v2`: 38 L2 episodes, labels drafted by Claude and trimmed by the
+maintainer (20 train / 12 val / 6 test). Student `claude-code/haiku`, teacher
+`claude-code/opus`, metric `graph-extract-f1`, threshold 0.7.
+
+| val run | score |
+|---|---|
+| Haiku, current instructions | 0.527 |
+| Haiku, proposed "top-level only" instructions | 0.559 |
+| Haiku, proposed instructions (compile's zero-shot row, same data) | **0.605** |
+| Opus, proposed instructions (teacher reference) | 0.427 |
+| best demo candidate (trial-4) | 0.581 |
+| labeled / bootstrap | 0.550 / 0.476 |
+
+What it says, in order of weight:
+
+1. **Run-to-run noise is ~0.05.** The same model, instructions and 12 val
+   examples scored 0.559 and 0.605 in two runs. Every instruction and demo
+   difference measured so far is inside that band, so none of them is a
+   finding yet. Twelve val examples cannot separate candidates this close;
+   repeated runs (mean of k) or a larger val set are needed before selection
+   means anything.
+2. **RH2 is inverted, not confirmed.** The teacher scores *below* the student
+   (0.427 vs ~0.58) and passed the threshold on 4/20 training examples. Opus
+   extracts more than these labels allow, and F1 punishes it. With labels this
+   sparse, a stronger model is a worse teacher: its demos pull Haiku toward
+   over-extraction (bootstrap 0.476 < zero-shot).
+3. **No demos helped.** Zero-shot won the compile; the proposal installs the
+   proposed instructions only.
+
+Implication for the design: for extraction-style predictors whose "right
+answer" is a labelling policy, instructions and labels have to agree before
+demos can do anything, and the evaluator needs variance handling (repeat k,
+report spread) before optimizers compare candidates. Note the live run's record carried recalled L3
 memory verbatim in `:inputs` — the reason the log is off by default and why
 dataset builders must redact before anything becomes a demo.
 

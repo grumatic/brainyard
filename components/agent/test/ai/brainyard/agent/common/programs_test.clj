@@ -198,6 +198,7 @@
     (let [r   (programs/compile-predictor "test/upper" "words" :optimizer "labeled-few-shot" :parallel 1)
           dir (.getParentFile (io/file (:review r)))]
       (is (:no-op r) "demos did not beat zero-shot (both 1.0; ties go to zero-shot)")
+      (is (str/includes? (slurp (:review r)) "accepting installs empty params"))
       (is (= {} (edn/read-string (slurp (io/file dir "params.edn")))))
       (is (.exists (io/file dir "candidate.edn")) "the losing candidate is kept for review")
       (is (= {:status :rejected} (programs/reject-proposal! "test/upper" (:proposal-id r))))
@@ -224,7 +225,12 @@
               (is (= "BASE-INSTR uppercase the word." (:instructions proposal))
                   "accepting the proposal keeps the instructions instead of dropping them")
               (is (seq (:demos proposal)))
-              (is (str/includes? (slurp (:review r)) "Instructions override"))))))
+              (is (str/includes? (slurp (:review r)) "Instructions override"))))
+          (testing "a no-demo winner over base instructions says it installs the instructions"
+            (with-upper-llm 0
+              (let [r (programs/compile-predictor "test/upper" "words" :trials 1 :max-bootstrapped 2 :parallel 1)]
+                (is (:no-op r))
+                (is (str/includes? (slurp (:review r)) "installs the instructions/field-desc override")))))))
       (finally (clj-llm/set-params-roots! [])))))
 
 (deftest max-calls-caps-a-compile
