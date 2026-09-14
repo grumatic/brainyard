@@ -21,9 +21,19 @@
 
 (deftest instruction-says-schema-is-not-the-reply
   (let [text (schema/json-schema-instruction {:type "object" :properties {:a {:type "string"}}})]
-    (is (str/includes? text "Never reply with the schema itself"))
+    (is (str/includes? text "never the schema"))
     (is (str/includes? text "JSON Schema:\n{\"type\":\"object\""))
     (is (str/includes? text "Output only the JSON object"))))
+
+(deftest instruction-lets-unused-fields-stay-empty
+  ;; CoAct replies carry tool-calls / code-blocks / answer and must leave the
+  ;; unused ones empty. "Replace every placeholder with a real value" drew the
+  ;; empty string written as TEXT, which the router took for a real answer.
+  (let [text (schema/json-schema-instruction {:type "object" :properties {:a {:type "string"}}})]
+    (is (str/includes? text "A field you have nothing for stays empty"))
+    (is (not (str/includes? text "every <placeholder> replaced")))
+    (testing "schema keywords are not banned — a field's value may itself be a schema"
+      (is (not (str/includes? text "never copy schema keywords"))))))
 
 (deftest skeleton-uses-placeholders-never-sample-values
   (is (= {"sentiment" "<one of: positive | negative | neutral>"

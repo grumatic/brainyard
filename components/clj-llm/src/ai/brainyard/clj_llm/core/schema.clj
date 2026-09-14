@@ -622,16 +622,26 @@
   "The prompt text that asks for a reply conforming to `json-schema`: the schema
    framed as a description of the reply, plus a skeleton of the reply itself.
    Shared by the DSPy system message and the non-native structured-output
-   fallback in `chat-completion`, so the two cannot drift."
+   fallback in `chat-completion`, so the two cannot drift.
+
+   Two things it deliberately does NOT say. It does not forbid schema keywords
+   in the reply: a field's VALUE may legitimately be a JSON Schema (an agent
+   passing `:output-schema` in its tool args), and a model told never to write
+   \"type\" or \"properties\" gives up on that call. And it does not demand that
+   every placeholder be filled: reply objects with one-of-several channels
+   (CoAct's tool-calls / code-blocks / answer) need the unused ones EMPTY, and
+   \"replace every placeholder with a real value\" drew the empty string written
+   as text — `\"\\\"\\\"\"` — which reads as a real answer."
   [json-schema]
   (str "## Response format\n"
-       "Reply with a single JSON object that IS your answer, filled with real values.\n"
-       "The JSON Schema below only describes that object's shape. Never reply with "
-       "the schema itself, and never copy schema keywords such as \"type\", "
-       "\"properties\", \"required\" or \"enum\" into your answer.\n\n"
+       "Reply with a single JSON object that IS your answer. The JSON Schema below "
+       "describes that object's shape: the top level of your reply is the object "
+       "itself, never the schema.\n\n"
        "JSON Schema:\n" (json/write-str json-schema) "\n\n"
-       "Your reply must look like this, with every <placeholder> replaced by a real value "
-       "of that type (numbers and booleans unquoted):\n"
+       "Shape of your reply — each <placeholder> stands for a value of that type "
+       "(numbers and booleans unquoted):\n"
        (json/write-str (skeleton json-schema json-schema 0)) "\n\n"
+       "A field you have nothing for stays empty: an empty string is written \"\" "
+       "(not \"\\\"\\\"\"), an empty array []. "
        "Output only the JSON object: no text before or after it, no markdown fences. "
        "Use exactly the field names shown."))

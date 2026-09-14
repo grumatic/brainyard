@@ -3322,10 +3322,19 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
 ;; ---- Predicates ----
 
 (defn coact-answer-non-blank?
-  "Condition-fn: true iff :answer is a non-blank string in st-memory."
+  "Condition-fn: true iff :answer is a non-blank string in st-memory.
+
+   An answer made of nothing but quote marks counts as blank. Asked to fill
+   every field of the reply object, a model with no answer yet sometimes writes
+   the empty string AS TEXT — `\"answer\": \"\\\"\\\"\"`, i.e. the two characters
+   `\"\"`. That is not blank to `str/blank?`, and because the router ranks
+   answer above code and tool, it silently discarded the tool call or code the
+   same reply carried and ended the turn with `\"\"` as the answer. No real
+   answer consists only of quotes, so treating it as blank lets the populated
+   channel run — or, with none populated, the none-channel path re-prompt."
   [{:keys [st-memory]}]
   (let [a (:answer @st-memory)]
-    (and (string? a) (not (str/blank? a)))))
+    (and (string? a) (not (re-matches #"[\s\"'`]*" a)))))
 
 (defn coact-has-code-blocks?
   "Condition-fn: true iff `:code-blocks` actually parses into at least

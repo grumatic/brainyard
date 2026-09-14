@@ -48,7 +48,7 @@
     (testing "system message includes JSON schema definition"
       (let [content (-> msgs first :content)]
         (is (str/includes? content "Reply with a single JSON object that IS your answer"))
-        (is (str/includes? content "Never reply with the schema itself"))
+        (is (str/includes? content "never the schema"))
         (is (str/includes? content "\"answer\""))
         (is (str/includes? content "{\"answer\":\"<string>\"}")
             "the reply skeleton, not the schema, shows the expected shape")))))

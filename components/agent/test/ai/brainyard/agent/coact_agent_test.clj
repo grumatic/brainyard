@@ -882,7 +882,12 @@
     (is (false? (rca/coact-answer-non-blank? {:st-memory (fresh-st-memory :answer "")})))
     (is (false? (rca/coact-answer-non-blank? {:st-memory (fresh-st-memory :answer "   ")})))
     (is (false? (rca/coact-answer-non-blank? {:st-memory (fresh-st-memory :answer nil)})))
-    (is (true? (rca/coact-answer-non-blank? {:st-memory (fresh-st-memory :answer "## done")}))))
+    (is (true? (rca/coact-answer-non-blank? {:st-memory (fresh-st-memory :answer "## done")})))
+    (testing "an empty string written as text is blank — it used to outrank the
+              reply's real tool call or code and end the turn with \"\" as the answer"
+      (is (false? (rca/coact-answer-non-blank? {:st-memory (fresh-st-memory :answer "\"\"")})))
+      (is (false? (rca/coact-answer-non-blank? {:st-memory (fresh-st-memory :answer " '' ")})))
+      (is (true? (rca/coact-answer-non-blank? {:st-memory (fresh-st-memory :answer "\"quoted\"")})))))
 
   (testing "has-code-blocks? predicate"
     (is (false? (rca/coact-has-code-blocks? {:st-memory (fresh-st-memory :code-blocks "")})))
