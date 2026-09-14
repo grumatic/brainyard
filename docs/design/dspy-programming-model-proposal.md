@@ -578,8 +578,39 @@ project lives in the agent. Revisit if optimizers grow large.
   exposed that exact-name F1 counted `native-image` (alias `GraalVM
   native-image`) as a miss, which is why entity matching is alias-aware.
 
-**Not yet:** skill-distill signatures, a `by programs` CLI, hand-labelled gold
-sets (§8), and Phase 3 optimizers. Note the live run's record carried recalled L3
+### As built (Phase 3 — compile, 2026-09-14)
+
+- `clj-llm/core/optimize.clj` — `labeled-few-shot`, `bootstrap-pool`,
+  `bootstrap-few-shot`, `bootstrap-random-search`. All return `{:params
+  :report}` and apply nothing. **Departure from the paper:** the teacher runs
+  once over the trainset into a pool and random-search candidates are subsets
+  of it (the paper's App. E.3 Optuna shape) — the teacher is the billed
+  `:deep` tier, and at temperature 0 per-trial re-runs mostly reproduce the
+  same traces. Candidates: zero-shot, labeled, bootstrap, N seeded shuffles;
+  only fully-evaluated candidates may win; ties keep the earlier candidate so
+  demos must strictly beat zero-shot. The whole search shares one budget.
+- `agent/common/programs.clj` — `compile-predictor` (train split bootstraps,
+  val selects, test untouched; student = `:lm`/`:tier`/sub-LM, teacher =
+  `:teacher-lm`/`:teacher-tier`/`:deep`, reported when it falls back to the
+  student) writes `proposals/<ts>/{params,report,status}.edn` + `REVIEW.md`,
+  whose demo section is `render-demos` output — the literal system-prompt
+  text. Blind optimizers (labeled, bootstrap) are scored against zero-shot on
+  val so every dossier answers the same question; `params.edn` is always the
+  winner, a losing candidate is kept as `candidate.edn`. Params are redacted
+  and validated before writing.
+- **Accept is not an LLM tool.** `program$compile` / `program$proposals` are;
+  `accept-proposal!` / `reject-proposal!` are reachable only from
+  `by programs accept|reject` (confirming, `--yes` to script). Accept backs up
+  the replaced params as `previous.edn`. `by programs list|proposals` for
+  inspection.
+- Tested offline against a fake LM that only answers correctly with ≥N demos
+  in its prompt — so "search picked the candidate that helps the student",
+  "teacher runs once per example" and "zero-shot wins when demos don't help"
+  are asserted, not assumed. No new reflection warnings.
+
+**Not yet:** a real compile on a hand-labelled `memory/graph-extract` gold set
+(RH2), `ensemble`, `knn-few-shot`, instruction proposal, skill-distill
+signatures. Note the live run's record carried recalled L3
 memory verbatim in `:inputs` — the reason the log is off by default and why
 dataset builders must redact before anything becomes a demo.
 

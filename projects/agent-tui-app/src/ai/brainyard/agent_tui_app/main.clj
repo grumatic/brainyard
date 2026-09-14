@@ -3634,6 +3634,83 @@
         (println "Cancelled."))
       (exit-err! (str "No such registered project: " slug)))))
 
+(defn- program-args
+  "[predictor-id proposal-id] from positional args, exiting with `usage` when
+   a required one is missing."
+  [opts n usage]
+  (let [args (vec (map str (:_arguments opts)))]
+    (when (< (count args) n) (exit-err! usage))
+    args))
+
+(defn cmd-programs-list
+  "Named predictors with where their params currently resolve from."
+  [opts]
+  (install-working-dir! opts)
+  (install-predictor-params!)
+  (let [rows (mapv (fn [p]
+                     (let [pid (:predictor/id p)]
+                       {:id pid
+                        :strategy (name (:strategy p))
+                        :params (some-> (:source (clj-llm/resolve-params p)) str)
+                        :datasets (agent/list-datasets pid)}))
+                   (clj-llm/list-predictors))]
+    (if (:json opts)
+      (print-json! rows)
+      (doseq [{:keys [id strategy params datasets]} rows]
+        (println (format "%-36s %-8s params: %-10s datasets: %s"
+                         id strategy (or params "none")
+                         (if (seq datasets) (str/join "," datasets) "-")))))))
+
+(defn cmd-programs-proposals
+  "Proposals for one predictor, newest first."
+  [opts]
+  (install-working-dir! opts)
+  (let [[pid] (program-args opts 1 "Usage: by programs proposals <predictor-id>")
+        rows  (try (agent/list-proposals pid)
+                   (catch Exception e (exit-err! (ex-message e))))]
+    (cond
+      (:json opts) (print-json! rows)
+      (empty? rows) (println "No proposals for" pid)
+      :else (doseq [{:keys [proposal-id status optimizer best best-score zero-shot-score review]} rows]
+              (println (format "%s  %-9s %-24s best=%s score=%s zero-shot=%s"
+                               proposal-id (name status) optimizer best best-score zero-shot-score))
+              (println "   " review)))))
+
+(defn cmd-programs-accept
+  "Install a reviewed proposal as the project params file. Confirms (unless
+   --yes) after pointing at REVIEW.md: accepting puts the proposal's demos into
+   every future system message of that predictor."
+  [opts]
+  (install-working-dir! opts)
+  (let [[pid proposal-id] (program-args opts 2 "Usage: by programs accept <predictor-id> <proposal-id>")
+        row (first (filter #(= proposal-id (:proposal-id %))
+                           (try (agent/list-proposals pid)
+                                (catch Exception e (exit-err! (ex-message e))))))]
+    (when-not row
+      (exit-err! (str "No proposal " proposal-id " for " pid " (see `by programs proposals " pid "`)")))
+    (if (or (:yes opts)
+            (confirm! (str "Review: " (:review row) "\n"
+                           "Install proposal " proposal-id " (" (:best row) ", score " (:best-score row)
+                           ") as " (.getPath ^java.io.File (agent/params-file-for pid)) "? [y/N] ")))
+      (try
+        (let [r (agent/accept-proposal! pid proposal-id)]
+          (if (:json opts)
+            (print-json! r)
+            (do (println "Installed:" (:params-file r))
+                (when (:previous r) (println "Previous params kept at:" (:previous r))))))
+        (catch Exception e (exit-err! (ex-message e))))
+      (println "Cancelled."))))
+
+(defn cmd-programs-reject
+  "Mark a proposal rejected (its files stay, for the record)."
+  [opts]
+  (install-working-dir! opts)
+  (let [[pid proposal-id] (program-args opts 2 "Usage: by programs reject <predictor-id> <proposal-id>")]
+    (try
+      (let [r (agent/reject-proposal! pid proposal-id)]
+        (if (:json opts) (print-json! r) (println "Rejected" proposal-id)))
+      (catch Exception e (exit-err! (ex-message e))))))
+
 (defn cmd-projects-prune
   "Drop registry entries whose project directory no longer exists.
 
@@ -3883,6 +3960,24 @@
                                  :description "Forget one registered project by slug (confirm or --yes)"
                                  :opts        [yes-opt json-opt]
                                  :runs        cmd-projects-remove}]}
+                 {:command     "programs"
+                  :description "Review and apply predictor optimization proposals (.brainyard/programs)"
+                  :subcommands [{:command     "list"
+                                 :description "Named predictors, their params source and datasets"
+                                 :opts        [working-dir-opt json-opt]
+                                 :runs        cmd-programs-list}
+                                {:command     "proposals"
+                                 :description "Proposals for a predictor: by programs proposals <predictor-id>"
+                                 :opts        [working-dir-opt json-opt]
+                                 :runs        cmd-programs-proposals}
+                                {:command     "accept"
+                                 :description "Install a reviewed proposal: by programs accept <predictor-id> <proposal-id>"
+                                 :opts        [yes-opt working-dir-opt json-opt]
+                                 :runs        cmd-programs-accept}
+                                {:command     "reject"
+                                 :description "Reject a proposal: by programs reject <predictor-id> <proposal-id>"
+                                 :opts        [working-dir-opt json-opt]
+                                 :runs        cmd-programs-reject}]}
                  {:command     "env"
                   :description "Manage the .env files brainyard owns (project, user, per-agent)"
                   :subcommands [{:command     "list"
@@ -4050,7 +4145,7 @@
 ;; Entry point
 ;; ============================================================================
 
-(def ^:private known-subcommands #{"run" "ask" "agents" "models" "config" "sessions" "projects" "scripts" "memory" "procedures" "events" "a2a" "env"})
+(def ^:private known-subcommands #{"run" "ask" "agents" "models" "config" "sessions" "projects" "programs" "scripts" "memory" "procedures" "events" "a2a" "env"})
 (def ^:private help-flags #{"--help" "-?" "-h"})
 ;; `-v` is taken by `run --verbose`, so the short version flag is capital `-V`.
 (def ^:private version-flags #{"--version" "-V"})

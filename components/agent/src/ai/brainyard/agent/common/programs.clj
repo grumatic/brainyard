@@ -397,6 +397,339 @@
                   [:summary     {:optional true} [:map {:desc "Score, cost, tokens, stopped, worst examples"}]]
                   [:error       {:optional true} [:string {:desc "Error message"}]]])
 
+;; ============================================================================
+;; Compile → proposal → review → accept
+;; ============================================================================
+;;
+;; `compile-predictor` never touches the params file a predictor resolves. It
+;; writes a PROPOSAL:
+;;
+;;   <id>/proposals/<ts>/params.edn   the candidate params record
+;;   <id>/proposals/<ts>/report.edn   optimizer report + leaderboard
+;;   <id>/proposals/<ts>/REVIEW.md    what a human reads: scores, cost, and the
+;;                                    exact system-prompt text the demos become
+;;   <id>/proposals/<ts>/status.edn   {:status :pending|:accepted|:rejected}
+;;
+;; Accepting is deliberately NOT an LLM tool (only `accept-proposal!` and the
+;; `by programs accept` CLI). A proposal's demos are text harvested from what a
+;; teacher read, destined for a system message; an agent that could accept its
+;; own proposal would be choosing its own future instructions.
+
+(def optimizers #{"labeled-few-shot" "bootstrap-few-shot" "bootstrap-random-search"})
+
+(defn proposals-dir ^File [pid]
+  (check-predictor-id! pid)
+  (io/file (programs-root) (str pid) "proposals"))
+
+(defn- proposal-dir ^File [pid proposal-id]
+  (check-name! :proposal proposal-id)
+  (io/file (proposals-dir pid) (str proposal-id)))
+
+(defn params-file-for
+  "The PROJECT params file for pid — where an accepted proposal lands."
+  ^File [pid]
+  (check-predictor-id! pid)
+  (io/file (programs-root) (str pid ".edn")))
+
+(defn- lm-label [lm]
+  (when lm (clj-llm/format-lm-label (:provider lm) (:model lm))))
+
+(defn- resolve-teacher-lm
+  "Explicit :teacher-lm > :teacher-tier > the :deep tier when configured > the
+   student's LM. Falling back to the student is allowed but REPORTED — a
+   teacher that is the student bootstraps only what the student already does."
+  [{:keys [teacher-lm teacher-tier]} student-lm]
+  (cond
+    (not (str/blank? (str teacher-lm))) (resolve-eval-lm {:lm teacher-lm})
+    (not (str/blank? (str teacher-tier))) (resolve-eval-lm {:tier teacher-tier})
+    :else (or (config/resolve-tier-lm :deep) student-lm)))
+
+(defn- clip-for-review [s n]
+  (let [s (str s)]
+    (if (> (count s) n) (str (subs s 0 n) "…") s)))
+
+(defn render-review
+  "The REVIEW.md dossier. The demos section is `render-demos` over the params'
+   signature — the literal text the proposal adds to the system message, not a
+   summary of it."
+  [p params report meta]
+  (let [sig    (clj-llm/with-instructions (:signature p) (or (:instructions params)
+                                                             (get-in p [:signature :instructions])))
+        demos  (:demos params)
+        rendered (clj-llm/render-demos sig
+                                       (mapv #(update % :inputs update-vals
+                                                      (fn [v] (if (string? v) (clip-for-review v 2000) v)))
+                                             demos)
+                                       {:chain-of-thought? (= :cot (:strategy p))})
+        board  (:leaderboard report)]
+    (str "# Proposal " (:proposal-id meta) " — " (:predictor/id p) "\n\n"
+         "- optimizer: `" (:optimizer meta) "`  metric: `" (:metric meta) "`\n"
+         "- dataset: `" (:dataset meta) "` (" (:dataset-hash meta) ", labels: " (name (or (:label-source meta) :unknown)) ")\n"
+         "- student: `" (:student meta) "`  teacher: `" (:teacher meta) "`"
+         (when (= (:student meta) (:teacher meta)) "  ⚠ teacher is the student")
+         "\n"
+         "- cost: $" (format "%.4f" (double (or (:cost report) 0.0)))
+         (when (:stopped report) (str "  stopped: `" (name (:stopped report)) "`"))
+         "\n"
+         "- recommendation: "
+         (cond (:no-op? meta) (str "**no change** — zero-shot scored best; accepting writes empty params"
+                                   (when (:candidate-file? meta) " (the losing candidate is in candidate.edn)"))
+               :else (str "**" (some-> (:best report) name) "** at " (:best-score report)
+                          (when-let [z (:zero-shot-score meta)] (str " (zero-shot " z ")"))))
+         "\n\n"
+         (when (seq board)
+           (str "## Leaderboard (valset)\n\n| candidate | score | examples | cost | stopped |\n|---|---|---|---|---|\n"
+                (str/join "\n" (for [{:keys [candidate score attempted n cost stopped]} board]
+                                 (format "| %s | %.3f | %d/%d | $%.4f | %s |"
+                                         (name candidate) (double score) attempted n (double cost)
+                                         (or (some-> stopped name) ""))))
+                "\n\n"))
+         (when (:instructions params)
+           (str "## Instructions override\n\n```\n" (:instructions params) "\n```\n\n"))
+         "## Demos — exact system-prompt text (" (count demos) ")\n\n"
+         (if rendered (str "```\n" rendered "\n```\n") "_none_\n")
+         "\n## Review checklist\n\n"
+         "- [ ] No secrets, personal data or instructions hidden in demo inputs\n"
+         "- [ ] Demo outputs are answers you would want imitated\n"
+         "- [ ] Score gain over zero-shot is worth the added prompt tokens\n\n"
+         "Accept: `by programs accept " (:predictor/id p) " " (:proposal-id meta) "`  "
+         "Reject: `by programs reject " (:predictor/id p) " " (:proposal-id meta) "`\n")))
+
+(defn compile-predictor
+  "Run an optimizer for `pid` over a dataset and write a proposal. Uses the
+   dataset's :train split to bootstrap and :val to select; :test is untouched.
+
+   opts: :optimizer (default bootstrap-random-search) :metric (exact-match)
+         :lm/:tier (student; default sub-LM) :teacher-lm/:teacher-tier
+         (default :deep tier) :budget-usd (2.0) :trials (6)
+         :max-bootstrapped (4) :parallel (2) :threshold (1.0) :seed (0)"
+  [pid dataset-name & {:keys [optimizer metric budget-usd trials max-bootstrapped
+                              parallel threshold seed]
+                       :or   {optimizer "bootstrap-random-search" metric "exact-match"
+                              budget-usd 2.0 trials 6 max-bootstrapped 4 parallel 2
+                              threshold 1.0 seed 0}
+                       :as   opts}]
+  (let [p        (or (clj-llm/get-predictor pid)
+                     (throw (ex-info (str "Unknown predictor " pid) {:predictor-id pid})))
+        _        (when-not (optimizers optimizer)
+                   (throw (ex-info (str "Unknown optimizer " (pr-str optimizer) " — "
+                                        (str/join ", " (sort optimizers))) {})))
+        mdef     (or (get metrics metric)
+                     (throw (ex-info (str "Unknown metric " (pr-str metric)) {})))
+        dataset  (load-dataset pid dataset-name)
+        {:keys [train val]} (clj-llm/split-examples (:examples dataset) {})
+        _        (when (empty? train)
+                   (throw (ex-info "Dataset train split is empty — add examples" {})))
+        _        (when (and (= optimizer "bootstrap-random-search") (empty? val))
+                   (throw (ex-info "Dataset val split is empty — random search needs a valset" {})))
+        m        ((:make mdef))
+        student-lm (resolve-eval-lm opts)
+        teacher-lm (resolve-teacher-lm opts student-lm)
+        student  (clj-llm/predictor-program p :lm-config student-lm)
+        teacher  (clj-llm/predictor-program p :lm-config teacher-lm)
+        common   {:max-bootstrapped max-bootstrapped :predictor-id pid :seed seed
+                  :threshold threshold :budget-usd budget-usd :parallel parallel
+                  :teacher-params {pid {}}}
+        {:keys [params report]}
+        (clj-llm/with-trace-context {:suppress-log? true}
+          (case optimizer
+            "labeled-few-shot"
+            (clj-llm/optimize-labeled-few-shot pid train {:k max-bootstrapped :seed seed})
+            "bootstrap-few-shot"
+            (clj-llm/optimize-bootstrap-few-shot teacher train m common)
+            "bootstrap-random-search"
+            (clj-llm/optimize-bootstrap-random-search teacher student train val m
+                                                      (assoc common :trials trials))))
+        ;; Search optimizers select on val themselves; the others propose
+        ;; blind, so score their proposal against zero-shot here — every
+        ;; REVIEW.md then answers the same question: did it beat no demos?
+        report   (if (or (:leaderboard report) (empty? val))
+                   report
+                   (clj-llm/with-trace-context {:suppress-log? true}
+                     (let [remaining (max 0.0 (- budget-usd (or (:cost report) 0.0)))
+                           z  (clj-llm/with-params {pid {}}
+                                (clj-llm/evaluate student val m :parallel parallel :budget-usd remaining))
+                           c  (clj-llm/with-params {pid (get params pid {})}
+                                (clj-llm/evaluate student val m :parallel parallel
+                                                  :budget-usd (max 0.0 (- remaining (:cost z)))))
+                           row (fn [cname r] {:candidate cname :score (:score r) :attempted (:attempted r)
+                                              :n (:n r) :cost (:cost r) :stopped (:stopped r)})
+                           ok? #(and (nil? (:stopped %)) (= (:attempted %) (:n %)))
+                           win (if (and (ok? c) (ok? z) (> (:score c) (:score z))) c z)]
+                       (assoc report
+                              :leaderboard [(row :zero-shot z) (row :proposal c)]
+                              :best (if (identical? win c) :proposal :zero-shot)
+                              :best-score (:score win)
+                              :valset (clj-llm/dataset-hash val)
+                              :cost (+ (or (:cost report) 0.0) (:cost z) (:cost c))))))
+        ;; params.edn is always the WINNER, so accepting does what the
+        ;; leaderboard says. A blind candidate that lost to zero-shot is kept
+        ;; as candidate.edn for the reviewer, never as what accept installs.
+        losing-candidate (when (and (= :zero-shot (:best report)) (seq (get params pid)))
+                           (get params pid))
+        params   (if (= :zero-shot (:best report)) {pid {}} params)
+        ts       (System/currentTimeMillis)
+        pid-params (-> (get params pid {})
+                       traj-export/redact-example
+                       (cond-> (seq (get params pid))
+                         (assoc :version ts
+                                :compiled-by {:optimizer optimizer :metric metric
+                                              :dataset dataset-name
+                                              :dataset-hash (clj-llm/dataset-hash (:examples dataset))
+                                              :valset-hash (:valset report)
+                                              :score (:best-score report)
+                                              :lm (lm-label student-lm)
+                                              :teacher (lm-label teacher-lm)})))
+        _        (let [{:keys [valid? errors]} (clj-llm/validate-params pid-params)]
+                   (when-not valid?
+                     (throw (ex-info "Optimizer produced invalid params" {:errors errors}))))
+        zero     (some #(when (= :zero-shot (:candidate %)) (:score %)) (:leaderboard report))
+        meta     {:proposal-id (str ts) :optimizer optimizer :metric metric
+                  :dataset dataset-name :dataset-hash (clj-llm/dataset-hash (:examples dataset))
+                  :label-source (:label-source dataset)
+                  :student (lm-label student-lm) :teacher (lm-label teacher-lm)
+                  :zero-shot-score zero
+                  :no-op? (empty? (:demos pid-params))
+                  :candidate-file? (boolean losing-candidate)}
+        dir      (proposal-dir pid (str ts))
+        other    (dissoc params pid)]
+    (when (seq other)
+      ;; A single-predictor program only; params for other ids would be
+      ;; silently dropped by a one-file accept.
+      (mulog/warn ::extra-predictor-params :predictor-id pid :others (vec (keys other))))
+    (.mkdirs dir)
+    (spit (io/file dir "params.edn") (pr-str pid-params))
+    (when losing-candidate
+      (spit (io/file dir "candidate.edn") (pr-str (traj-export/redact-example losing-candidate))))
+    (spit (io/file dir "report.edn") (pr-str (assoc report :meta meta)))
+    (spit (io/file dir "status.edn") (pr-str {:status :pending :ts ts}))
+    (spit (io/file dir "REVIEW.md") (render-review p pid-params report meta))
+    (mulog/info ::proposal-written :predictor-id pid :proposal ts :optimizer optimizer
+                :best (:best report) :score (:best-score report) :cost (:cost report))
+    {:proposal-id (str ts)
+     :review (.getPath (io/file dir "REVIEW.md"))
+     :best (some-> (:best report) name)
+     :best-score (:best-score report)
+     :zero-shot-score zero
+     :demos (count (:demos pid-params))
+     :no-op (:no-op? meta)
+     :cost (:cost report)
+     :stopped (some-> (:stopped report) name)}))
+
+(defn list-proposals [pid]
+  (let [dir (proposals-dir pid)]
+    (if-not (.isDirectory dir)
+      []
+      (->> (.listFiles dir)
+           (filter #(.isDirectory ^File %))
+           (keep (fn [^File d]
+                   (try
+                     (let [status (edn/read-string (slurp (io/file d "status.edn")))
+                           meta   (:meta (edn/read-string (slurp (io/file d "report.edn"))))
+                           report (edn/read-string (slurp (io/file d "report.edn")))]
+                       {:proposal-id (.getName d)
+                        :status (:status status)
+                        :optimizer (:optimizer meta)
+                        :best (some-> (:best report) name)
+                        :best-score (:best-score report)
+                        :zero-shot-score (:zero-shot-score meta)
+                        :review (.getPath (io/file d "REVIEW.md"))})
+                     (catch Exception _ nil))))
+           (sort-by :proposal-id #(compare %2 %1))
+           vec))))
+
+(defn accept-proposal!
+  "Install a pending proposal as the project params file for pid. The params
+   file it replaces (if any) is kept beside the proposal as previous.edn, so an
+   accept is one copy away from undone. Returns {:params-file :previous}."
+  [pid proposal-id]
+  (let [dir    (proposal-dir pid proposal-id)
+        status (try (edn/read-string (slurp (io/file dir "status.edn")))
+                    (catch Exception _
+                      (throw (ex-info (str "No proposal " proposal-id " for " pid) {}))))
+        _      (when-not (= :pending (:status status))
+                 (throw (ex-info (str "Proposal " proposal-id " is " (name (:status status))) {})))
+        params (edn/read-string (slurp (io/file dir "params.edn")))
+        _      (let [{:keys [valid? errors]} (clj-llm/validate-params params)]
+                 (when-not valid? (throw (ex-info "Proposal params are invalid" {:errors errors}))))
+        target (params-file-for pid)
+        prev   (when (.isFile target)
+                 (let [f (io/file dir "previous.edn")]
+                   (io/copy target f)
+                   (.getPath f)))]
+    (.mkdirs (.getParentFile target))
+    (spit target (pr-str params))
+    (spit (io/file dir "status.edn") (pr-str (assoc status :status :accepted
+                                                    :decided (System/currentTimeMillis))))
+    (mulog/info ::proposal-accepted :predictor-id pid :proposal proposal-id)
+    {:params-file (.getPath target) :previous prev}))
+
+(defn reject-proposal!
+  [pid proposal-id]
+  (let [f (io/file (proposal-dir pid proposal-id) "status.edn")]
+    (when-not (.isFile f)
+      (throw (ex-info (str "No proposal " proposal-id " for " pid) {})))
+    (spit f (pr-str (assoc (edn/read-string (slurp f))
+                           :status :rejected :decided (System/currentTimeMillis))))
+    {:status :rejected}))
+
+(defcommand program$compile
+  "Optimize a predictor's demos over a dataset and write a PROPOSAL for human review (never applied)."
+  (fn [& {:keys [predictor-id dataset optimizer metric budget-usd trials max-bootstrapped
+                 parallel lm tier teacher-lm teacher-tier]}]
+    (try
+      (apply compile-predictor predictor-id dataset
+             (mapcat identity
+                     (cond-> {}
+                       (non-blank optimizer)    (assoc :optimizer optimizer)
+                       (non-blank metric)       (assoc :metric metric)
+                       budget-usd               (assoc :budget-usd budget-usd)
+                       trials                   (assoc :trials trials)
+                       max-bootstrapped         (assoc :max-bootstrapped max-bootstrapped)
+                       parallel                 (assoc :parallel parallel)
+                       (non-blank lm)           (assoc :lm lm)
+                       (non-blank tier)         (assoc :tier tier)
+                       (non-blank teacher-lm)   (assoc :teacher-lm teacher-lm)
+                       (non-blank teacher-tier) (assoc :teacher-tier teacher-tier))))
+      (catch Exception e
+        {:error (ex-message e)})))
+  :input-schema  [:map
+                  [:predictor-id     [:string {:desc "Predictor id"}]]
+                  [:dataset          [:string {:desc "Dataset name (train split bootstraps, val selects)"}]]
+                  [:optimizer        {:optional true} [:string {:desc "bootstrap-random-search (default) | bootstrap-few-shot | labeled-few-shot"}]]
+                  [:metric           {:optional true} [:string {:desc "Metric name; default exact-match"}]]
+                  [:budget-usd       {:optional true} [:double {:desc "Spend cap in USD (default 2.0)"}]]
+                  [:trials           {:optional true} [:int {:desc "Random-search trials (default 6)"}]]
+                  [:max-bootstrapped {:optional true} [:int {:desc "Max demos per predictor (default 4)"}]]
+                  [:parallel         {:optional true} [:int {:desc "Eval worker threads (default 2)"}]]
+                  [:lm               {:optional true} [:string {:desc "Student provider/model (default sub-LM)"}]]
+                  [:tier             {:optional true} [:string {:desc "Student tier"}]]
+                  [:teacher-lm       {:optional true} [:string {:desc "Teacher provider/model"}]]
+                  [:teacher-tier     {:optional true} [:string {:desc "Teacher tier (default deep)"}]]]
+  :output-schema [:map
+                  [:proposal-id     {:optional true} [:string {:desc "Proposal id"}]]
+                  [:review          {:optional true} [:string {:desc "REVIEW.md path for the human"}]]
+                  [:best            {:optional true} [:string {:desc "Winning candidate"}]]
+                  [:best-score      {:optional true} [:double {:desc "Its valset score"}]]
+                  [:zero-shot-score {:optional true} [:double {:desc "Baseline valset score"}]]
+                  [:demos           {:optional true} [:int {:desc "Demos proposed"}]]
+                  [:no-op           {:optional true} [:boolean {:desc "Zero-shot won; nothing to apply"}]]
+                  [:cost            {:optional true} [:double {:desc "USD spent"}]]
+                  [:stopped         {:optional true} [:string {:desc "Why the search stopped early"}]]
+                  [:error           {:optional true} [:string {:desc "Error message"}]]])
+
+(defcommand program$proposals
+  "List a predictor's optimization proposals and their review status."
+  (fn [& {:keys [predictor-id]}]
+    (try {:proposals (list-proposals predictor-id)}
+         (catch Exception e {:error (ex-message e)})))
+  :input-schema  [:map [:predictor-id [:string {:desc "Predictor id"}]]]
+  :output-schema [:map
+                  [:proposals {:optional true} [:vector {:desc "{:proposal-id :status :optimizer :best :best-score :review}"} :any]]
+                  [:error     {:optional true} [:string {:desc "Error message"}]]])
+
 (def program-commands
-  "Predictor dataset/eval commands, bound into the common roster."
-  [#'program$list #'program$build-dataset #'program$eval])
+  "Predictor dataset/eval/compile commands, bound into the common roster.
+   Accept/reject are deliberately absent — see the compile section."
+  [#'program$list #'program$build-dataset #'program$eval
+   #'program$compile #'program$proposals])

@@ -24,6 +24,7 @@
             [ai.brainyard.clj-llm.core.chain-of-thought :as cot-impl]
             [ai.brainyard.clj-llm.core.predictor :as predictor]
             [ai.brainyard.clj-llm.core.evaluate :as evaluate]
+            [ai.brainyard.clj-llm.core.optimize :as optimize]
             [ai.brainyard.clj-llm.core.usage :as usage]
             [ai.brainyard.clj-llm.core.oauth :as oauth]))
 
@@ -244,6 +245,21 @@
 (def metric-set-f1 "Metric: F1 over a collection field, items keyed by key-fn." evaluate/set-f1)
 (def metric-weighted "Metric combinator: weighted mean of [[metric weight] …]." evaluate/weighted)
 (def metric-all-of "Metric combinator: every metric passes." evaluate/all-of)
+
+;; ── Optimizers (core.optimize) — return proposals, apply nothing ────────────
+
+(def optimize-labeled-few-shot
+  "(pid trainset {:k :seed}) → {:params {pid {:demos …}} :report …}; no LM calls."
+  optimize/labeled-few-shot)
+(def optimize-bootstrap-pool
+  "(teacher trainset metric opts) → {:pool {pid [demo…]} :report …}."
+  optimize/bootstrap-pool)
+(def optimize-bootstrap-few-shot
+  "(teacher trainset metric opts) → {:params … :report …}; demos from passing teacher traces."
+  optimize/bootstrap-few-shot)
+(def optimize-bootstrap-random-search
+  "(teacher student trainset valset metric opts) → best candidate {:params … :report {:leaderboard …}}."
+  optimize/bootstrap-random-search)
 
 (def render-demos
   "Render demos as the system-message examples part (nil when none)."

@@ -619,6 +619,14 @@
                 record-answer)
 
 ;; ============================================================================
+;; Predictor programs — datasets, eval, compile proposals, human accept
+;; ============================================================================
+
+(export-symbols ai.brainyard.agent.common.programs
+                build-dataset list-datasets eval-predictor compile-predictor
+                list-proposals accept-proposal! reject-proposal! params-file-for)
+
+;; ============================================================================
 ;; Task Management — direct exports for low-level access
 ;; ============================================================================
 

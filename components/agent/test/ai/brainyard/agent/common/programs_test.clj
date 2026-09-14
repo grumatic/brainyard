@@ -124,3 +124,81 @@
     (testing "nothing expected, nothing found"
       (is (== 1.0 (m (clj-llm/example {} {:entities [] :relations []})
                      {:outputs {:entities [] :relations []}} []))))))
+
+;; ---------------------------------------------------------------------------
+;; compile → proposal → accept / reject
+;; ---------------------------------------------------------------------------
+
+(def upper-sig (clj-llm/compile-signature "Upper" "Uppercase the word." {:word :string} {:out :string}))
+
+(defn- fake-upper-llm
+  "Teacher always right; student right only with >= `need` demos in its prompt."
+  [need]
+  {:chat (fn [lm messages & _]
+           {::llm/usage {:cost {:total-cost 0.001}}
+            :lm (:model lm)
+            :sys (-> messages first :content)
+            :word (second (re-find #"word: (\S+)" (-> messages second :content)))})
+   :extract (fn [{:keys [lm sys word]} _]
+              (let [right? (or (= lm "teacher") (>= (count (re-seq #"Example \d+" sys)) need))]
+                (json/write-str {:out (if right? (str/upper-case word) "??")})))})
+
+(defn- write-upper-dataset! []
+  (p/register! (p/predictor {:id "test/upper" :signature upper-sig}))
+  (let [f (programs/dataset-file "test/upper" "words")]
+    (.mkdirs (.getParentFile f))
+    (spit f (pr-str {:v 1 :predictor-id "test/upper" :label-source :hand
+                     :examples (mapv #(clj-llm/example {:word (str "w" %)} {:out (str "W" %)}) (range 30))}))))
+
+(defmacro ^:private with-upper-llm [need & body]
+  `(let [f# (fake-upper-llm ~need)]
+     (with-redefs [llm/chat-completion (:chat f#)
+                   llm/extract-content (:extract f#)
+                   config/resolve-sub-lm (constantly {:provider :openai :model "student" :message-format :openai})
+                   config/resolve-tier-lm (fn [& args#]
+                                            (when (= :deep (last args#))
+                                              {:provider :openai :model "teacher" :message-format :openai}))]
+       ~@body)))
+
+(deftest compile-writes-a-reviewable-proposal-and-applies-nothing
+  (write-upper-dataset!)
+  (with-upper-llm 2
+    (let [r (programs/compile-predictor "test/upper" "words" :trials 2 :max-bootstrapped 3 :parallel 1)]
+      (is (nil? (:error r)))
+      (is (= 1.0 (:best-score r)))
+      (is (= 0.0 (:zero-shot-score r)))
+      (is (pos? (:demos r)))
+      (is (not (.exists (programs/params-file-for "test/upper"))) "compile never installs params")
+      (let [review (slurp (:review r))]
+        (is (str/includes? review "Here are examples of inputs"))
+        (is (str/includes? review "teacher: `openai/teacher`"))
+        (is (str/includes? review "| zero-shot | 0.000"))
+        (is (str/includes? review "by programs accept test/upper")))
+      (is (= [:pending] (mapv :status (programs/list-proposals "test/upper"))))
+      (testing "accept installs the winner"
+        (let [{:keys [params-file previous]} (programs/accept-proposal! "test/upper" (:proposal-id r))
+              installed (edn/read-string (slurp params-file))]
+          (is (nil? previous))
+          (is (= params-file (.getPath (programs/params-file-for "test/upper"))))
+          (is (= "bootstrap-random-search" (get-in installed [:compiled-by :optimizer])))
+          (is (= "openai/student" (get-in installed [:compiled-by :lm])))
+          (is (seq (:demos installed)))
+          (is (= [:accepted] (mapv :status (programs/list-proposals "test/upper"))))
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"is accepted"
+                                (programs/accept-proposal! "test/upper" (:proposal-id r)))))))))
+
+(deftest a-blind-proposal-that-loses-to-zero-shot-installs-nothing
+  (write-upper-dataset!)
+  (with-upper-llm 0
+    (let [r   (programs/compile-predictor "test/upper" "words" :optimizer "labeled-few-shot" :parallel 1)
+          dir (.getParentFile (io/file (:review r)))]
+      (is (:no-op r) "demos did not beat zero-shot (both 1.0; ties go to zero-shot)")
+      (is (= {} (edn/read-string (slurp (io/file dir "params.edn")))))
+      (is (.exists (io/file dir "candidate.edn")) "the losing candidate is kept for review")
+      (is (= {:status :rejected} (programs/reject-proposal! "test/upper" (:proposal-id r))))
+      (is (= [:rejected] (mapv :status (programs/list-proposals "test/upper")))))))
+
+(deftest accept-and-reject-are-not-llm-tools
+  (let [names (set (map #(-> % meta :name str) programs/program-commands))]
+    (is (contains? names "program$compile"))
+    (is (not-any? #(re-find #"accept|reject" %) names))))
