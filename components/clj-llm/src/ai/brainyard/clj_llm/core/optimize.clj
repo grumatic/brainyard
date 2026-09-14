@@ -207,8 +207,10 @@
      :trial-N        a seeded shuffle of the pool, 1..max-bootstrapped demos
 
    opts: :trials (default 6) :max-bootstrapped (4) :predictor-id :seed (0)
-         :threshold :teacher-params :parallel, and :budget-usd / :max-calls
-         (both shared by the pool and every row).
+         :threshold :teacher-params :parallel, :budget-usd / :max-calls
+         (both shared by the pool and every row), and :base-params
+         {pid params} laid under every row (e.g. instructions being compiled
+         against).
 
    Returns {:params best-candidate-params
             :report {:best … :teacher-score …
@@ -217,7 +219,8 @@
    Ties keep the EARLIER candidate — zero-shot first — so a proposal that adds
    prompt tokens has to earn a strictly better score than one that adds none."
   [teacher program trainset valset metric
-   {:keys [trials max-bootstrapped predictor-id seed budget-usd max-calls teacher-baseline?]
+   {:keys [trials max-bootstrapped predictor-id seed budget-usd max-calls teacher-baseline?
+           base-params]
     :or   {trials 6 max-bootstrapped 4 seed 0 teacher-baseline? true}
     :as   opts}]
   (let [{:keys [pool report]} (bootstrap-pool teacher trainset metric
@@ -230,22 +233,30 @@
         exhausted? #(or (and budget-usd (<= (remaining) 0.0))
                         (and max-calls (<= (remaining-calls) 0)))
         zero      (into {} (map #(vector % {})) pids)
-        candidates
-        (concat
-         [[:zero-shot zero]]
-         (when teacher-baseline?
-           [[:teacher zero :reference]])
-         (when predictor-id
-           [[:labeled (:params (labeled-few-shot predictor-id trainset {:k max-bootstrapped :seed seed}))]])
-         (when (seq pool)
-           (cons [:bootstrap (pool->params pool max-bootstrapped)]
-                 (for [t (range trials)]
-                   (let [rng (java.util.Random. (long (+ seed t 1)))
-                         k   (inc (.nextInt rng (int max-bootstrapped)))]
-                     [(keyword (str "trial-" t))
-                      (into {} (map (fn [[pid demos]]
-                                      [pid {:demos (vec (take k (shuffle-seeded demos (+ seed t 1))))}]))
-                            pool)])))))
+        ;; :base-params {pid params} is laid UNDER every row (candidate keys
+        ;; win). Rows replace a params record whole, so without this a
+        ;; zero-shot row would silently drop instructions the caller is
+        ;; compiling against, and demos would be selected for a prompt that
+        ;; will never ship.
+        with-base (fn [params]
+                    (into {} (map (fn [pid] [pid (merge {} (get base-params pid) (get params pid))]))
+                          (into (set (keys params)) (keys base-params))))
+        trial-rows (when (seq pool)
+                     (for [t (range trials)]
+                       (let [rng (java.util.Random. (long (+ seed t 1)))
+                             k   (inc (.nextInt rng (int max-bootstrapped)))]
+                         [(keyword (str "trial-" t))
+                          (into {} (map (fn [[pid demos]]
+                                          [pid {:demos (vec (take k (shuffle-seeded demos (+ seed t 1))))}]))
+                                pool)])))
+        raw-rows   (concat [[:zero-shot zero]]
+                           (when teacher-baseline? [[:teacher zero :reference]])
+                           (when predictor-id
+                             [[:labeled (:params (labeled-few-shot predictor-id trainset
+                                                                   {:k max-bootstrapped :seed seed}))]])
+                           (when (seq pool) [[:bootstrap (pool->params pool max-bootstrapped)]])
+                           trial-rows)
+        candidates (map (fn [[cname params reference]] [cname (with-base params) reference]) raw-rows)
         leaderboard
         (loop [[[cname params reference] & more] candidates acc []]
           (if (or (nil? cname) (exhausted?))

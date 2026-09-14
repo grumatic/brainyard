@@ -203,6 +203,30 @@
       (is (= {:status :rejected} (programs/reject-proposal! "test/upper" (:proposal-id r))))
       (is (= [:rejected] (mapv :status (programs/list-proposals "test/upper")))))))
 
+(deftest compile-keeps-the-instructions-it-compiles-against
+  (write-upper-dataset!)
+  (let [pf (programs/params-file-for "test/upper")
+        systems (atom [])]
+    (.mkdirs (.getParentFile pf))
+    (spit pf (pr-str {:instructions "BASE-INSTR uppercase the word."}))
+    (clj-llm/set-params-roots! [(.getPath (programs/programs-root))])
+    (try
+      (with-upper-llm 2
+        (let [f (fake-upper-llm 2)]
+          (with-redefs [llm/chat-completion (fn [lm messages & more]
+                                              (swap! systems conj (-> messages first :content))
+                                              (apply (:chat f) lm messages more))]
+            (let [r (programs/compile-predictor "test/upper" "words" :trials 1 :max-bootstrapped 2 :parallel 1)
+                  proposal (edn/read-string (slurp (io/file (.getParentFile (io/file (:review r))) "params.edn")))]
+              (is (seq @systems))
+              (is (every? #(str/includes? % "BASE-INSTR") @systems)
+                  "teacher, zero-shot and every candidate ran with the base instructions")
+              (is (= "BASE-INSTR uppercase the word." (:instructions proposal))
+                  "accepting the proposal keeps the instructions instead of dropping them")
+              (is (seq (:demos proposal)))
+              (is (str/includes? (slurp (:review r)) "Instructions override"))))))
+      (finally (clj-llm/set-params-roots! [])))))
+
 (deftest max-calls-caps-a-compile
   (write-upper-dataset!)
   (with-upper-llm 2

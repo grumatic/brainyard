@@ -540,10 +540,17 @@
         teacher-lm (resolve-teacher-lm opts student-lm)
         student  (clj-llm/predictor-program p :lm-config student-lm)
         teacher  (clj-llm/predictor-program p :lm-config teacher-lm)
+        ;; Demos are compiled FOR a prompt. The instructions/field descs the
+        ;; predictor currently resolves are laid under every candidate, the
+        ;; teacher and the proposal — otherwise a params record whose
+        ;; :instructions is being tried would be silently replaced by each
+        ;; candidate's demos-only record, and accepting would drop it.
+        base     (select-keys (:params (clj-llm/resolve-params p)) [:instructions :field-descs])
         common   {:max-bootstrapped max-bootstrapped :predictor-id pid :seed seed
                   :threshold threshold :budget-usd budget-usd :parallel parallel
                   :max-calls max-calls :teacher-baseline? teacher-baseline?
-                  :teacher-params {pid {}}}
+                  :teacher-params {pid base}
+                  :base-params {pid base}}
         {:keys [params report]}
         (clj-llm/with-trace-context {:suppress-log? true}
           (case optimizer
@@ -554,6 +561,7 @@
             "bootstrap-random-search"
             (clj-llm/optimize-bootstrap-random-search teacher student train val m
                                                       (assoc common :trials trials))))
+        params   (update params pid #(merge {} base %))
         ;; Search optimizers select on val themselves; the others propose
         ;; blind, so score their proposal against zero-shot here — every
         ;; REVIEW.md then answers the same question: did it beat no demos?
@@ -570,9 +578,9 @@
                                         (swap! spent + (:cost r))
                                         (swap! calls + (:calls r))
                                         r))
-                           z   (eval-row student {pid {}})
-                           t   (when teacher-baseline? (eval-row teacher {pid {}}))
-                           c   (eval-row student {pid (get params pid {})})
+                           z   (eval-row student {pid base})
+                           t   (when teacher-baseline? (eval-row teacher {pid base}))
+                           c   (eval-row student {pid (get params pid base)})
                            row (fn [cname r] {:candidate cname :score (:score r) :attempted (:attempted r)
                                               :n (:n r) :cost (:cost r) :calls (:calls r) :stopped (:stopped r)})
                            ok? #(and (nil? (:stopped %)) (= (:attempted %) (:n %)))
@@ -590,9 +598,9 @@
         ;; params.edn is always the WINNER, so accepting does what the
         ;; leaderboard says. A blind candidate that lost to zero-shot is kept
         ;; as candidate.edn for the reviewer, never as what accept installs.
-        losing-candidate (when (and (= :zero-shot (:best report)) (seq (get params pid)))
+        losing-candidate (when (and (= :zero-shot (:best report)) (seq (get-in params [pid :demos])))
                            (get params pid))
-        params   (if (= :zero-shot (:best report)) {pid {}} params)
+        params   (if (= :zero-shot (:best report)) {pid base} params)
         ts       (System/currentTimeMillis)
         pid-params (-> (get params pid {})
                        traj-export/redact-example
