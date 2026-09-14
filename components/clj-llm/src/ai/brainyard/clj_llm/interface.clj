@@ -23,6 +23,7 @@
             [ai.brainyard.clj-llm.core.predict :as predict-impl]
             [ai.brainyard.clj-llm.core.chain-of-thought :as cot-impl]
             [ai.brainyard.clj-llm.core.predictor :as predictor]
+            [ai.brainyard.clj-llm.core.evaluate :as evaluate]
             [ai.brainyard.clj-llm.core.usage :as usage]
             [ai.brainyard.clj-llm.core.oauth :as oauth]))
 
@@ -164,6 +165,10 @@
   "Build (without registering) a predictor value from a spec — see defpredictor."
   predictor/predictor)
 
+(def valid-predictor-id?
+  "True when a string can be a predictor id (and so a params-file path)."
+  predictor/valid-id?)
+
 (def run-predictor
   "Run a predictor: resolve params (with-params > params roots > defaults),
    apply them to the signature, call its strategy. Same kwargs as `predict`
@@ -220,6 +225,25 @@
 (def with-field-descs "Signature with {field desc} overrides." predictor/with-field-descs)
 (def prepend-output "Signature with a new first output field." predictor/prepend-output)
 (def append-input "Signature with a new last input field." predictor/append-input)
+
+;; ── Evaluation (core.evaluate) ─────────────────────────────────────────────
+
+(def example "Build an example {:inputs :labels? :meta?}." evaluate/example)
+(def split-examples
+  "Deterministic {:train :val :test} split by content hash; ratios map optional."
+  evaluate/split)
+(def dataset-hash "Order-insensitive short content hash of examples." evaluate/dataset-hash)
+(def predictor-program "Program fn running a predictor with fixed kwargs." evaluate/predictor-program)
+(def evaluate
+  "Run a program over examples with a metric. Opts :parallel :budget-usd
+   :max-transient-retries :retry-delay-ms. Transient errors retry, malformed
+   score 0, fatal stops the run."
+  evaluate/evaluate)
+(def metric-exact-match "Metric: labelled fields equal outputs (normalized)." evaluate/exact-match)
+(def metric-schema-valid "Metric: outputs were schema-valid." evaluate/schema-valid)
+(def metric-set-f1 "Metric: F1 over a collection field, items keyed by key-fn." evaluate/set-f1)
+(def metric-weighted "Metric combinator: weighted mean of [[metric weight] …]." evaluate/weighted)
+(def metric-all-of "Metric combinator: every metric passes." evaluate/all-of)
 
 (def render-demos
   "Render demos as the system-message examples part (nil when none)."

@@ -126,7 +126,11 @@
   [entry]
   (let [agent (or (get-in entry [:context :agent]) proto/*current-agent*)
         sid   (when agent (proto/session-id agent))]
-    (when (and sid (feature/on? agent :analytics/predictions))
+    ;; :suppress-log? — evaluation runs, so a dataset is never rebuilt from
+    ;; the outputs of the model it was used to evaluate.
+    (when (and sid
+               (not (get-in entry [:context :suppress-log?]))
+               (feature/on? agent :analytics/predictions))
       (append-prediction! sid (entry->record entry sid (proto/agent-id agent))))))
 
 (defonce ^:private !installed (atom false))

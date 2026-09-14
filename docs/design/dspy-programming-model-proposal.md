@@ -551,8 +551,35 @@ Stated so each has a falsifiable measurement.
   Verified with a real `by ask`: one ThinkActCode record with inputs, outputs,
   reasoning, usage and node id.
 
-**Not yet:** skill-distill signatures, commands/CLI (`program$*`), and
-everything from Phase 2 on. Note the live run's record carried recalled L3
+### As built (Phase 2 — measure, 2026-09-14)
+
+Component boundary, revised from §4.8: no new `lm-compiler` brick. The generic
+half needs only predictors, so it lives in clj-llm; the half that needs the
+project lives in the agent. Revisit if optimizers grow large.
+
+- `clj-llm/core/evaluate.clj` — `example`, deterministic content-hash `split`
+  (order-insensitive; adding examples never moves existing ones),
+  `dataset-hash`, metrics (`exact-match`, `schema-valid`, `set-f1`,
+  `weighted`, `all-of`), `predictor-program`, and `evaluate` with `:parallel`
+  (bound-fn conveys `with-params`), `:budget-usd` (checked before each
+  example; overshoot ≤ parallel−1 examples) and the error policy: transient
+  retried, malformed scored 0, fatal stops the run.
+- `agent/common/programs.clj` — datasets under
+  `<project>/.brainyard/programs/<id>/datasets/<name>.edn` built from
+  prediction logs (**silver labels**, recorded as `:label-source
+  :prediction-log`; errors/invalid/clipped/duplicate records skipped;
+  redacted with trajectory export's scrubber); named metrics including an
+  alias-aware `graph-extract-f1`; `eval-predictor` writes full reports under
+  `evals/<ts>.edn`. Evaluation runs under `:suppress-log?` trace context so it
+  never feeds the log a dataset is built from. LM: `:lm` > `:tier` > sub-LM.
+- Commands: `program$list`, `program$build-dataset`, `program$eval`.
+- Live check: `memory/graph-extract` on a 2-example hand dataset with
+  `claude-code/haiku` — the empty-activity example scored 1.0; the other
+  exposed that exact-name F1 counted `native-image` (alias `GraalVM
+  native-image`) as a miss, which is why entity matching is alias-aware.
+
+**Not yet:** skill-distill signatures, a `by programs` CLI, hand-labelled gold
+sets (§8), and Phase 3 optimizers. Note the live run's record carried recalled L3
 memory verbatim in `:inputs` — the reason the log is off by default and why
 dataset builders must redact before anything becomes a demo.
 

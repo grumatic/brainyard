@@ -37,6 +37,7 @@
             [ai.brainyard.agent.common.fsm :as fsm]
             [ai.brainyard.agent.common.todo :as todo]
             [ai.brainyard.agent.common.trajectory-export :as traj-export]
+            [ai.brainyard.agent.common.programs :as programs]
             [ai.brainyard.agent.common.schema :as acs]
             [ai.brainyard.clj-llm.interface :as clj-llm]
             [ai.brainyard.agent.core.usage :as usage]
@@ -1102,8 +1103,8 @@ results are intentionally kept out of semantic recall so it stays focused on kno
    Returns {:valid? :invalid :errors} — shared by query$structured-output and query$llm."
   [js values]
   (let [string-ok? (let [t (:type js)]
-                      (or (nil? t) (= "string" (name t))
-                          (and (sequential? t) (some #(= "string" (name %)) t))))
+                     (or (nil? t) (= "string" (name t))
+                         (and (sequential? t) (some #(= "string" (name %)) t))))
         checked    (map-indexed
                     (fn [i v]
                       (if (and (string? v) (not string-ok?))
@@ -1389,6 +1390,7 @@ results are intentionally kept out of semantic recall so it stays focused on kno
                analytics-cmds/analytics-commands
                log/log-commands
                traj-export/export-commands
+               programs/program-commands
                schedule/schedule-commands
                events/events-commands
                reactor/reaction-commands
