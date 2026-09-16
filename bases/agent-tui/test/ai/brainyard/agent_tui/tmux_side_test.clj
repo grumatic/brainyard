@@ -46,7 +46,7 @@
         (is (true? (tmux-side/installed?)))))))
 
 ;; ---------------------------------------------------------------------------
-;; Stage 1 wheel-to-arrow bindings (mouse workaround for tmux)
+;; Wheel-to-arrow bindings (the fallback for a TUI with the mouse off)
 ;; ---------------------------------------------------------------------------
 
 (defn- args-of [stub method]
@@ -111,13 +111,58 @@
         (tmux-side/install! {:tmux stub})
         (tmux-iface/stub-reset-calls! stub)
         (tmux-side/uninstall!)
+        ;; The stub reports no prior binding, so unbinding IS the whole of
+        ;; restoring: both keys were unbound before we arrived.
         (is (has-shell-args? stub ["unbind-key" "WheelUpPane"]))
         (is (has-shell-args? stub ["unbind-key" "WheelDownPane"]))
+        (is (not (has-shell-args? stub ["source-file"]))
+            "nothing was bound before install!, so there is nothing to replay")
         ;; prior mouse "off" restored
         (is (some (fn [[_ opts]]
                     (and (= "mouse" (:name opts))
                          (= "off" (str (:value opts)))))
                   (tmux-iface/stub-calls-of stub :set-option)))))))
+
+(deftest uninstall-restores-the-wheel-bindings-it-replaced
+  (testing "uninstall! replays the bind-key lines that were there before install!"
+    ;; These bindings are SERVER-global. Unbinding on the way out — which this
+    ;; used to do — left every OTHER pane on the server with no wheel at all
+    ;; until the user re-sourced their tmux.conf, so what was there has to come
+    ;; back, not merely go away.
+    (let [stub     (tmux-iface/stub-tmux {:version "3.4" :display-output "off"})
+          saved    "bind-key -T root WheelUpPane if -F \"#{alternate_on}\" \"send -M\" \"copy-mode -e\""
+          replayed (atom nil)
+          orig     tmux-iface/run-shell]
+      (with-redefs [ai.brainyard.agent-tui.tmux-side/current-pane-id
+                    (fn [_t] "%7")
+                    ;; Delegate to the stub so calls are still recorded, and
+                    ;; only dress the two commands that need real output: the
+                    ;; `list-keys` install! captures with, and the `source-file`
+                    ;; uninstall! replays with — read here because the temp file
+                    ;; is deleted the moment the replay returns.
+                    tmux-iface/run-shell
+                    (fn [t {:keys [args] :as opts}]
+                      (let [r (orig t opts)]
+                        (cond
+                          (and (= "list-keys" (first args)) (= "WheelUpPane" (last args)))
+                          (assoc r :stdout (str saved "\n"))
+
+                          (= "source-file" (first args))
+                          (do (reset! replayed (slurp (second args))) r)
+
+                          :else r)))]
+        (tmux-side/install! {:tmux stub})
+        (is (= saved (:prior-wheel (tmux-side/state)))
+            "install! must capture the binding it is about to replace")
+        (tmux-iface/stub-reset-calls! stub)
+        (tmux-side/uninstall!)
+        ;; Unbind FIRST — WheelDownPane had no saved line and restoring it
+        ;; means leaving it unbound — then replay what was captured.
+        (is (has-shell-args? stub ["unbind-key" "WheelUpPane"]))
+        (is (has-shell-args? stub ["unbind-key" "WheelDownPane"]))
+        (is (has-shell-args? stub ["source-file"]))
+        (is (= saved (some-> @replayed str/trim))
+            "the replayed file must carry the captured line verbatim")))))
 
 (deftest uninstall-skips-mouse-restore-when-prior-unknown
   (testing "uninstall! omits set-option when no prior mouse was captured"

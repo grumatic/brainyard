@@ -9,7 +9,8 @@
 
    Lifecycle:
      install!   on Mode-B start — caches the Tmux impl + the renderer's pane id
-     uninstall! on stop — kills any spawned side panes, closes FIFO writers
+     uninstall! on stop — kills any spawned side panes, closes FIFO writers,
+                  and puts the server-global wheel bindings back as found
 
    The pane that hosts the renderer (`by` itself) is *never* a side pane — we
    only ever split *off* it. Input is never routed through a side channel.
@@ -33,7 +34,8 @@
          :activity    nil    ;; {:pane-id, :fifo-path, :writer} or nil
          :log         nil    ;; same shape
          :session-dir nil    ;; <project>/.brainyard/sessions/<id>/ for FIFO/scrollback files
-         :prior-mouse nil})) ;; pre-install tmux `mouse` value, restored on uninstall!
+         :prior-mouse nil    ;; pre-install tmux `mouse` value, restored on uninstall!
+         :prior-wheel nil})) ;; pre-install WheelUp/DownPane bind-key lines, ditto
 
 (defn state
   "Read-only snapshot of side-channel state. Tests use this; production code
@@ -116,13 +118,70 @@
       (some-> v str/trim not-empty))
     (catch Throwable _ nil)))
 
+;; The two root-table keys we take over, and give back.
+(def ^:private wheel-keys ["WheelUpPane" "WheelDownPane"])
+
+(defn- capture-wheel-bindings
+  "The root-table `bind-key` lines for the wheel keys exactly as tmux prints
+   them, so `uninstall!` can put them back verbatim.
+
+   `list-keys` output IS tmux config syntax — that is what makes a round trip
+   through `source-file` safe, and why this keeps the raw text instead of
+   parsing it into args we would then have to re-quote. A key that is unbound
+   prints nothing (or errors), and comes back as no line at all, which restores
+   to unbound.
+
+   Returns the joined lines, or nil when neither key was bound."
+  [tmux]
+  (let [lines (keep (fn [k]
+                      (try
+                        (let [{:keys [exit stdout]}
+                              (tmux-iface/run-shell tmux {:args ["list-keys" "-T" "root" k]})]
+                          (when (and (zero? (long (or exit 1))) (not (str/blank? stdout)))
+                            (str/trim stdout)))
+                        (catch Throwable _ nil)))
+                    wheel-keys)]
+    (when (seq lines) (str/join "\n" lines))))
+
+(defn- restore-wheel-bindings!
+  "Put the wheel keys back the way `capture-wheel-bindings` found them.
+
+   Unbind FIRST, then replay what was saved: a key that was unbound before we
+   arrived has no saved line, and unbinding is the whole of restoring it.
+
+   Replayed through a temp file and `source-file` rather than a rebuilt
+   `bind-key` argv — the saved text is already tmux syntax, and re-splitting a
+   line whose arguments are themselves quoted command strings is exactly the
+   quoting bug this avoids."
+  [tmux saved]
+  (doseq [k wheel-keys]
+    (try
+      (tmux-iface/run-shell tmux {:args ["unbind-key" "-T" "root" k]})
+      (catch Throwable _)))
+  (when-not (str/blank? saved)
+    (try
+      (let [f (java.io.File/createTempFile "by-wheel-" ".tmux")]
+        (.deleteOnExit f)
+        (try
+          (spit f (str saved "\n"))
+          (tmux-iface/run-shell tmux {:args ["source-file" (.getAbsolutePath f)]})
+          (finally (.delete f))))
+      (catch Throwable _))))
+
 (defn- install-wheel-bindings!
   "Enable `mouse on` and register WheelUp/Down -> Up/Down bindings scoped to
-   alt-screen apps that did NOT ask for the mouse. Returns the previous `mouse`
-   setting (or nil) so `uninstall!` can restore it. Failures are tolerated — a
-   missing binding beats a crashed renderer."
+   alt-screen apps that did NOT ask for the mouse.
+
+   Returns `{:mouse <prior mouse value or nil> :wheel <prior bind-key lines or
+   nil>}` so `uninstall!` can put both back. Capturing the bindings matters
+   because they are SERVER-global: unbinding on the way out, as this used to
+   do, left every OTHER pane on the server — a plain shell, `less`, the `/log`
+   tail — with no wheel at all until the user re-sourced their tmux.conf.
+
+   Failures are tolerated — a missing binding beats a crashed renderer."
   [tmux]
-  (let [prior (mouse-setting tmux)]
+  (let [prior-wheel (capture-wheel-bindings tmux)
+        prior       (mouse-setting tmux)]
     (try
       (tmux-iface/set-option! tmux {:name "mouse" :value "on" :scope :global})
       (catch Throwable _))
@@ -142,20 +201,16 @@
                                     "send-keys -M"
                                     "if-shell -F -t = '#{alternate_on}' 'send-keys -t = Down' 'send-keys -M'"]})
       (catch Throwable _))
-    prior))
+    {:mouse prior :wheel prior-wheel}))
 
 (defn- uninstall-wheel-bindings!
-  "Drop the WheelUp/Down bindings and restore the saved `mouse` setting."
-  [tmux prior-mouse]
-  (try
-    (tmux-iface/run-shell tmux {:args ["unbind-key" "-T" "root" "WheelUpPane"]})
-    (catch Throwable _))
-  (try
-    (tmux-iface/run-shell tmux {:args ["unbind-key" "-T" "root" "WheelDownPane"]})
-    (catch Throwable _))
-  (when prior-mouse
+  "Put the wheel bindings back the way we found them and restore the saved
+   `mouse` setting."
+  [tmux {:keys [mouse wheel]}]
+  (restore-wheel-bindings! tmux wheel)
+  (when mouse
     (try
-      (tmux-iface/set-option! tmux {:name "mouse" :value prior-mouse :scope :global})
+      (tmux-iface/set-option! tmux {:name "mouse" :value mouse :scope :global})
       (catch Throwable _))))
 
 ;; ----------------------------------------------------------------------------
@@ -169,19 +224,21 @@
    Returns the resolved state map. Idempotent: re-installing replaces state.
 
    Side effects: enables `mouse on` and installs WheelUp/Down -> Up/Down
-   bindings (Stage 1 mouse workaround). The previous `mouse` value is captured
-   in `:prior-mouse` so `uninstall!` can restore it."
+   bindings for alt-screen panes that did not ask for the mouse. Both the
+   previous `mouse` value and the previous wheel bindings are captured, in
+   `:prior-mouse` and `:prior-wheel`, so `uninstall!` can restore them."
   ([] (install! {}))
   ([{:keys [tmux session-dir]}]
-   (let [t           (or tmux (tmux-iface/real-tmux))
-         pid         (current-pane-id t)
-         prior-mouse (install-wheel-bindings! t)]
+   (let [t     (or tmux (tmux-iface/real-tmux))
+         pid   (current-pane-id t)
+         prior (install-wheel-bindings! t)]
      (reset! !state {:tmux        t
                      :host-pane   pid
                      :activity    nil
                      :log         nil
                      :session-dir session-dir
-                     :prior-mouse prior-mouse})
+                     :prior-mouse (:mouse prior)
+                     :prior-wheel (:wheel prior)})
      @!state)))
 
 (defn retarget!
@@ -209,20 +266,22 @@
       (try (tmux-iface/kill-pane! tmux pane) (catch Throwable _)))))
 
 (defn uninstall!
-  "Tear down side panes, drop the wheel bindings, restore the prior `mouse`
-   setting, and forget the Tmux impl. Safe to call when not installed."
+  "Tear down side panes, put the wheel bindings and the `mouse` setting back
+   the way we found them, and forget the Tmux impl. Safe to call when not
+   installed."
   []
-  (let [{:keys [tmux activity log prior-mouse]} @!state]
+  (let [{:keys [tmux activity log prior-mouse prior-wheel]} @!state]
     (when tmux
       (close-channel! tmux activity)
       (close-channel! tmux log)
-      (uninstall-wheel-bindings! tmux prior-mouse))
+      (uninstall-wheel-bindings! tmux {:mouse prior-mouse :wheel prior-wheel}))
     (reset! !state {:tmux        nil
                     :host-pane   nil
                     :activity    nil
                     :log         nil
                     :session-dir nil
-                    :prior-mouse nil})
+                    :prior-mouse nil
+                    :prior-wheel nil})
     :ok))
 
 ;; ----------------------------------------------------------------------------
