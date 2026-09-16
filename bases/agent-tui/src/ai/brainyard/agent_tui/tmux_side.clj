@@ -63,14 +63,29 @@
         (catch Throwable _ nil))))
 
 ;; ----------------------------------------------------------------------------
-;; Wheel-to-arrow bindings (Stage 1 mouse workaround)
+;; Wheel-to-arrow bindings (the fallback for a TUI with the mouse OFF)
 ;; ----------------------------------------------------------------------------
 ;;
 ;; Inside tmux the host terminal's DECSET ?1007h alternate-scroll-mode (which
 ;; the TUI relies on outside tmux to translate wheel ticks into ESC[A / ESC[B)
 ;; never reaches the inner client.  As a workaround we install root-table
 ;; bindings that translate WheelUpPane / WheelDownPane into literal `Up` /
-;; `Down` keys WHEN the wheel-event pane is on the alt-screen (i.e. our TUI).
+;; `Down` keys for a pane on the alt-screen that has NOT asked for the mouse.
+;;
+;; `#{mouse_any_flag}` is tested FIRST, and the order is the whole point.  Key
+;; bindings are SERVER-global — every pane on this tmux server gets them, not
+;; only the ones we started — and a pane that turned mouse reporting on already
+;; scrolls its own view on a real wheel event.  That is Claude Code in the
+;; desktop app's terminal tabs, and it is also THIS TUI whenever `:enable-mouse`
+;; is left at its default: `ansi/enable-mouse` sends `?1000h ?1006h` and
+;; `terminal/decode-sgr-mouse` turns wheel buttons 64/65 into `:scroll-up` /
+;; `:scroll-down` without any help from tmux.  Testing `#{alternate_on}` first,
+;; as this did, handed every one of those panes a bare `Up` instead — which a
+;; full-screen agent reads as history navigation, not as a scroll.
+;;
+;; So the arrow translation is only the fallback it was always meant to be:
+;; `:enable-mouse false` (or BY_MOUSE=false) leaves the TUI on the alt-screen
+;; with no mouse, and that is the one case these bindings still rescue.
 ;;
 ;; The target token is `=`, NOT `{mouse}`.  In a mouse-binding context tmux
 ;; resolves `=` to the pane the mouse event hit.  `{mouse}` would also point
@@ -78,12 +93,14 @@
 ;; `{mouse}` as a `-t` arg causes "unknown command: mouse" because tmux tries
 ;; to run `mouse` as the body of a block.
 ;;
-;; For non-alt-screen panes (less, man, plain shell, the `/log` tail pane)
-;; we mirror tmux's default WheelUpPane behavior: if the pane is already in
-;; copy-mode forward the wheel via `send-keys -M`; otherwise enter copy-mode
-;; with `copy-mode -et=`.  Earlier versions only did `send-keys -M` here,
-;; which forwarded a raw mouse byte to (e.g.) `tail -F` — the process ignored
-;; it and the user saw no scroll at all in sibling panes.
+;; A pane already in copy-mode rides along with the mouse-driven ones: tmux's
+;; copy-mode consumes `send-keys -M` itself, so it needs no arrow.
+;;
+;; For everything left over (less, man, plain shell, the `/log` tail pane) we
+;; mirror tmux's default WheelUpPane behavior and enter copy-mode with
+;; `copy-mode -et=`.  Earlier versions only did `send-keys -M` here, which
+;; forwarded a raw mouse byte to (e.g.) `tail -F` — the process ignored it and
+;; the user saw no scroll at all in sibling panes.
 ;;
 ;; WheelDownPane's else branch stays at `send-keys -M`, matching tmux's
 ;; default (scroll-down past the latest output is a no-op outside copy-mode).
@@ -101,9 +118,9 @@
 
 (defn- install-wheel-bindings!
   "Enable `mouse on` and register WheelUp/Down -> Up/Down bindings scoped to
-   alt-screen apps. Returns the previous `mouse` setting (or nil) so
-   `uninstall!` can restore it. Failures are tolerated — a missing binding
-   beats a crashed renderer."
+   alt-screen apps that did NOT ask for the mouse. Returns the previous `mouse`
+   setting (or nil) so `uninstall!` can restore it. Failures are tolerated — a
+   missing binding beats a crashed renderer."
   [tmux]
   (let [prior (mouse-setting tmux)]
     (try
@@ -112,15 +129,18 @@
     (try
       (tmux-iface/run-shell tmux
                             {:args ["bind-key" "-T" "root" "WheelUpPane"
-                                    "if-shell" "-F" "-t" "=" "#{alternate_on}"
-                                    "send-keys -t = Up"
-                                    "if-shell -F -t = '#{pane_in_mode}' 'send-keys -M' 'copy-mode -et='"]})
+                                    "if-shell" "-F" "-t" "="
+                                    "#{||:#{mouse_any_flag},#{pane_in_mode}}"
+                                    "send-keys -M"
+                                    "if-shell -F -t = '#{alternate_on}' 'send-keys -t = Up' 'copy-mode -et='"]})
       (catch Throwable _))
     (try
       (tmux-iface/run-shell tmux
                             {:args ["bind-key" "-T" "root" "WheelDownPane"
-                                    "if-shell" "-F" "-t" "=" "#{alternate_on}"
-                                    "send-keys -t = Down" "send-keys -M"]})
+                                    "if-shell" "-F" "-t" "="
+                                    "#{||:#{mouse_any_flag},#{pane_in_mode}}"
+                                    "send-keys -M"
+                                    "if-shell -F -t = '#{alternate_on}' 'send-keys -t = Down' 'send-keys -M'"]})
       (catch Throwable _))
     prior))
 

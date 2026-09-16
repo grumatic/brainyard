@@ -4,7 +4,8 @@
 
 (ns ai.brainyard.agent-tui.tmux-side-test
   "Cover install!/uninstall! lifecycle and pane discovery against StubTmux."
-  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing use-fixtures]]
             [ai.brainyard.agent-tui.tmux-side :as tmux-side]
             [ai.brainyard.agent-tui-tmux.interface :as tmux-iface]))
 
@@ -72,8 +73,6 @@
           ;; bind-key WheelUpPane + WheelDownPane via run-shell
           (is (has-shell-args? stub ["bind-key" "WheelUpPane"]))
           (is (has-shell-args? stub ["bind-key" "WheelDownPane"]))
-          ;; alt-screen guard present in at least one binding
-          (is (has-shell-args? stub ["if-shell" "#{alternate_on}"]))
           ;; Target is `=` (in mouse-binding context tmux resolves it to
           ;; the wheel-event pane). Regression guard: NOT `{mouse}` —
           ;; tmux's command parser treats `{...}` as a brace-block and
@@ -82,15 +81,26 @@
           (is (has-shell-args? stub ["-t" "="]))
           (is (not (has-shell-args? stub ["-t" "{mouse}"]))
               "`{mouse}` triggers tmux's brace-block parser — use `=` instead")
-          (is (has-shell-args? stub ["send-keys -t = Up"]))
-          (is (has-shell-args? stub ["send-keys -t = Down"]))
-          ;; Regression guard for the /log-pane wheel-up fix. The else
-          ;; branch must enter copy-mode when the pane isn't on alt-screen
-          ;; and isn't already in copy-mode; otherwise raw `send-keys -M`
-          ;; just forwards a mouse byte that `tail -F` ignores. Mirrors
-          ;; tmux's default WheelUpPane: in-mode → -M; else → copy-mode -et=.
+          ;; The arrow translation itself, now one level in: it is the
+          ;; alt-screen branch of the nested if-shell rather than the outer
+          ;; condition, so it reads as a substring of a binding's else-arg.
+          (is (some (fn [args] (some #(str/includes? % "send-keys -t = Up") args))
+                    (args-of stub :run-shell)))
+          (is (some (fn [args] (some #(str/includes? % "send-keys -t = Down") args))
+                    (args-of stub :run-shell)))
+          ;; Regression guard for the stolen-wheel fix. These bindings are
+          ;; SERVER-global, so a pane that turned mouse reporting on — Claude
+          ;; Code in a sibling pane, or this TUI with `:enable-mouse` at its
+          ;; default — must get the real event, never a bare arrow. That means
+          ;; `#{mouse_any_flag}` is the FIRST condition and `#{alternate_on}`
+          ;; only decides among the panes that did not ask for the mouse.
+          (is (has-shell-args? stub ["if-shell" "#{||:#{mouse_any_flag},#{pane_in_mode}}" "send-keys -M"])
+              "a pane that asked for the mouse must get `send-keys -M`, not an arrow")
+          ;; And the /log-pane wheel-up fix it replaced: the last resort for a
+          ;; pane that is neither mouse-driven nor on the alt-screen is
+          ;; copy-mode, not a raw `send-keys -M` that `tail -F` ignores.
           (is (has-shell-args? stub
-                               ["if-shell -F -t = '#{pane_in_mode}' 'send-keys -M' 'copy-mode -et='"])
+                               ["if-shell -F -t = '#{alternate_on}' 'send-keys -t = Up' 'copy-mode -et='"])
               "wheel-up else branch must enter copy-mode for non-alt-screen panes"))))))
 
 (deftest uninstall-removes-bindings-and-restores-mouse
