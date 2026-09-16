@@ -192,13 +192,16 @@
       (is (str/includes? t "a2a-agent")))
 
     (testing "it appears in all THREE router surfaces"
-      ;; directory, lettered decision table, summary list — the design
-      ;; calls for all three, and a missing one silently degrades routing.
+      ;; directory, decision table, summary list — the design calls for all
+      ;; three, and a missing one silently degrades routing.
       (is (<= 3 (count (re-seq #"a2a-agent" t)))
           "expected a2a-agent in the directory, the decision table and the summary"))
 
-    (testing "the decision table has a lettered entry"
-      (is (re-find #"(?m)^[A-Z]\d?\.\s+A2A-PEERS\s+→ a2a-agent" t)))
+    (testing "the decision table has a row for it"
+      ;; Keyed by the move NAME. The letters this used to match were removed
+      ;; when the table outgrew the alphabet and they started colliding —
+      ;; see router/valid-shapes.
+      (is (re-find #"(?m)^A2A-PEERS\s+→ a2a-agent" t)))
 
     (testing "the router states the boundary against its two neighbours"
       ;; The failure mode is routing 'connect to X' to mcp-agent because

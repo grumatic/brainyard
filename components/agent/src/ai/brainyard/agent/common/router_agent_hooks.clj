@@ -192,23 +192,35 @@
 ;; ============================================================================
 
 (def ^:private specialist->shape
-  {"explore-agent"  :explore
-   "edit-agent"     :update
-   "plan-agent"     :plan-author
-   "todo-agent"     :decompose
-   "exec-agent"     :execute
-   "eval-agent"     :evaluate
-   "research-agent" :research
-   "workflow-agent" :workflow
-   "rlm-agent"      :rlm
-   "skill-agent"    :skill-lifecycle
-   "mcp-agent"      :mcp-lifecycle
-   "tool-agent"     :tool-lifecycle
-   "meta-agent"     :agent-lifecycle
-   "memory-agent"   :memory
-   "init-agent"     :init
-   "config-agent"   :config
-   "acp-agent"      :acp})
+  "Dispatched specialist → routing shape. Must cover EVERY specialist in the §6
+   decision table: a specialist missing here falls through to the `Routing:`
+   answer line (which the model only writes for self-answered moves), then to
+   the channel fallback, and finally to :unspecified — so the log records that
+   the router decided nothing on a turn where it dispatched. Six were missing
+   this way. Keep in step with `router/valid-shapes`."
+  {"explore-agent"       :explore
+   "edit-agent"          :update
+   "plan-agent"          :plan-author
+   "todo-agent"          :decompose
+   "exec-agent"          :execute
+   "eval-agent"          :evaluate
+   "research-agent"      :research
+   "workflow-agent"      :workflow
+   "rlm-agent"           :rlm
+   "script-agent"        :script-work
+   "skill-agent"         :skill-lifecycle
+   "mcp-agent"           :mcp-lifecycle
+   "a2a-agent"           :a2a-peers
+   "tool-agent"          :tool-lifecycle
+   "meta-agent"          :agent-lifecycle
+   "predictor-agent"     :predictor-lifecycle
+   "memory-agent"        :memory
+   "init-agent"          :init
+   "config-agent"        :config
+   "schedule-agent"      :schedule
+   "event-agent"         :event
+   "state-machine-agent" :state-machine
+   "acp-agent"           :acp})
 
 (defn- max-turn-in-log
   [session-id]

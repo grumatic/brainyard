@@ -161,15 +161,40 @@
 ;; ============================================================================
 
 (deftest valid-shapes-test
-  (testing "valid-shapes covers exactly the 22 §6 decision-table moves"
-    (is (= 22 (count router/valid-shapes)))
+  (testing "valid-shapes covers exactly the 28 §6 decision-table moves"
+    (is (= 28 (count router/valid-shapes)))
     (doseq [s [:direct-answer :tool-fetch :code-compose :explore :update
                :plan-author :decompose :execute :evaluate :research
                :workflow :rlm :memory :skill-lifecycle :mcp-lifecycle
                :tool-lifecycle :init :config :acp :meta-resume :clarify
-               :agent-lifecycle]]
+               :agent-lifecycle
+               ;; The six that had drifted out of the set, so routing to any
+               ;; of them logged :unspecified — indistinguishable from a
+               ;; garbled parse.
+               :a2a-peers :schedule :event :state-machine :script-work
+               :predictor-lifecycle]]
       (is (contains? router/valid-shapes s)
           (str "Missing shape: " s)))))
+
+(deftest every-table-move-has-a-shape
+  (testing "the decision table, valid-shapes and specialist->shape agree"
+    ;; The drift this guards is silent in production: a move present in the
+    ;; instruction but absent from either map still routes correctly and logs
+    ;; as :unspecified, so the router's own history loses the decision.
+    (let [ins   (get-in (tool/get-tool-defs :type :agent)
+                        [:router-agent :meta :instruction])
+          ;; Scope to the table itself. The agent DIRECTORY above it carries
+          ;; all-caps group headings (PIPELINE) that are not moves.
+          table (subs ins
+                      (clojure.string/index-of ins "DECISION TABLE — question shape")
+                      (clojure.string/index-of ins "The self-answered shape tokens"))
+          ;; Rows are `NAME  → <specialist>` or `NAME  (answer channel…)`.
+          names (set (map second (re-seq #"(?m)^([A-Z][A-Z0-9-]{2,})\s+(?:→|\()" table)))
+          shape (fn [n] (keyword (clojure.string/lower-case n)))]
+      (is (= 28 (count names)) (str "table rows: " (sort names)))
+      (doseq [n names]
+        (is (contains? router/valid-shapes (shape n))
+            (str "table move " n " has no shape keyword"))))))
 
 (deftest bootstrap-idempotence-test
   (let [base (tempdir)

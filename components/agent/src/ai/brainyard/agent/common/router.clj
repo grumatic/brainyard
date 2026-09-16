@@ -17,8 +17,9 @@
    iteration.
 
    The routing-log shape is hand-rolled NDJSON (one decision per line) plus a
-   companion `pointers.md` for human readability. The 21 valid `:shape` keywords
-   correspond 1:1 to the §6 decision table (A–U)."
+   companion `pointers.md` for human readability. The valid `:shape` keywords
+   correspond 1:1 to the §6 decision table, by NAME — the table's letter labels
+   are gone (it outgrew the alphabet and they had started colliding)."
   (:require [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :refer [defcommand]]
             [ai.brainyard.mulog.interface :as mulog]
@@ -34,32 +35,46 @@
 (def ^:private index-rel (str base-rel "/INDEX.md"))
 
 (def valid-shapes
-  "The 22 routing-decision shapes from docs/design/router-agent-design.md §6
-   (decision-table letter labels A–V). The routing-log hook coerces a derived/
-   parsed shape against this set via `coerce-shape` (unknown → :unspecified),
-   so a mis-parsed shape never poisons the log nor fails the turn."
-  #{:direct-answer    ;; A — answer channel; greeting / factual / explain
-    :tool-fetch       ;; B — tool channel; one-shot RPC
-    :code-compose     ;; C — code channel; composition / scripts
-    :explore          ;; D — explore-agent
-    :update           ;; E — edit-agent
-    :plan-author      ;; F — plan-agent
-    :decompose        ;; G — todo-agent
-    :execute          ;; H — exec-agent
-    :evaluate         ;; I — eval-agent
-    :research         ;; J — research-agent
-    :workflow         ;; K — workflow-agent
-    :rlm              ;; L — rlm-agent
-    :memory           ;; M — memory-agent
-    :skill-lifecycle  ;; N — skill-agent
-    :mcp-lifecycle    ;; O — mcp-agent
-    :init             ;; P — init-agent
-    :config           ;; Q — config-agent
-    :acp              ;; R — acp-agent
-    :meta-resume      ;; S — answer channel from routing.log
-    :clarify          ;; T — answer channel; ambiguity clarification
-    :tool-lifecycle   ;; U — tool-agent (lifecycle sibling of N skill / O mcp)
-    :agent-lifecycle}) ;; V — meta-agent (authors user-defined agents)
+  "One keyword per §6 decision-table move (docs/design/router-agent-design.md),
+   keyed by the move's NAME. The routing-log hook coerces a derived/parsed shape
+   against this set via `coerce-shape` (unknown → :unspecified), so a mis-parsed
+   shape never poisons the log nor fails the turn.
+
+   THIS SET IS THE TABLE'S IDENTITY, so a move missing from it is invisible in
+   the routing log rather than merely unlabelled — `coerce-shape` maps it to
+   :unspecified, which is the same value a garbled parse produces. Six moves had
+   drifted out of it exactly that way (a2a-peers, schedule, event, state-machine,
+   script-work, and now predictor-lifecycle), so routing to any of those six
+   logged as though the router had not decided anything. Add the keyword here AND
+   the specialist→shape entry in router_agent_hooks when a move is added."
+  #{:direct-answer       ;; answer channel; greeting / factual / explain
+    :tool-fetch          ;; tool channel; one-shot RPC
+    :code-compose        ;; code channel; composition / scripts
+    :explore             ;; explore-agent
+    :update              ;; edit-agent
+    :plan-author         ;; plan-agent
+    :decompose           ;; todo-agent
+    :execute             ;; exec-agent
+    :evaluate            ;; eval-agent
+    :research            ;; research-agent
+    :workflow            ;; workflow-agent
+    :rlm                 ;; rlm-agent
+    :memory              ;; memory-agent
+    :skill-lifecycle     ;; skill-agent
+    :mcp-lifecycle       ;; mcp-agent
+    :a2a-peers           ;; a2a-agent
+    :init                ;; init-agent
+    :config              ;; config-agent
+    :schedule            ;; schedule-agent
+    :event               ;; event-agent
+    :state-machine       ;; state-machine-agent
+    :acp                 ;; acp-agent
+    :meta-resume         ;; answer channel from routing.log
+    :clarify             ;; answer channel; ambiguity clarification
+    :tool-lifecycle      ;; tool-agent   — authors user-defined tools
+    :agent-lifecycle     ;; meta-agent   — authors user-defined agents
+    :predictor-lifecycle ;; predictor-agent — authors + optimizes predictors
+    :script-work})       ;; script-agent
 
 ;; ============================================================================
 ;; Time formatters

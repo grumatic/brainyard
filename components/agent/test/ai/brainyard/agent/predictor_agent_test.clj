@@ -19,7 +19,7 @@
       and the hard dossier contract.
 
    3. ROUTER REGISTRATION — the three places a new specialist has to appear in
-      router_agent.clj (directory, lettered decision table, summary list) or it
+      router_agent.clj (directory, decision table, summary list) or it
       exists and is never reached. That trio is easy to half-do; this is the
       check that it was not.
 
@@ -192,7 +192,7 @@
       (is (re-find #"predictor\$\*" both))
       (is (re-find #"program\$\*" both)))
 
-    (testing "2. the lettered DECISION TABLE carries a PREDICTOR-LIFECYCLE row"
+    (testing "2. the DECISION TABLE carries a PREDICTOR-LIFECYCLE row"
       (is (re-find #"PREDICTOR-LIFECYCLE\s+→ predictor-agent" both)))
 
     (testing "3. the SUMMARY list at the end mentions it"
