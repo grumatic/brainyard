@@ -4829,18 +4829,50 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                               :parallel? false}]
          :last-channel :none))
 
+(def ^:private unexecuted-prose-marker
+  "Stamped onto the prose kept as an iteration's `:thought` when the model
+   replied without a JSON envelope.
+
+   WITHOUT IT THE PROSE HAS NO PROVENANCE. The recovery path preserves the reply
+   as `:last-reasoning`, and the next iteration reads it back as its own
+   thought — indistinguishable from a thought that accompanied a real action.
+   Observed live: a model narrated the shell that would write a file, the reply
+   carried no envelope so nothing ran, and its next turn reported the file as
+   written. The prose said what it was about to do; nothing said it had not
+   happened.
+
+   Prescriptive, not a bare flag, for the reason every pending-state marker in
+   this codebase is: a model reading `:status :pending` keeps going, a model
+   reading DO NOT re-emit stops. Same shape as `dropped-tool-calls-notice`'s
+   \"Do not assume their results.\""
+  (str "[NOT EXECUTED — the text below is narration that reached the framework "
+       "without an action channel. NOTHING IN IT RAN: no command executed, no "
+       "file was written, no tool was called. Anything it describes is still "
+       "PENDING — re-issue it as an action; do not report it as done.]"))
+
 (def ^:private plain-text-format-guidance
   "Descriptive re-prompt guide for a pure-prose reply (no JSON envelope). Routed
    to the iteration record's `:notices` (a model-visible advisory) rather than a
    fake code-result error, so the model reads its own prose back as the thought
-   plus this correction."
-  (str "FORMAT: your previous response was plain prose with no JSON object, so the "
-       "framework could not act on it — it has been kept as this turn's thought. "
-       "Every turn you must reply with a JSON object matching the output schema: put "
-       "any reasoning in the chain-of-thought `reasoning` field, and populate exactly "
-       "ONE action channel — `code-blocks` (run the shell/clojure/python/js you were "
-       "describing), `tool-calls` (invoke a tool), or `answer` (finish). Re-issue your "
-       "intended action now as JSON; do not narrate it as text."))
+   plus this correction.
+
+   It leads with the CONSEQUENCE, not the format. \"The framework could not act
+   on it\" is true and too abstract to act on: the model's own narration comes
+   back as its thought, reading like a record of work, and a correction about
+   JSON does not contradict that. Naming what did not happen does — the same
+   half `dropped-tool-calls-notice` gets right with \"Do not assume their
+   results.\""
+  (str "NOTHING IN YOUR PREVIOUS REPLY RAN. It was plain prose with no JSON "
+       "object, so it populated no action channel: no command executed, no file "
+       "was written, no tool was called. It has been kept as this turn's thought "
+       "— it is a record of what you INTENDED, not of what happened. Do not "
+       "report any of it as done, and do not build on results it describes. "
+       "FORMAT: every turn you must reply with a JSON object matching the output "
+       "schema: put any reasoning in the chain-of-thought `reasoning` field, and "
+       "populate exactly ONE action channel — `code-blocks` (run the "
+       "shell/clojure/python/js you were describing), `tool-calls` (invoke a "
+       "tool), or `answer` (finish). Re-issue your intended action now as JSON; "
+       "do not narrate it as text."))
 
 (defn- repair-malformed-output!
   "Recover from a malformed ThinkActCode result. Three triggers, same remedy:
@@ -4902,6 +4934,12 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
           (hooks/fire! :agent.recovery/retrying
                        {:agent agent :kind kind
                         :attempt (inc consec) :max max-r}))
+        (when (= :plain-text-output kind)
+          ;; Length only, never the prose: it is model output about whatever the
+          ;; turn was reading. This is the event that was invisible when a turn
+          ;; reported work it had only narrated.
+          (mulog/log ::unexecuted-prose-kept
+                     :attempt (inc consec) :max max-r :chars (count (str raw-text))))
         (if (and no-json? (not (str/blank? raw-text)))
           ;; Pure-prose reply: the model narrated its plan instead of emitting
           ;; JSON. Keep that prose AS this iteration's thought (via :last-reasoning)
@@ -4913,8 +4951,15 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                  :dspy-error nil :dspy-error-class nil :dspy-error-reason nil :dspy-validation-errors nil
                  :dspy-raw-text nil :dspy-no-json-envelope? nil
                  :consecutive-llm-failures (inc consec)
-                 :last-reasoning (let [s (str/trim (str raw-text))]
-                                   (if (> (count s) 12000) (str (subs s 0 12000) "…") s))
+                 ;; Marker FIRST, and applied after the cap, so it survives a
+                 ;; truncation that only ever cuts the tail. The prose is the
+                 ;; model's own words coming back as its thought; without the
+                 ;; stamp there is nothing in the record that says the actions
+                 ;; it describes never happened.
+                 :last-reasoning (let [s (str/trim (str raw-text))
+                                       s (if (> (count s) 12000)
+                                           (str (subs s 0 12000) "…") s)]
+                                   (str unexecuted-prose-marker "\n\n" s))
                  :last-tool-results []
                  :last-code-results []
                  :pending-format-guidance plain-text-format-guidance
@@ -4928,7 +4973,9 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                  :consecutive-llm-failures (inc consec)
                  :last-code-results [{:lang "other" :code "" :result "" :output ""
                                       :error (str "FORMAT ERROR: " err
-                                                  ". You MUST respond with valid JSON matching the output schema. "
+                                                  ". NOTHING IN THAT REPLY RAN — no command executed, no file was "
+                                                  "written, no tool was called; do not report any of it as done. "
+                                                  "You MUST respond with valid JSON matching the output schema. "
                                                   "Populate exactly ONE of `tool-calls` / `code-blocks` / `answer` "
                                                   "using those exact field names — do NOT wrap your output in "
                                                   "placeholder keys like $PARAMETER_NAME.")

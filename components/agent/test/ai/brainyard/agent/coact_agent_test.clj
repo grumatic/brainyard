@@ -1458,6 +1458,82 @@
       (is (false? (boolean (:terminated @st)))
           "1st :none must NOT terminate the turn"))))
 
+
+;; ============================================================================
+;; Unexecuted prose — the reply that reached the framework with no action channel
+;; ============================================================================
+;;
+;; Observed live: a model narrated the shell that would write a dossier, the
+;; reply carried no JSON envelope so nothing ran, the recovery path kept the
+;; prose as the iteration's thought, and the model's NEXT turn reported the file
+;; as written. The recovery worked; what it told the model did not. These tests
+;; pin the half that was missing — that the record and the notice both say the
+;; narrated actions did not happen.
+
+(defn- prose-repair
+  "Drive the pure-prose recovery branch and return the st-memory. Same setup
+   `bt/dspy` produces for a reply with no JSON envelope (see
+   repair-malformed-plain-text-test)."
+  [raw]
+  (let [st (fresh-st-memory
+            :dspy-error (str "LLM response was plain text with no JSON object."
+                             "\nLLM raw text: " raw)
+            :dspy-error-class :malformed
+            :dspy-raw-text raw
+            :dspy-no-json-envelope? true
+            :consecutive-llm-failures 0)]
+    (rca/coact-repair-action {:st-memory st})
+    st))
+
+(deftest unexecuted-prose-is-stamped-test
+  (testing "the preserved prose is marked as narration that never ran"
+    (let [st (prose-repair "Now I will write the dossier with a heredoc.")]
+      (is (str/includes? (:last-reasoning @st) "NOT EXECUTED"))
+      (is (str/includes? (:last-reasoning @st) "Now I will write the dossier"))
+      (testing "the marker comes FIRST — a trailing one is read after the claim"
+        (is (< (str/index-of (:last-reasoning @st) "NOT EXECUTED")
+               (str/index-of (:last-reasoning @st) "Now I will write"))))
+      (testing "and it names what did not happen, not just that it failed"
+        (is (str/includes? (:last-reasoning @st) "no file was written"))
+        (is (str/includes? (:last-reasoning @st) "do not report it as done")))))
+
+  (testing "the marker survives the cap, which only ever cuts the tail"
+    ;; The cap is the reason the marker is a PREFIX. The thought cap clips the
+    ;; TAIL, so a trailing marker would be dropped exactly on the long, detailed
+    ;; narration most likely to be mistaken for a record of work.
+    (let [st (prose-repair (apply str (repeat 20000 "x")))]
+      (is (str/includes? (:last-reasoning @st) "NOT EXECUTED"))
+      (rca/coact-accumulate-iteration-action {:st-memory st})
+      (is (str/includes? (:thought (last (:iterations @st))) "NOT EXECUTED")
+          "the stamp must reach the iteration record, not just st-memory"))))
+
+(deftest unexecuted-prose-notice-leads-with-the-consequence-test
+  (testing "the re-prompt says what did not happen before it says what to fix"
+    (let [st (prose-repair "I ran the tests and they all passed.")
+          notice (:pending-format-guidance @st)]
+      (is (some? notice))
+      (is (str/starts-with? notice "NOTHING IN YOUR PREVIOUS REPLY RAN"))
+      (is (str/includes? notice "no file was written"))
+      (is (str/includes? notice "Do not report any of it as done"))
+      (testing "the format correction is still there, just no longer first"
+        (is (str/includes? notice "FORMAT:"))
+        (is (str/includes? notice "code-blocks")))
+      (testing "the channel is :none so the loop re-prompts rather than finishing"
+        (is (= :none (:last-channel @st)))
+        (is (empty? (:last-code-results @st))
+            "prose gets a notice, NOT a fake code-result error")))))
+
+(deftest malformed-envelope-also-says-nothing-ran-test
+  (testing "the JSON-envelope branch carries the same half"
+    ;; Different trigger, same false-claim hazard: the model emitted an object
+    ;; that did not validate, so its action never dispatched.
+    (let [st (fresh-st-memory :dspy-validation-errors {:answer ["missing"]})]
+      (rca/coact-repair-action {:st-memory st})
+      (let [err (:error (first (:last-code-results @st)))]
+        (is (str/includes? err "NOTHING IN THAT REPLY RAN"))
+        (is (str/includes? err "do not report any of it as done"))
+        (is (str/includes? err "FORMAT ERROR"))))))
+
 (deftest repair-action-second-none-still-nudges-test
   (testing "second consecutive :none still nudges, does not yet escalate"
     (let [st (fresh-st-memory
@@ -1787,14 +1863,18 @@
       (is (= 1 (:consecutive-llm-failures @st)) "still counts as a retry")
       (is (false? (boolean (:terminated @st))))
       (is (= :none (:last-channel @st)))
-      (is (= prose (:last-reasoning @st)) "prose becomes the iteration thought")
+      (is (str/includes? (:last-reasoning @st) prose)
+          "prose becomes the iteration thought")
+      (is (str/includes? (:last-reasoning @st) "NOT EXECUTED")
+          "…stamped, so it cannot be read back as a record of work done")
       (is (empty? (:last-code-results @st)) "no fake FORMAT ERROR eval-result")
       (is (nil? (:dspy-no-json-envelope? @st)) "the flag is cleared so it can't leak forward")
       ;; The schema correction rides :notices (a model-visible advisory), queued
       ;; here and folded into the record by coact-accumulate-iteration-action.
       (rca/coact-accumulate-iteration-action {:st-memory st})
       (let [rec (last (:iterations @st))]
-        (is (= prose (:thought rec)))
+        (is (str/includes? (:thought rec) prose))
+        (is (str/includes? (:thought rec) "NOT EXECUTED"))
         (is (= "none" (:channel rec)))
         (is (empty? (:code-results rec)))
         (is (str/includes? (:notices rec) "plain prose")
