@@ -155,7 +155,17 @@
       (is (re-find #"HARD RULES" instr))
       (is (re-find #"FINAL-STEP CHECKLIST" instr))
       (is (re-find #"DOSSIER WRITTEN" instr))
-      (is (re-find #"(?i)incomplete turn" instr)))))
+      (is (re-find #"(?i)incomplete turn" instr)))
+
+    (testing "the dossier names its MECHANISM and demands a read-back"
+      ;; A live run wrote the dossier as a bash heredoc; the emission never
+      ;; parsed, nothing ran, and the model then reported the file as written.
+      ;; Both halves of the fix are asserted: write-file not bash, and a
+      ;; read-back that turns the checklist tick into evidence.
+      (is (re-find #"(?i)NEVER a bash heredoc" instr))
+      (is (re-find #"(?i)READ THE DOSSIER BACK" instr))
+      (is (re-find #"(?i)BOTH READ BACK" instr))
+      (is (re-find #"(?i)NEVER report a file you have not READ BACK" instr)))))
 
 (deftest tool-context-anchors
   (let [tc (get-in (agent-def) [:meta :tool-context])]
