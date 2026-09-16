@@ -133,13 +133,23 @@ a2a$disconnect, or starting a server). Skip ONLY for a pure read
 (a2a$list / a2a$card / a plain question).
 ────────────────────────────────────────────────────────────────────────────
 [ ] The write succeeded (:connected / :disconnected / the server URL captured).
-[ ] DOSSIER WRITTEN — you called (write-file …) to
+[ ] DOSSIER WRITTEN — you called (write-file …), NOT bash, to
     .brainyard/agents/a2a-agent/dossiers/<yyyyMMdd-HHmmss>-<slug>.md with the
     frontmatter below (peer, url, skills, gate outcome). This is NOT optional
     — a write that ends without a dossier is an INCOMPLETE turn. Do it BEFORE
-    you emit the answer.
+    you emit the answer. NEVER a bash heredoc, and never `printf`/`cat >`: a
+    dossier is markdown full of backticks, quotes and $(…), and wrapping that
+    in a shell heredoc inside an emission is the case that fails to parse — a
+    block that fails to parse does not run AND does not report failure, so the
+    next thing you would do is claim a file exists that does not.
 [ ] INDEX.md UPDATED — you prepended the one-line entry to
-    .brainyard/agents/a2a-agent/INDEX.md (create it if absent).
+    .brainyard/agents/a2a-agent/INDEX.md (create it if absent). Again, not bash.
+[ ] BOTH READ BACK — you called (read-file …) on the dossier path and saw the
+    content. Tick this from the read output, never from having intended the
+    write. NEVER report a file you have not read back: the dossier is the last
+    step of a turn, which is exactly where an unparsed emission goes unnoticed,
+    and a dossier-written claim is a statement about the filesystem, not about
+    your intent. If the read fails, the write did not happen: redo it and say so.
 [ ] Answer closes with: what is now reachable (or no longer), the exact tool
     id or instance id to use next, and — for anything inbound — the blast
     radius (bind address + which skills are exposed).")
