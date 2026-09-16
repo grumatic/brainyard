@@ -213,6 +213,18 @@
   (swap! !registry assoc (:predictor/id p) p)
   p)
 
+(defn unregister!
+  "Drop a predictor from the registry by id. Returns true when one was there.
+
+   The counterpart to `register!` for predictors that are DEFINED at runtime
+   (an authored `user/*` predictor whose `.edn` the user deleted). A source
+   predictor has no reason to call this — its `defpredictor` is the definition
+   and re-loading the namespace replaces rather than duplicates."
+  [id]
+  (let [had (contains? @!registry id)]
+    (swap! !registry dissoc id)
+    had))
+
 (defn list-predictors
   "All registered predictors, sorted by id."
   []

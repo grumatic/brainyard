@@ -698,15 +698,28 @@
         (clj-llm/load-catalog-overlay!)))
     (catch Throwable _ nil)))
 
-(defn- install-predictor-params!
-  "Point predictor params resolution at `<project>/.brainyard/programs` then
-   `~/.brainyard/programs`, and let a params `:tier` resolve through
-   `:agent-lm-tiers`.
+(defn- install-programs!
+  "Make `.brainyard/programs` and `.brainyard/predictors` real: point predictor
+   params resolution at `<project>` then `~`, let a params `:tier` resolve
+   through `:agent-lm-tiers`, and register every runtime-authored predictor.
 
    Same injection shape as `install-catalog-cache!`, for the same reason:
-   `clj-llm` cannot see `.brainyard` or config. Nothing is read here — params
-   files are read lazily per call — so it costs nothing on startup, and with
-   no files present every predictor runs exactly as its bare signature."
+   `clj-llm` cannot see `.brainyard` or config. The params half reads nothing
+   here — params files are read lazily per call — so with no files present every
+   predictor runs exactly as its bare signature.
+
+   ONE function because every entry point that needs one needs all three: a
+   predictor with no params root resolves nothing, and a params file for a
+   predictor that was never registered is a file nobody reads. In particular
+   this is why authored predictors do NOT register via `boot-registries!` —
+   `by programs list|eval|compile` never call it, and those are exactly the
+   commands authoring a predictor is meant to unlock.
+
+   Call AFTER `install-working-dir!`, or `<project>/.brainyard/predictors`
+   resolves against the wrong project (the rule `register-project!` documents).
+   Failure is swallowed: no registry load may block a session, and one corrupt
+   `.edn` must not cost the user their other predictors (handled per-file
+   underneath)."
   []
   (try
     (let [dirs (agent/init-dirs!)]
@@ -715,7 +728,8 @@
       (clj-llm/set-lm-resolver! (fn [{:keys [lm tier]}]
                                   (cond
                                     lm   (clj-llm/parse-lm-str lm)
-                                    tier (agent/resolve-tier-lm nil tier)))))
+                                    tier (agent/resolve-tier-lm nil tier))))
+      (agent/register-user-predictors! dirs))
     (catch Throwable _ nil)))
 
 (defn- maybe-refresh-catalog!
@@ -745,7 +759,7 @@
   ;; registry above, for the same reason: neither may block a session.
   (install-catalog-cache!)
   (maybe-refresh-catalog!)
-  (install-predictor-params!)
+  (install-programs!)
   ;; Offload the heavy graph-mode session-end consolidation to a detached
   ;; `by memory reduce` child so /quit never blocks on it (this process knows how
   ;; to re-exec the binary; components/agent can't). No-op unless graph memory is
@@ -1389,7 +1403,7 @@
         opts (parse-legacy-provider opts)
         _ (install-working-dir! opts)
         _ (register-project!)
-        _ (install-predictor-params!)
+        _ (install-programs!)
         ;; Register user-authored defs (skills, user tools, user agents) BEFORE
         ;; the agent is built. Synchronous for skills specifically: a one-shot
         ;; ask has few turns and often exactly one, so a background scan would
@@ -1666,7 +1680,7 @@
   (setup-app-log!)
   ;; Graph extraction runs the `memory/graph-extract` predictor — the detached
   ;; `by memory reduce` child must see the same params the TUI would.
-  (install-predictor-params!)
+  (install-programs!)
   (let [mm (agent/create-memory-manager user-id)]
     (try
       (mem/initialize mm)
@@ -3669,7 +3683,7 @@
   "Named predictors with where their params currently resolve from."
   [opts]
   (install-working-dir! opts)
-  (install-predictor-params!)
+  (install-programs!)
   (let [rows (mapv (fn [p]
                      (let [pid (:predictor/id p)]
                        {:id pid
@@ -3767,7 +3781,7 @@
    this exists instead of calling `eval-predictor` from a script."
   [opts]
   (install-working-dir! opts)
-  (install-predictor-params!)
+  (install-programs!)
   (let [[pid dataset] (program-args opts 2 "Usage: by programs eval <predictor-id> <dataset> [--metric m] [--split val] [--repeats k]")
         run-opts (program-run-opts opts)
         metric   (or (:metric run-opts) "exact-match")]
@@ -3809,7 +3823,7 @@
    follow with `by programs accept` after reading REVIEW.md."
   [opts]
   (install-working-dir! opts)
-  (install-predictor-params!)
+  (install-programs!)
   (let [[pid dataset] (program-args opts 2 "Usage: by programs compile <predictor-id> <dataset> [--metric m] [--tier light --teacher-tier deep] [--repeats k] [--max-calls n]")
         compile-opts (cond-> (dissoc (program-run-opts opts) :split)
                        (:optimizer opts)        (assoc :optimizer (:optimizer opts))

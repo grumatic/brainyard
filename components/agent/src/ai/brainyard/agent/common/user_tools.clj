@@ -491,10 +491,17 @@
      agent)))
 
 (defn list-user-tools
-  "Summaries of every registered user-defined tool, sorted by id."
+  "Summaries of every registered user-defined tool, sorted by id.
+
+   `:predictor-id` entries are excluded: an authored predictor is also a
+   `:user-defined` entry in this one registry, but it has no body, no `.clj`
+   sidecar and no `.edn` under `.brainyard/tools` — so listing it here would
+   offer tool-agent a tool it cannot read or delete. They belong to
+   `predictor$list` (see common/user_predictors.clj)."
   []
   (->> (vals @tool/!tool-defs)
-       (filter #(get-in % [:meta :user-defined]))
+       (filter #(and (get-in % [:meta :user-defined])
+                     (nil? (get-in % [:meta :predictor-id]))))
        (mapv (fn [td]
                (let [m (:meta td)]
                  {:id           (name (:id m))

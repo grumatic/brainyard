@@ -177,6 +177,17 @@
    Returns the strategy result + :predictor-id :params-source."
   predictor/run)
 
+(def register-predictor!
+  "Register a predictor VALUE (from `predictor`) into the shared registry,
+   last-definition-wins by id. The runtime counterpart to `defpredictor`, for
+   predictors whose definition is read from data rather than written in source
+   (see the agent's user-predictors). Returns the predictor."
+  predictor/register!)
+
+(def unregister-predictor!
+  "Drop a predictor from the registry by id. Returns true when one was there."
+  predictor/unregister!)
+
 (def list-predictors
   "Registered predictors, sorted by id."
   predictor/list-predictors)

@@ -1396,6 +1396,15 @@
    ;; the repo, a user's applies everywhere else. See clj-llm core.predictor.
    "programs"      :both
 
+   ;; Predictor DEFINITIONS (`user/<name>.edn`: instructions, input/output
+   ;; fields, strategy) — deliberately NOT the same file as the params above.
+   ;; Params are the compiler's output and `by programs accept` overwrites them
+   ;; wholesale; a definition sharing that file would be destroyed by an accept.
+   ;; Project wins over user on a same-id collision, same order as the params
+   ;; roots — but this is name resolution, not layering: the shadowed file is
+   ;; reported, never merged. See common/user_predictors.clj.
+   "predictors"    :both
+
    ;; dual-scope agents: artifacts mirror the scope of the file they edit
    ;; (config.edn for config-agent, BRAINYARD.md for init-agent). Agent
    ;; artifact dirs live under .brainyard/agents/<name>/.

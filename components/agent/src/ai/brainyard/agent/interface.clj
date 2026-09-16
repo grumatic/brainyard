@@ -42,6 +42,14 @@
             ;; despite the file existing — the dormant-ns bug flagged
             ;; during Phase 1.3.
             [ai.brainyard.agent.common.aws-commands]
+            ;; Side-effecting load: registers the predictor$* authoring commands
+            ;; AND is the home of `register-user-predictors!`, which the app
+            ;; calls to make `.brainyard/predictors` real. Without this require
+            ;; the defcommands never register (the dormant-ns bug again).
+            ;; Kept explicit even though predictor-agent (below) also requires
+            ;; it: the CLI paths (`by programs *`) need the registration whether
+            ;; or not any agent binds the authoring commands.
+            [ai.brainyard.agent.common.user-predictors]
             ;; Side-effecting loads: register every built-in defagent in the
             ;; unified tool registry. Anyone requiring this interface ns
             ;; automatically gets the full agent roster — no project-level
@@ -625,6 +633,25 @@
 (export-symbols ai.brainyard.agent.common.programs
                 build-dataset list-datasets eval-predictor compile-predictor
                 list-proposals accept-proposal! reject-proposal! params-file-for)
+
+;; Runtime-authored predictors — the DEFINITION half of the same feature.
+;; `register-user-predictors!` registers every `.brainyard/predictors/user/*.edn`
+;; as both a predictor (so `program$*` sees it) and a `user$predictor$<name>`
+;; tool (so anything can call it). The app calls it from `install-programs!`
+;; rather than `boot-registries!`, because `by programs list|eval|compile` never
+;; calls the latter and those are exactly the commands this unlocks. Must run
+;; AFTER `install-working-dir!` or the project root resolves to the wrong repo.
+(export-symbols ai.brainyard.agent.common.user-predictors
+                predictors-commands)
+
+(defn register-user-predictors!
+  "Register this project's + user's authored predictors, once per process.
+   A thin wrapper rather than an `export-symbols` alias: the source name
+   (`ensure-registered!`) is too generic to sit in this interface unqualified,
+   and a `(def x ns/f)` value-copy is the shape that freezes unbound under
+   native-image."
+  [dirs]
+  (ai.brainyard.agent.common.user-predictors/ensure-registered! dirs))
 
 ;; ============================================================================
 ;; Task Management — direct exports for low-level access
