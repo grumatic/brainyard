@@ -62,3 +62,10 @@ components/memory/resources/sqlite-vec/
 
 # Fetched at build by `bb model2vec:fetch` (CR-MEM-21); not committed.
 components/memory/resources/model2vec/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*
