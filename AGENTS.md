@@ -47,6 +47,20 @@ cp -rf source dest          # NOT: cp -r source dest
 - `apt-get` - use `-y` flag
 - `brew` - use `HOMEBREW_NO_AUTO_UPDATE=1` env var
 
+## Beads scope in this repo: issue tracking only
+
+`bd` owns **what needs doing** — work items, dependencies, blockers, follow-ups.
+It does **not** own what is known.
+
+The managed block below is bd's stock text. Two of its rules are overridden here:
+
+- **Memory files stay.** The agent memory directory and its `MEMORY.md` index
+  remain the durable store for project facts, design rationale and working
+  agreements. Do **not** migrate them into `bd remember`, and do not treat the
+  block's "do NOT use MEMORY.md files" line as active in this repo.
+- Per-turn execution checklists are still fine as agent-local scratch; only
+  *shared, durable work items* belong in `bd`.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:46cd31e7 -->
 ## Beads Issue Tracker
 

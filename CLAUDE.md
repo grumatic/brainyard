@@ -1059,6 +1059,20 @@ Resource-fetch tasks (CR-MEM-21, context-graph memory) download sha-pinned, giti
 Model-catalog tasks are noun-scoped for the same reason — they maintain a component's source, not a build output. `catalog:refresh` reports how the baked catalog differs from the live providers (`--write` applies removals); `catalog:test` verifies the source surgery that `--write` performs, contacting no provider so it is safe offline. `catalog:test` is **not** part of `bb test`, which runs the Polylith brick suites — run it after touching `scripts/catalog_refresh.clj` or the shape of `model-catalog`.
 
 
+## Beads scope in this repo: issue tracking only
+
+`bd` owns **what needs doing** — work items, dependencies, blockers, follow-ups.
+It does **not** own what is known.
+
+The managed block below is bd's stock text. Two of its rules are overridden here:
+
+- **Memory files stay.** The agent memory directory and its `MEMORY.md` index
+  remain the durable store for project facts, design rationale and working
+  agreements. Do **not** migrate them into `bd remember`, and do not treat the
+  block's "do NOT use MEMORY.md files" line as active in this repo.
+- Per-turn execution checklists are still fine as agent-local scratch; only
+  *shared, durable work items* belong in `bd`.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:1105d646 -->
 ## Beads Issue Tracker
 
